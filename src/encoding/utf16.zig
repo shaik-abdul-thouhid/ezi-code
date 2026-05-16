@@ -73,16 +73,26 @@ pub fn utf16SequenceLen(c16: u16) UTF16ValidationError!u2 {
     return 1;
 }
 
-/// Buffer must end at the last code unit of the scalar (`buf.len - 1`).
-pub fn utf16SequenceLenReverse(buf: []const u16) UTF16ValidationError!u2 {
-    if (buf.len == 0) {
-        return error.ZeroLengthUnits;
+pub fn utf16SequenceLenUnchecked(c16: u16) u2 {
+    if (isHighSurrogate(c16)) {
+        return 2;
     }
 
-    const last = buf.len - 1;
+    return 1;
+}
+
+/// Buffer must end at the last code unit of the scalar (`buf.len - 1`).
+pub fn utf16SequenceLenReverse(buf: []const u16, end_index: usize) UTF16ValidationError!u2 {
+    if (buf.len == 0) {
+        return error.ZeroLengthUnits;
+    } else if (buf.len <= end_index) {
+        return error.IndexOutOfBounds;
+    }
+
+    const last = end_index;
 
     if (isLowSurrogate(buf[last])) {
-        if (buf.len < 2 or !isHighSurrogate(buf[buf.len - 2])) {
+        if (end_index < 2 or !isHighSurrogate(buf[end_index - 1])) {
             return error.InvalidLowSurrogate;
         }
         return 2;
@@ -90,6 +100,20 @@ pub fn utf16SequenceLenReverse(buf: []const u16) UTF16ValidationError!u2 {
 
     if (isHighSurrogate(buf[last])) {
         return error.InvalidHighSurrogate;
+    }
+
+    return 1;
+}
+
+pub fn utf16SequenceLenReverseUnChecked(buf: []const u16, end_index: usize) UTF16ValidationError!u2 {
+    if (buf.len == 0) {
+        return error.ZeroLengthUnits;
+    }
+
+    const last = end_index;
+
+    if (isLowSurrogate(buf[last])) {
+        return 2;
     }
 
     return 1;
@@ -170,7 +194,7 @@ pub fn validateU16CodePoint(buf: []const u16, offset: usize) UTF16ValidationErro
 }
 
 pub fn validateU16CodePointReverse(buf: []const u16) UTF16ValidationError!u2 {
-    const len = try utf16SequenceLenReverse(buf);
+    const len = try utf16SequenceLenReverse(buf, buf.len - 1);
     const start = buf.len - @as(usize, len);
     return try validateU16CodePoint(buf, start);
 }
@@ -207,17 +231,17 @@ pub fn validateAndDecodeU16CodePointWithLen(buf: []const u16, offset: usize, len
 
 pub fn validateAndDecodeU16CodePoint(buf: []const u16, offset: usize) UTF16ValidationError!DecodedCodePoint {
     const len = try validateU16CodePoint(buf, offset);
-    return validateAndDecodeU16CodePointWithLen(buf, offset, len);
+    return decode(buf, offset, len);
 }
 
-pub fn validateAndDecodeU16CodePointReverse(buf: []const u16) UTF16ValidationError!DecodedCodePoint {
-    const len = try utf16SequenceLenReverse(buf);
+pub fn validateAndDecodeU16CodePointReverse(buf: []const u16, end_index: usize) UTF16ValidationError!DecodedCodePoint {
+    const len = try utf16SequenceLenReverse(buf, end_index);
     const start = buf.len - @as(usize, len);
-    return validateAndDecodeU16CodePointWithLen(buf, start, len);
+    return decode(buf, start, len);
 }
 
-pub fn decodeCodePointReverse(buf: []const u16) DecodedCodePoint {
-    const len = utf16SequenceLenReverse(buf) catch unreachable;
+pub fn decodeCodePointReverse(buf: []const u16, end_index: usize) DecodedCodePoint {
+    const len = utf16SequenceLenReverseUnChecked(buf, end_index) catch unreachable;
     const start = buf.len - @as(usize, len);
     return decode(buf, start, len);
 }
@@ -225,14 +249,6 @@ pub fn decodeCodePointReverse(buf: []const u16) DecodedCodePoint {
 pub fn bufToUTF16CodePoint(buf: []const u16, offset: usize) DecodedCodePoint {
     const len = utf16SequenceLen(buf[offset]) catch unreachable;
     return decode(buf, offset, len);
-}
-
-pub fn bufToUTF16CodePointChecked(buf: []const u16, offset: usize) UTF16ValidationError!DecodedCodePoint {
-    return validateAndDecodeU16CodePoint(buf, offset);
-}
-
-pub fn bufToUTF16CodePointReverseChecked(buf: []const u16) UTF16ValidationError!DecodedCodePoint {
-    return validateAndDecodeU16CodePointReverse(buf);
 }
 
 pub const UTF16SliceError = error{
@@ -271,7 +287,7 @@ pub const UTF16ViewIterator = struct {
             return null;
         }
 
-        const code_point = decodeCodePointReverse(self.view.data[0..self.index]);
+        const code_point = decodeCodePointReverse(self.view.data, self.index);
         self.index -= @as(usize, code_point.len);
         self.curr = code_point.code_point;
 
@@ -283,7 +299,7 @@ pub const UTF16ViewIterator = struct {
             return null;
         }
 
-        return decodeCodePointReverse(self.view.data[0..self.index]).code_point;
+        return decodeCodePointReverse(self.view.data, self.index).code_point;
     }
 };
 
@@ -350,10 +366,7 @@ pub const UTF16View = struct {
             const len: u2 = if (!isHighSurrogate(unit) and !isLowSurrogate(unit))
                 1
             else
-                utf16SequenceLen(unit) catch |err| switch (err) {
-                    error.InvalidLowSurrogate => return error.InvalidLowSurrogate,
-                    else => return error.InvalidHighSurrogate,
-                };
+                utf16SequenceLenUnchecked(unit);
 
             if (len == 2) {
                 if (unit_index + 1 >= self.data.len) {
@@ -487,20 +500,20 @@ test "validateAndDecode: supplementary and scalar range" {
 }
 
 test "utf16SequenceLenReverse and validateU16CodePointReverse" {
-    try std.testing.expectError(error.ZeroLengthUnits, utf16SequenceLenReverse(&.{}));
+    try std.testing.expectError(error.ZeroLengthUnits, utf16SequenceLenReverse(&.{}, 0));
 
     const one = [_]u16{'x'};
-    try std.testing.expectEqual(@as(u2, 1), try utf16SequenceLenReverse(&one));
+    try std.testing.expectEqual(@as(u2, 1), try utf16SequenceLenReverse(&one, one.len - 1));
     try std.testing.expectEqual(@as(u2, 1), try validateU16CodePointReverse(&one));
 
     const pair = [_]u16{ 0xD83D, 0xDE00 };
-    try std.testing.expectEqual(@as(u2, 2), try utf16SequenceLenReverse(&pair));
+    try std.testing.expectEqual(@as(u2, 2), try utf16SequenceLenReverse(&pair, pair.len - 1));
     try std.testing.expectEqual(@as(u2, 2), try validateU16CodePointReverse(&pair));
 
-    try std.testing.expectError(error.InvalidLowSurrogate, utf16SequenceLenReverse(&.{low_surrogate_range_start}));
-    try std.testing.expectError(error.InvalidHighSurrogate, utf16SequenceLenReverse(&.{high_surrogate_range_start}));
+    try std.testing.expectError(error.InvalidLowSurrogate, utf16SequenceLenReverse(&.{low_surrogate_range_start}, 0));
+    try std.testing.expectError(error.InvalidHighSurrogate, utf16SequenceLenReverse(&.{high_surrogate_range_start}, 0));
     // Reverse peels legal trailing BMP (same heuristic as UTF-8 orphan lead + ASCII tail)
-    try std.testing.expectEqual(@as(u2, 1), try utf16SequenceLenReverse(&.{ high_surrogate_range_start, 0x0041 }));
+    try std.testing.expectEqual(@as(u2, 1), try utf16SequenceLenReverse(&.{ high_surrogate_range_start, 0x0041 }, 1));
 }
 
 test "encode/decode round-trip representative code points" {
@@ -535,17 +548,17 @@ test "encode rejects surrogates; buffer too small" {
 }
 
 test "checked decode rejects illegal units" {
-    try std.testing.expectError(error.InvalidLowSurrogate, bufToUTF16CodePointChecked(&.{low_surrogate_range_start}, 0));
-    try std.testing.expectError(error.IndexOutOfBounds, bufToUTF16CodePointChecked(&.{high_surrogate_range_start}, 0));
+    try std.testing.expectError(error.InvalidLowSurrogate, validateAndDecodeU16CodePoint(&.{low_surrogate_range_start}, 0));
+    try std.testing.expectError(error.IndexOutOfBounds, validateAndDecodeU16CodePoint(&.{high_surrogate_range_start}, 0));
 }
 
-test "bufToUTF16CodePointChecked and ReverseChecked agree on valid scalars" {
+test "validateAndDecodeU16CodePoint and ReverseChecked agree on valid scalars" {
     const units = [_]u16{ 'a', 0x03B1, 0xD83D, 0xDE00, 0xD7FF, 0xDBFF, 0xDFFF };
     var i: usize = 0;
     while (i < units.len) {
-        const fwd = try bufToUTF16CodePointChecked(&units, i);
+        const fwd = try validateAndDecodeU16CodePoint(&units, i);
         const prefix = units[0 .. i + fwd.len];
-        const rev = try bufToUTF16CodePointReverseChecked(prefix);
+        const rev = try validateAndDecodeU16CodePointReverse(prefix, prefix.len - 1);
         try std.testing.expectEqual(fwd.code_point, rev.code_point);
         try std.testing.expectEqual(fwd.len, rev.len);
         i += @as(usize, fwd.len);
@@ -601,18 +614,18 @@ test "utf16ViewToUTF16String and bufToUTF16String" {
 }
 
 test "hostile: unpaired and swapped surrogates" {
-    try std.testing.expectError(error.InvalidLowSurrogate, utf16SequenceLenReverse(&.{low_surrogate_range_start}));
-    try std.testing.expectError(error.InvalidHighSurrogate, utf16SequenceLenReverse(&.{high_surrogate_range_start}));
+    try std.testing.expectError(error.InvalidLowSurrogate, utf16SequenceLenReverse(&.{low_surrogate_range_start}, 1));
+    try std.testing.expectError(error.InvalidHighSurrogate, utf16SequenceLenReverse(&.{high_surrogate_range_start}, 1));
     try std.testing.expectEqual(@as(u2, 1), try validateU16CodePointReverse(&.{ low_surrogate_range_start, 'a' }));
     try std.testing.expectError(error.InvalidHighSurrogate, validateU16CodePointReverse(&.{ 'a', high_surrogate_range_start }));
 }
 
 test "hostile: reverse peels trailing BMP after invalid lead" {
-    const d = try bufToUTF16CodePointReverseChecked(&.{ high_surrogate_range_start, '(' });
+    const d = try validateAndDecodeU16CodePointReverse(&.{ high_surrogate_range_start, '(' }, 1);
     try std.testing.expectEqual(@as(CodePoint, '('), d.code_point);
     try std.testing.expectEqual(@as(u2, 1), d.len);
 
-    const tail = try bufToUTF16CodePointReverseChecked(&.{ 0xD83D, 0xD83D, '(' });
+    const tail = try validateAndDecodeU16CodePointReverse(&.{ 0xD83D, 0xD83D, '(' }, 2);
     try std.testing.expectEqual(@as(CodePoint, '('), tail.code_point);
     try std.testing.expectEqual(@as(u2, 1), tail.len);
 }
@@ -626,14 +639,13 @@ test "hostile matrix: reverse decode errors on isolated malformed buffers" {
     };
 
     for (cases) |c| {
-        try std.testing.expectError(c.expect_err, validateAndDecodeU16CodePointReverse(c.units));
-        try std.testing.expectError(c.expect_err, bufToUTF16CodePointReverseChecked(c.units));
+        try std.testing.expectError(c.expect_err, validateAndDecodeU16CodePointReverse(c.units, c.units.len - 1));
     }
 }
 
 test "hostile matrix: supplementary boundary U+10FFFF" {
     const max_pair = [_]u16{ 0xDBFF, 0xDFFF };
-    try std.testing.expectEqual(@as(CodePoint, 0x10FFFF), (try validateAndDecodeU16CodePointReverse(&max_pair)).code_point);
+    try std.testing.expectEqual(@as(CodePoint, 0x10FFFF), (try validateAndDecodeU16CodePointReverse(&max_pair, max_pair.len - 1)).code_point);
 
     try std.testing.expectError(error.InvalidLowSurrogate, validateAndDecodeU16CodePoint(&.{ 0xDBFF, 0xE000 }, 0));
 }
