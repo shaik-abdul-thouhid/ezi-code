@@ -30,7 +30,7 @@ fn buildUtf16Corpus(allocator: std.mem.Allocator, utf8_corpus: []const u8) ![]u1
 fn benchReverseFullScan(corpus: []const u16) !void {
     var off = corpus.len;
     while (off > 0) {
-        const cp = try utf16.bufToUTF16CodePointReverseChecked(corpus[0..off]);
+        const cp = try utf16.validateAndDecodeU16CodePointReverse(corpus, off - 1);
         off -= @as(usize, cp.len);
     }
 }
@@ -76,7 +76,7 @@ pub fn runSuite(comptime suite_title: []const u8, utf8_corpus: []const u8, inner
             while (r < inner.validate_scan) : (r += 1) {
                 var i: usize = 0;
                 while (i < corpus.len) {
-                    const cp = try utf16.bufToUTF16CodePointChecked(corpus, i);
+                    const cp = try utf16.validateAndDecodeU16CodePoint(corpus, i);
                     i += @as(usize, cp.len);
                 }
             }

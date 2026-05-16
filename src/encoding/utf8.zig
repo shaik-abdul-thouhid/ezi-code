@@ -195,7 +195,7 @@ pub fn utf8EncodeLen(code_point: CodePoint) UTF8EncodeError!u3 {
     };
 }
 
-pub fn isContinuationByte(byte: u8) bool {
+pub inline fn isContinuationByte(byte: u8) bool {
     return (byte & continuation_sequence_mask) == continuation_sequence;
 }
 
