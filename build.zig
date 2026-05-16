@@ -1,0 +1,87 @@
+const std = @import("std");
+
+pub fn build(b: *std.Build) void {
+    const target = b.standardTargetOptions(.{});
+    const optimize = b.standardOptimizeOption(.{});
+
+    const utils_module = b.addModule("utils", .{
+        .root_source_file = b.path("src/utils/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const encoding_module = b.addModule("encoding", .{
+        .root_source_file = b.path("src/encoding/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "utils", .module = utils_module },
+        },
+    });
+
+    const ezi_code_module = b.addModule("ezi_code", .{
+        .root_source_file = b.path("src/root.zig"),
+        .target = target,
+        .imports = &.{
+            .{ .name = "utils", .module = utils_module },
+            .{ .name = "encoding", .module = encoding_module },
+        },
+    });
+
+    const exe = b.addExecutable(.{
+        .name = "ezi_code",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "ezi_code", .module = ezi_code_module },
+            },
+        }),
+    });
+
+    b.installArtifact(exe);
+
+    const run_step = b.step("run", "Run the app");
+
+    const run_cmd = b.addRunArtifact(exe);
+    run_step.dependOn(&run_cmd.step);
+
+    run_cmd.step.dependOn(b.getInstallStep());
+
+    if (b.args) |args| {
+        run_cmd.addArgs(args);
+    }
+
+    const mod_tests = b.addTest(.{
+        .root_module = ezi_code_module,
+    });
+
+    const run_mod_tests = b.addRunArtifact(mod_tests);
+
+    const exe_tests = b.addTest(.{
+        .root_module = exe.root_module,
+    });
+
+    const run_exe_tests = b.addRunArtifact(exe_tests);
+
+    const test_step = b.step("test", "Run tests");
+    test_step.dependOn(&run_mod_tests.step);
+    test_step.dependOn(&run_exe_tests.step);
+
+    const bench_exe = b.addExecutable(.{
+        .name = "bench",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("bench/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .imports = &.{
+                .{ .name = "ezi_code", .module = ezi_code_module },
+            },
+        }),
+    });
+    const run_bench = b.addRunArtifact(bench_exe);
+    const bench_step = b.step("bench", "Run UTF-8, UTF-16, UTF-32, and u8↔u16 benchmarks (mean of 7 samples)");
+    bench_step.dependOn(&run_bench.step);
+}
