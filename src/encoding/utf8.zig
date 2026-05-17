@@ -7,7 +7,7 @@ const INVALID_CODE_POINT = encoding.INVALID_CODE_POINT;
 const encoding_range_start = 0x0000;
 const encoding_range_end = 0x10FFFF;
 
-pub const max_ascii = 0x7F;
+const max_ascii = encoding.max_ascii;
 
 // Surrogate range
 const surrogate_range_start = 0xD800;
@@ -230,21 +230,104 @@ fn isLeaderByte(byte: u8) bool {
     };
 }
 
-/// the len argument expects an optimistic len of the code point
-fn validateAndDecodeCodePointBytesWithLenLossy(bytes: []const u8, offset: usize, len: u3) UTF8ValidationLossyError!DecodedCodePointLossy {
-    if (bytes.len == 0) {
-        return UTF8ValidationLossyError.ZeroLengthBytes;
-    } else if (offset >= bytes.len) {
-        return UTF8ValidationLossyError.IndexOutOfBounds;
+fn validateAndDecodeNonAscii(bytes: []const u8, offset: usize, len: u3) UTF8ValidationError!DecodedCodePoint {
+    if (offset + len > bytes.len) {
+        return UTF8ValidationError.IndexOutOfBounds;
     }
 
-    const remaining = bytes.len - offset;
+    // Validate continuation bytes
+    if (!isContinuationByte(bytes[offset + 1])) {
+        return UTF8ValidationError.InvalidContinuationByte;
+    }
+
+    if (len >= 3 and !isContinuationByte(bytes[offset + 2])) {
+        return UTF8ValidationError.InvalidContinuationByte;
+    }
+
+    if (len == 4 and !isContinuationByte(bytes[offset + 3])) {
+        return UTF8ValidationError.InvalidContinuationByte;
+    }
+
+    // Structural UTF-8 legality constraints
+
+    var code_point: CodePoint = undefined;
+
+    if (len == 2) {
+        code_point = (@as(CodePoint, bytes[offset] & two_byte_payload_mask) << 6) |
+            (@as(CodePoint, bytes[offset + 1] & continuation_payload_mask));
+
+        return .{ .code_point = code_point, .len = 2 };
+    }
+
+    if (len == 3) {
+        if (bytes[offset] == 0xE0 and bytes[offset + 1] < 0xA0) {
+            return UTF8ValidationError.OverlongEncoding;
+        } else if (bytes[offset] == 0xED and bytes[offset + 1] >= 0xA0) {
+            return UTF8ValidationError.SurrogateCodePoint;
+        }
+
+        code_point = (@as(CodePoint, bytes[offset] & three_byte_payload_mask) << 12) |
+            (@as(CodePoint, bytes[offset + 1] & continuation_payload_mask) << 6) |
+            (@as(CodePoint, bytes[offset + 2] & continuation_payload_mask));
+
+        return .{ .code_point = code_point, .len = 3 };
+    }
+
+    if (len == 4) {
+        if (bytes[offset] == 0xF0 and bytes[offset + 1] < 0x90) {
+            return UTF8ValidationError.OverlongEncoding;
+        } else if (bytes[offset] == 0xF4 and bytes[offset + 1] > 0x8F) {
+            return UTF8ValidationError.CodePointTooLarge;
+        }
+
+        code_point = (@as(CodePoint, bytes[offset] & four_byte_payload_mask) << 18) |
+            (@as(CodePoint, bytes[offset + 1] & continuation_payload_mask) << 12) |
+            (@as(CodePoint, bytes[offset + 2] & continuation_payload_mask) << 6) |
+            (@as(CodePoint, bytes[offset + 3] & continuation_payload_mask));
+
+        return .{ .code_point = code_point, .len = 4 };
+    }
+
+    unreachable;
+}
+
+/// Pass entire string with offset to avoid reconstructing slice struct in hot paths.
+inline fn validateAndDecodeCodePointBytesWithLen(bytes: []const u8, offset: usize, len: u3) UTF8ValidationError!DecodedCodePoint {
+    if (bytes.len - offset < @as(usize, len)) {
+        return UTF8ValidationError.IndexOutOfBounds;
+    }
 
     // ASCII fast path
     if (len == 1) {
         @branchHint(.likely);
         return .{ .code_point = bytes[offset], .len = 1 };
     }
+
+    return validateAndDecodeNonAscii(bytes, offset, len);
+}
+
+pub inline fn validateAndDecodeCodePointBytes(bytes: []const u8, offset: usize) UTF8ValidationError!DecodedCodePoint {
+    if (bytes.len == 0) {
+        return UTF8ValidationError.ZeroLengthBytes;
+    } else if (offset >= bytes.len) {
+        return UTF8ValidationError.IndexOutOfBounds;
+    }
+
+    const b = bytes[offset];
+
+    if (b <= max_ascii) {
+        @branchHint(.likely);
+        return .{ .code_point = @as(CodePoint, b), .len = 1 };
+    }
+
+    const len = try codePointLen(bytes[offset]);
+
+    return validateAndDecodeNonAscii(bytes, offset, len);
+}
+
+/// the len argument expects an optimistic len of the code point
+fn validateAndDecodeCodePointBytesWithLenLossy(bytes: []const u8, offset: usize, len: u3) UTF8ValidationLossyError!DecodedCodePointLossy {
+    const remaining = bytes.len - offset;
 
     if (len > 1 and len <= 4) {
         // validate if the successive byte is an continuation sequence
@@ -322,92 +405,6 @@ fn validateAndDecodeCodePointBytesWithLenLossy(bytes: []const u8, offset: usize,
     unreachable;
 }
 
-/// Pass entire string with offset to avoid reconstructing slice struct in hot paths.
-fn validateAndDecodeCodePointBytesWithLen(bytes: []const u8, offset: usize, len: u3) UTF8ValidationError!DecodedCodePoint {
-    if (bytes.len == 0) {
-        return UTF8ValidationError.ZeroLengthBytes;
-    } else if (offset >= bytes.len) {
-        return UTF8ValidationError.IndexOutOfBounds;
-    }
-
-    if (bytes.len - offset < @as(usize, len)) {
-        return UTF8ValidationError.IndexOutOfBounds;
-    }
-
-    // ASCII fast path
-    if (len == 1) {
-        @branchHint(.likely);
-        return .{ .code_point = bytes[offset], .len = 1 };
-    }
-
-    // Validate continuation bytes
-    if (!isContinuationByte(bytes[offset + 1])) {
-        return UTF8ValidationError.InvalidContinuationByte;
-    }
-
-    if (len >= 3 and !isContinuationByte(bytes[offset + 2])) {
-        return UTF8ValidationError.InvalidContinuationByte;
-    }
-
-    if (len == 4 and !isContinuationByte(bytes[offset + 3])) {
-        return UTF8ValidationError.InvalidContinuationByte;
-    }
-
-    // Structural UTF-8 legality constraints
-
-    var code_point: CodePoint = undefined;
-
-    if (len == 2) {
-        code_point = (@as(CodePoint, bytes[offset] & two_byte_payload_mask) << 6) |
-            (@as(CodePoint, bytes[offset + 1] & continuation_payload_mask));
-
-        return .{ .code_point = code_point, .len = 2 };
-    }
-
-    if (len == 3) {
-        if (bytes[offset] == 0xE0 and bytes[offset + 1] < 0xA0) {
-            return UTF8ValidationError.OverlongEncoding;
-        } else if (bytes[offset] == 0xED and bytes[offset + 1] >= 0xA0) {
-            return UTF8ValidationError.SurrogateCodePoint;
-        }
-
-        code_point = (@as(CodePoint, bytes[offset] & three_byte_payload_mask) << 12) |
-            (@as(CodePoint, bytes[offset + 1] & continuation_payload_mask) << 6) |
-            (@as(CodePoint, bytes[offset + 2] & continuation_payload_mask));
-
-        return .{ .code_point = code_point, .len = 3 };
-    }
-
-    if (len == 4) {
-        if (bytes[offset] == 0xF0 and bytes[offset + 1] < 0x90) {
-            return UTF8ValidationError.OverlongEncoding;
-        } else if (bytes[offset] == 0xF4 and bytes[offset + 1] > 0x8F) {
-            return UTF8ValidationError.CodePointTooLarge;
-        }
-
-        code_point = (@as(CodePoint, bytes[offset] & four_byte_payload_mask) << 18) |
-            (@as(CodePoint, bytes[offset + 1] & continuation_payload_mask) << 12) |
-            (@as(CodePoint, bytes[offset + 2] & continuation_payload_mask) << 6) |
-            (@as(CodePoint, bytes[offset + 3] & continuation_payload_mask));
-
-        return .{ .code_point = code_point, .len = 4 };
-    }
-
-    unreachable;
-}
-
-pub fn validateAndDecodeCodePointBytes(bytes: []const u8, offset: usize) UTF8ValidationError!DecodedCodePoint {
-    if (bytes.len == 0) {
-        return UTF8ValidationError.ZeroLengthBytes;
-    } else if (offset >= bytes.len) {
-        return UTF8ValidationError.IndexOutOfBounds;
-    }
-
-    const len = try codePointLen(bytes[offset]);
-
-    return validateAndDecodeCodePointBytesWithLen(bytes, offset, len);
-}
-
 pub fn validateAndDecodeCodePointBytesLossy(bytes: []const u8, offset: usize) UTF8ValidationLossyError!DecodedCodePointLossy {
     if (bytes.len == 0) {
         return UTF8ValidationLossyError.ZeroLengthBytes;
@@ -415,16 +412,15 @@ pub fn validateAndDecodeCodePointBytesLossy(bytes: []const u8, offset: usize) UT
         return UTF8ValidationLossyError.IndexOutOfBounds;
     }
 
+    const b = bytes[offset];
+
+    if (b <= max_ascii) {
+        return .{ .code_point = @as(CodePoint, b), .len = 1 };
+    }
+
     const len = codePointLenLossy(bytes[offset]);
 
     return validateAndDecodeCodePointBytesWithLenLossy(bytes, offset, len);
-}
-
-pub fn validateAndDecodeCodePointBytesReverse(bytes: []const u8, end_index: usize) UTF8ValidationError!DecodedCodePoint {
-    const len = try codePointLenReverse(bytes, end_index);
-    const start = end_index + 1 - @as(usize, len);
-
-    return validateAndDecodeCodePointBytesWithLen(bytes, start, len);
 }
 
 pub fn codePointLenReverse(bytes: []const u8, end_index: usize) UTF8ValidationError!u3 {
@@ -455,11 +451,53 @@ pub fn codePointLenReverse(bytes: []const u8, end_index: usize) UTF8ValidationEr
     return len;
 }
 
+pub fn codePointLenReverseUnchecked(bytes: []const u8, end_index: usize) UTF8ValidationError!u3 {
+    if (bytes.len == 0) {
+        @branchHint(.unlikely);
+        return UTF8ValidationError.ZeroLengthBytes;
+    } else if (end_index >= bytes.len) {
+        @branchHint(.unlikely);
+        return UTF8ValidationError.IndexOutOfBounds;
+    }
+
+    var start = end_index;
+
+    while (start > 0 and isContinuationByte(bytes[start])) {
+        start -= 1;
+    }
+
+    return @as(u3, @intCast(end_index - start + 1));
+}
+
+pub fn validateAndDecodeCodePointBytesReverse(bytes: []const u8, end_index: usize) UTF8ValidationError!DecodedCodePoint {
+    if (bytes.len == 0) {
+        return UTF8ValidationError.ZeroLengthBytes;
+    } else if (end_index >= bytes.len) {
+        return UTF8ValidationError.IndexOutOfBounds;
+    }
+
+    // ASCII fast path
+    if (bytes[end_index] <= max_ascii) {
+        @branchHint(.likely);
+        return .{ .code_point = bytes[end_index], .len = 1 };
+    }
+
+    const len = try codePointLenReverse(bytes, end_index);
+
+    const start = end_index + 1 - @as(usize, len);
+
+    return validateAndDecodeCodePointBytesWithLen(bytes, start, len);
+}
+
 fn validateCodePointBytesReverse(bytes: []const u8, end_index: usize) UTF8ValidationError!u3 {
     if (bytes.len == 0) {
         return UTF8ValidationError.ZeroLengthBytes;
     } else if (end_index >= bytes.len) {
         return UTF8ValidationError.IndexOutOfBounds;
+    }
+
+    if (bytes[end_index] <= max_ascii) {
+        return 1;
     }
 
     var start = end_index;
@@ -602,8 +640,19 @@ fn decodeCodePointReverse(bytes: []const u8, end_index: usize) DecodedCodePoint 
     return decode(bytes, start, len);
 }
 
+fn decodeCodePointReverseUnchecked(bytes: []const u8, end_index: usize) DecodedCodePoint {
+    const len = codePointLenReverseUnchecked(bytes, end_index) catch unreachable;
+    const start = end_index + 1 - @as(usize, len);
+
+    return decode(bytes, start, len);
+}
+
 fn bytesToUTF8CodePoint(bytes: []const u8, offset: usize) DecodedCodePoint {
     const len = codePointLen(bytes[offset]) catch unreachable;
+
+    if (len == 1 and bytes[offset] <= max_ascii) {
+        return .{ .code_point = @as(CodePoint, bytes[offset]), .len = 1 };
+    }
 
     return decode(bytes, offset, len);
 }
@@ -645,7 +694,7 @@ pub const UTF8ViewIterator = struct {
             return null;
         }
 
-        const code_point = decodeCodePointReverse(self.view.data, self.index - 1);
+        const code_point = decodeCodePointReverseUnchecked(self.view.data, self.index - 1);
 
         self.index -= @as(usize, code_point.len);
         self.curr = code_point.code_point;
@@ -658,7 +707,7 @@ pub const UTF8ViewIterator = struct {
             return null;
         }
 
-        return decodeCodePointReverse(self.view.data, self.index - 1).code_point;
+        return decodeCodePointReverseUnchecked(self.view.data, self.index - 1).code_point;
     }
 };
 
@@ -1415,30 +1464,30 @@ test "hostile: utf8ViewToUTF8String buffer too small path" {
 
 // --- Hostile error matrix: wrong inputs → exact expected errors ----------------
 
-test "hostile matrix: validateAndDecodeCodePointBytesWithLen length contract" {
+test "hostile matrix: validateAndDecodeCodePointBytes length contract" {
     // Empty buffer
     try std.testing.expectError(
         error.ZeroLengthBytes,
-        validateAndDecodeCodePointBytesWithLen(&.{}, 0, 1),
+        validateAndDecodeCodePointBytes(&.{}, 0),
     );
     try std.testing.expectError(
         error.IndexOutOfBounds,
-        validateAndDecodeCodePointBytesWithLen("a", 0, 2),
+        validateAndDecodeCodePointBytes("a", 1),
     );
     try std.testing.expectError(
         error.IndexOutOfBounds,
-        validateAndDecodeCodePointBytesWithLen(&.{ 0xC3, 0xA9 }, 0, 3),
+        validateAndDecodeCodePointBytes(&.{ 0xC3, 0xA9 }, 2),
     );
     // Wrong continuation for claimed 2-byte decode
     try std.testing.expectError(
         error.InvalidContinuationByte,
-        validateAndDecodeCodePointBytesWithLen(&.{ 0xC2, 0x28 }, 0, 2),
+        validateAndDecodeCodePointBytes(&.{ 0xC2, 0x28 }, 0),
     );
-    // WithLen does not consult codePointLen(bytes[0]); high bit + len 1 is accepted (caller obligation)
-    const hi = try validateAndDecodeCodePointBytesWithLen(&.{0x80}, 0, 1);
-    try std.testing.expectEqual(@as(CodePoint, 0x80), hi.code_point);
+    //  does not consult codePointLen(bytes[0]); high bit + len 1 is accepted (caller obligation)
+    const hi = validateAndDecodeCodePointBytes(&.{0x80}, 0);
+    try std.testing.expectError(UTF8ValidationError.InvalidByteSequence, hi);
 
-    const pi = try validateAndDecodeCodePointBytesWithLen("π", 0, 2);
+    const pi = try validateAndDecodeCodePointBytes("π", 0);
     try std.testing.expectEqual(@as(CodePoint, 0x03C0), pi.code_point);
 }
 
@@ -1468,11 +1517,11 @@ test "hostile matrix: validateAndDecode forwards match bytesToUTF8CodePointCheck
     // Where codePointLen(lead) exists, validateAndDecodeCodePointBytesWithLen uses the same body
     try std.testing.expectError(
         error.OverlongEncoding,
-        validateAndDecodeCodePointBytesWithLen(&.{ 0xE0, 0x80, 0x80 }, 0, 3),
+        validateAndDecodeCodePointBytes(&.{ 0xE0, 0x80, 0x80 }, 0),
     );
     try std.testing.expectError(
         error.IndexOutOfBounds,
-        validateAndDecodeCodePointBytesWithLen(&.{0xC2}, 0, 2),
+        validateAndDecodeCodePointBytes(&.{0xC2}, 0),
     );
 }
 

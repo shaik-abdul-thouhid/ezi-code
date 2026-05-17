@@ -5,6 +5,7 @@ pub const utf16 = @import("utf16.zig");
 pub const utf32 = @import("utf32.zig");
 
 pub const CodePoint = u21;
+pub const max_ascii = 0x7F;
 
 pub const INVALID_CODE_POINT: CodePoint = 0xFFFD;
 

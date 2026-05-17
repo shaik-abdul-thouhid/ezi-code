@@ -5,6 +5,8 @@ const encoding = @import("root.zig");
 const CodePoint = encoding.CodePoint;
 const INVALID_CODE_POINT = encoding.INVALID_CODE_POINT;
 
+const max_ascii = encoding.max_ascii;
+
 const encoding_range_end = 0x10FFFF;
 const supplementary_offset: CodePoint = 0x10000;
 
@@ -73,6 +75,10 @@ fn validateDecodedScalar(code_point: CodePoint) UTF16ValidationError!void {
 }
 
 pub fn utf16SequenceLen(c16: u16) UTF16ValidationError!u2 {
+    if (c16 <= max_ascii) {
+        return 1;
+    }
+
     if (isHighSurrogate(c16)) {
         return 2;
     }
@@ -86,6 +92,10 @@ pub fn utf16SequenceLen(c16: u16) UTF16ValidationError!u2 {
 
 /// Returns `0` for any invalid optimistic sequence
 fn utf16SequenceLenLossy(c16: u16) u2 {
+    if (c16 <= max_ascii) {
+        return 1;
+    }
+
     if (isHighSurrogate(c16)) {
         return 2;
     }
@@ -93,6 +103,7 @@ fn utf16SequenceLenLossy(c16: u16) u2 {
     if (isLowSurrogate(c16)) {
         return 0;
     }
+
     return 1;
 }
 
@@ -110,6 +121,10 @@ pub fn utf16SequenceLenReverse(buf: []const u16, end_index: usize) UTF16Validati
         return error.ZeroLengthUnits;
     } else if (buf.len <= end_index) {
         return error.IndexOutOfBounds;
+    }
+
+    if (buf[end_index] <= max_ascii) {
+        return 1;
     }
 
     const last = end_index;
@@ -131,6 +146,10 @@ pub fn utf16SequenceLenReverse(buf: []const u16, end_index: usize) UTF16Validati
 fn utf16SequenceLenReverseUnchecked(buf: []const u16, end_index: usize) UTF16ValidationError!u2 {
     if (buf.len == 0) {
         return error.ZeroLengthUnits;
+    }
+
+    if (buf[end_index] <= max_ascii) {
+        return 1;
     }
 
     const last = end_index;
@@ -203,10 +222,16 @@ pub fn validateU16CodePoint(buf: []const u16, offset: usize) UTF16ValidationErro
         return error.IndexOutOfBounds;
     }
 
+    if (buf[offset] <= max_ascii) {
+        return 1;
+    }
+
     const len = try utf16SequenceLen(buf[offset]);
 
     if (buf.len - offset < @as(usize, len)) {
         return error.IndexOutOfBounds;
+    } else if (len == 1) {
+        return 1;
     }
 
     if (len == 2 and !isLowSurrogate(buf[offset + 1])) {
@@ -221,7 +246,17 @@ pub fn validateU16CodePointReverse(buf: []const u16) UTF16ValidationError!u2 {
         return error.ZeroLengthUnits;
     }
 
+    if (buf[buf.len - 1] <= max_ascii) {
+        @branchHint(.likely);
+        return 1;
+    }
+
     const len = try utf16SequenceLenReverse(buf, buf.len - 1);
+
+    if (len == 1) {
+        return 1;
+    }
+
     const start = buf.len - @as(usize, len);
     return try validateU16CodePoint(buf, start);
 }
@@ -236,6 +271,10 @@ fn validateAndDecodeU16CodePointWithLen(buf: []const u16, offset: usize, len: u2
 
     if (buf.len - offset < @as(usize, len)) {
         return error.IndexOutOfBounds;
+    }
+
+    if (len == 1) {
+        return .{ .code_point = @as(CodePoint, buf[offset]), .len = 1 };
     }
 
     if (len == 2) {
@@ -266,6 +305,10 @@ pub fn validateAndDecodeU16CodePointLossy(buf: []const u16, offset: usize) UTF16
         return UTF16ValidationLossyError.ZeroLengthUnits;
     } else if (offset >= buf.len) {
         return UTF16ValidationLossyError.IndexOutOfBounds;
+    }
+
+    if (buf[offset] <= max_ascii) {
+        return .{ .code_point = @as(CodePoint, buf[offset]), .len = 1 };
     }
 
     const optimistic_len = utf16SequenceLenLossy(buf[offset]);
@@ -314,18 +357,34 @@ pub fn validateAndDecodeU16CodePointLossy(buf: []const u16, offset: usize) UTF16
 
 pub fn validateAndDecodeU16CodePointReverse(buf: []const u16, end_index: usize) UTF16ValidationError!DecodedCodePoint {
     const len = try utf16SequenceLenReverse(buf, end_index);
+
+    if (len == 1) {
+        return .{ .code_point = @as(CodePoint, buf[end_index]), .len = 1 };
+    }
+
     const start = end_index + 1 - @as(usize, len);
     return decode(buf, start, len);
 }
 
 fn decodeCodePointReverse(buf: []const u16, end_index: usize) DecodedCodePoint {
     const len = utf16SequenceLenReverseUnchecked(buf, end_index) catch unreachable;
+
+    if (len == 1) {
+        @branchHint(.likely);
+        return .{ .code_point = @as(CodePoint, buf[end_index]), .len = 1 };
+    }
+
     const start = end_index + 1 - @as(usize, len);
     return decode(buf, start, len);
 }
 
 fn decodeCodePoint(buf: []const u16, offset: usize) DecodedCodePoint {
     const len = utf16SequenceLen(buf[offset]) catch unreachable;
+
+    if (len == 1) {
+        return .{ .code_point = @as(CodePoint, buf[offset]), .len = 1 };
+    }
+
     return decode(buf, offset, len);
 }
 
@@ -392,13 +451,7 @@ pub const UTF16View = struct {
         while (i < self.data.len) {
             const unit = self.data[i];
 
-            if (!isHighSurrogate(unit) and !isLowSurrogate(unit)) {
-                i += 1;
-                count += 1;
-                continue;
-            }
-
-            const len = utf16SequenceLen(unit) catch unreachable;
+            const len = utf16SequenceLenUnchecked(unit);
             i += @as(usize, len);
             count += 1;
         }
