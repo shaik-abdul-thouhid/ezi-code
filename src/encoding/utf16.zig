@@ -309,13 +309,13 @@ pub fn validateAndDecodeU16CodePointLossy(buf: []const u16, offset: usize) UTF16
 
 pub fn validateAndDecodeU16CodePointReverse(buf: []const u16, end_index: usize) UTF16ValidationError!DecodedCodePoint {
     const len = try utf16SequenceLenReverse(buf, end_index);
-    const start = buf.len - @as(usize, len);
+    const start = end_index + 1 - @as(usize, len);
     return decode(buf, start, len);
 }
 
 pub fn decodeCodePointReverse(buf: []const u16, end_index: usize) DecodedCodePoint {
     const len = utf16SequenceLenReverseUnChecked(buf, end_index) catch unreachable;
-    const start = buf.len - @as(usize, len);
+    const start = end_index + 1 - @as(usize, len);
     return decode(buf, start, len);
 }
 
