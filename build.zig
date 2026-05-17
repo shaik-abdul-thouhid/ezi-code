@@ -100,7 +100,6 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("bench/main.zig"),
             .target = target,
             .optimize = optimize,
-            .link_libc = true,
             .imports = &.{
                 .{ .name = "ezi_code", .module = ezi_code_module },
             },
@@ -109,4 +108,63 @@ pub fn build(b: *std.Build) void {
     const run_bench = b.addRunArtifact(bench_exe);
     const bench_step = b.step("bench", "Run UTF-8, UTF-16, UTF-32, and u8↔u16 benchmarks (mean of 7 samples)");
     bench_step.dependOn(&run_bench.step);
+
+    const transcoding_fuzz_exe = b.addExecutable(.{
+        .name = "utf16_fuzz",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/fuzz/transcoding.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "ezi_code", .module = ezi_code_module },
+            },
+        }),
+    });
+
+    const utf32_fuzz_exe = b.addExecutable(.{
+        .name = "utf16_fuzz",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/fuzz/utf32.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "ezi_code", .module = ezi_code_module },
+            },
+        }),
+    });
+
+    const utf16_fuzz_exe = b.addExecutable(.{
+        .name = "utf16_fuzz",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/fuzz/utf16.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "ezi_code", .module = ezi_code_module },
+            },
+        }),
+    });
+
+    const utf8_fuzz_exe = b.addExecutable(.{
+        .name = "utf8_fuzz",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/fuzz/utf8.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "ezi_code", .module = ezi_code_module },
+            },
+        }),
+    });
+
+    const transcoding_fuzz = b.addRunArtifact(transcoding_fuzz_exe);
+    const utf32_fuzz = b.addRunArtifact(utf32_fuzz_exe);
+    const utf16_fuzz = b.addRunArtifact(utf16_fuzz_exe);
+    const utf8_fuzz = b.addRunArtifact(utf8_fuzz_exe);
+
+    const fuzz_step = b.step("fuzz", "Run all fuzz in tests/fuzz directory");
+    fuzz_step.dependOn(&transcoding_fuzz.step);
+    fuzz_step.dependOn(&utf32_fuzz.step);
+    fuzz_step.dependOn(&utf16_fuzz.step);
+    fuzz_step.dependOn(&utf8_fuzz.step);
 }
