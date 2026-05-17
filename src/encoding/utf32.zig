@@ -3,6 +3,7 @@ const utils = @import("utils");
 const encoding = @import("root.zig");
 
 const CodePoint = encoding.CodePoint;
+const INVALID_CODE_POINT = encoding.INVALID_CODE_POINT;
 
 const encoding_range_end: CodePoint = 0x10FFFF;
 

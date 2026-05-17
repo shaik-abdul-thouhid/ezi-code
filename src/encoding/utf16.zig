@@ -3,6 +3,7 @@ const utils = @import("utils");
 const encoding = @import("root.zig");
 
 const CodePoint = encoding.CodePoint;
+const INVALID_CODE_POINT = encoding.INVALID_CODE_POINT;
 
 const encoding_range_end = 0x10FFFF;
 const supplementary_offset: CodePoint = 0x10000;
@@ -28,6 +29,11 @@ const DecodedCodePoint = struct {
     len: u2,
 };
 
+const DecodedCodePointLossy = struct {
+    code_point: CodePoint,
+    len: usize,
+};
+
 pub const UTF16ValidationError = error{
     ZeroLengthUnits,
     IndexOutOfBounds,
@@ -35,6 +41,11 @@ pub const UTF16ValidationError = error{
     InvalidHighSurrogate,
     SurrogateCodePoint,
     CodePointTooLarge,
+};
+
+const UTF16ValidationLossyError = error{
+    ZeroLengthBytes,
+    IndexOutOfBounds,
 };
 
 pub const UTF16EncodeError = error{
@@ -70,6 +81,18 @@ pub fn utf16SequenceLen(c16: u16) UTF16ValidationError!u2 {
         return error.InvalidLowSurrogate;
     }
 
+    return 1;
+}
+
+/// Returns `0` for any invalid optimistic sequence
+pub fn utf16SequenceLenLossy(c16: u16) u2 {
+    if (isHighSurrogate(c16)) {
+        return 2;
+    }
+
+    if (isLowSurrogate(c16)) {
+        return 0;
+    }
     return 1;
 }
 
@@ -200,7 +223,7 @@ pub fn validateU16CodePointReverse(buf: []const u16) UTF16ValidationError!u2 {
 }
 
 /// Pass entire buffer with offset to avoid reconstructing slice struct in hot paths.
-pub fn validateAndDecodeU16CodePointWithLen(buf: []const u16, offset: usize, len: u2) UTF16ValidationError!DecodedCodePoint {
+fn validateAndDecodeU16CodePointWithLen(buf: []const u16, offset: usize, len: u2) UTF16ValidationError!DecodedCodePoint {
     if (buf.len == 0) {
         return error.ZeroLengthUnits;
     } else if (offset >= buf.len) {
@@ -234,6 +257,56 @@ pub fn validateAndDecodeU16CodePoint(buf: []const u16, offset: usize) UTF16Valid
     return decode(buf, offset, len);
 }
 
+pub fn validateAndDecodeU16CodePointLossy(buf: []const u16, offset: usize) UTF16ValidationLossyError!DecodedCodePointLossy {
+    if (buf.len == 0) {
+        return UTF16ValidationLossyError.ZeroLengthBytes;
+    } else if (offset >= buf.len) {
+        return UTF16ValidationLossyError.IndexOutOfBounds;
+    }
+
+    const optimistic_len = utf16SequenceLenLossy(buf[offset]);
+
+    if (offset + @as(usize, optimistic_len) > buf.len) {
+        // the only expected len that could cause this
+        // branch is for 2 surrogate pairs
+        return .{ .code_point = INVALID_CODE_POINT, .len = 1 };
+    }
+
+    if (optimistic_len == 1) {
+        const code_point_offset = @as(CodePoint, buf[offset]);
+
+        return .{ .code_point = code_point_offset, .len = 1 };
+    } else if (optimistic_len == 2) {
+        // the first byte is expected to be a high surrogate
+        if (!isLowSurrogate(buf[offset + 1])) {
+            return .{ .code_point = INVALID_CODE_POINT, .len = 1 };
+        }
+
+        const decoded = decode(buf, offset, optimistic_len);
+        validateDecodedScalar(decoded.code_point) catch {
+            return .{ .code_point = INVALID_CODE_POINT, .len = 2 };
+        };
+
+        return .{ .code_point = decoded.code_point, .len = decoded.len };
+    }
+
+    // crunch all low surrogates
+    if (optimistic_len == 0) {
+        var i: usize = 0;
+
+        loop: while (offset + i < buf.len) {
+            if (!isLowSurrogate(buf[offset + i])) {
+                break :loop;
+            }
+            i += 1;
+        }
+
+        return .{ .code_point = INVALID_CODE_POINT, .len = i };
+    }
+
+    unreachable;
+}
+
 pub fn validateAndDecodeU16CodePointReverse(buf: []const u16, end_index: usize) UTF16ValidationError!DecodedCodePoint {
     const len = try utf16SequenceLenReverse(buf, end_index);
     const start = buf.len - @as(usize, len);
@@ -246,7 +319,7 @@ pub fn decodeCodePointReverse(buf: []const u16, end_index: usize) DecodedCodePoi
     return decode(buf, start, len);
 }
 
-pub fn bufToUTF16CodePoint(buf: []const u16, offset: usize) DecodedCodePoint {
+pub fn decodeCodePoint(buf: []const u16, offset: usize) DecodedCodePoint {
     const len = utf16SequenceLen(buf[offset]) catch unreachable;
     return decode(buf, offset, len);
 }
@@ -267,7 +340,7 @@ pub const UTF16ViewIterator = struct {
             return null;
         }
 
-        const code_point = bufToUTF16CodePoint(self.view.data, self.index);
+        const code_point = decodeCodePoint(self.view.data, self.index);
         self.index += @as(usize, code_point.len);
         self.curr = code_point.code_point;
 
@@ -279,7 +352,7 @@ pub const UTF16ViewIterator = struct {
             return null;
         }
 
-        return bufToUTF16CodePoint(self.view.data, self.index).code_point;
+        return decodeCodePoint(self.view.data, self.index).code_point;
     }
 
     pub fn previous(self: *UTF16ViewIterator) ?CodePoint {
@@ -702,4 +775,149 @@ test "hostile: supplementary encode/decode sweep" {
         try std.testing.expectEqual(cp, d.code_point);
         try std.testing.expectEqual(len, d.len);
     }
+}
+
+test "lossy: valid BMP scalar" {
+    const d = try validateAndDecodeU16CodePointLossy(&.{0x0041}, 0);
+
+    try std.testing.expectEqual(@as(CodePoint, 'A'), d.code_point);
+    try std.testing.expectEqual(@as(usize, 1), d.len);
+}
+
+test "lossy: valid surrogate pair" {
+    const d = try validateAndDecodeU16CodePointLossy(
+        &.{ 0xD83D, 0xDE00 },
+        0,
+    );
+
+    try std.testing.expectEqual(@as(CodePoint, 0x1F600), d.code_point);
+    try std.testing.expectEqual(@as(usize, 2), d.len);
+}
+
+test "lossy: lone high surrogate becomes replacement" {
+    const d = try validateAndDecodeU16CodePointLossy(
+        &.{0xD83D},
+        0,
+    );
+
+    try std.testing.expectEqual(INVALID_CODE_POINT, d.code_point);
+    try std.testing.expectEqual(@as(usize, 1), d.len);
+}
+
+test "lossy: high surrogate followed by BMP becomes replacement len1" {
+    const d = try validateAndDecodeU16CodePointLossy(
+        &.{ 0xD83D, 'A' },
+        0,
+    );
+
+    try std.testing.expectEqual(INVALID_CODE_POINT, d.code_point);
+    try std.testing.expectEqual(@as(usize, 1), d.len);
+}
+
+test "lossy: lone low surrogate becomes replacement" {
+    const d = try validateAndDecodeU16CodePointLossy(
+        &.{0xDE00},
+        0,
+    );
+
+    try std.testing.expectEqual(INVALID_CODE_POINT, d.code_point);
+    try std.testing.expectEqual(@as(usize, 1), d.len);
+}
+
+test "lossy: consecutive low surrogates collapse into one replacement" {
+    const d = try validateAndDecodeU16CodePointLossy(
+        &.{ 0xDE00, 0xDE01, 0xDE02 },
+        0,
+    );
+
+    try std.testing.expectEqual(INVALID_CODE_POINT, d.code_point);
+    try std.testing.expectEqual(@as(usize, 3), d.len);
+}
+
+test "lossy: low surrogate run stops before valid BMP" {
+    const d = try validateAndDecodeU16CodePointLossy(
+        &.{ 0xDE00, 0xDE01, 'A' },
+        0,
+    );
+
+    try std.testing.expectEqual(INVALID_CODE_POINT, d.code_point);
+    try std.testing.expectEqual(@as(usize, 2), d.len);
+}
+
+test "lossy: low surrogate followed by valid pair" {
+    const buf = [_]u16{
+        0xDE00,
+        0xD83D,
+        0xDE00,
+    };
+
+    const first = try validateAndDecodeU16CodePointLossy(&buf, 0);
+
+    try std.testing.expectEqual(INVALID_CODE_POINT, first.code_point);
+    try std.testing.expectEqual(@as(usize, 1), first.len);
+
+    const second = try validateAndDecodeU16CodePointLossy(&buf, 1);
+
+    try std.testing.expectEqual(@as(CodePoint, 0x1F600), second.code_point);
+    try std.testing.expectEqual(@as(usize, 2), second.len);
+}
+
+test "lossy: truncated pair at end of buffer" {
+    const buf = [_]u16{
+        'A',
+        0xD83D,
+    };
+
+    const d = try validateAndDecodeU16CodePointLossy(&buf, 1);
+
+    try std.testing.expectEqual(INVALID_CODE_POINT, d.code_point);
+    try std.testing.expectEqual(@as(usize, 1), d.len);
+}
+
+test "lossy: replacement recovery iteration" {
+    const buf = [_]u16{
+        'A',
+        0xDE00,
+        0xD83D,
+        0xDE00,
+        0xD83D,
+        'B',
+    };
+
+    var i: usize = 0;
+
+    const expected = [_]CodePoint{
+        'A',
+        INVALID_CODE_POINT,
+        0x1F600,
+        INVALID_CODE_POINT,
+        'B',
+    };
+
+    var idx: usize = 0;
+
+    while (i < buf.len) {
+        const d = try validateAndDecodeU16CodePointLossy(buf[0..], i);
+
+        try std.testing.expectEqual(expected[idx], d.code_point);
+
+        i += d.len;
+        idx += 1;
+    }
+
+    try std.testing.expectEqual(expected.len, idx);
+}
+
+test "lossy: offset out of bounds" {
+    try std.testing.expectError(
+        error.IndexOutOfBounds,
+        validateAndDecodeU16CodePointLossy(&.{'A'}, 1),
+    );
+}
+
+test "lossy: zero length buffer" {
+    try std.testing.expectError(
+        error.ZeroLengthBytes,
+        validateAndDecodeU16CodePointLossy(&.{}, 0),
+    );
 }
