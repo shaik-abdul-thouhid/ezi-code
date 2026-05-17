@@ -110,6 +110,25 @@ inline fn validateCodePoint(bytes: []const u8, offset: usize) !DecodedCodePoint 
     return UTF8ValidationError.InvalidByteSequence;
 }
 
+inline fn countScalars(bytes: []const u8) !usize {
+    var state: u32 = UTF8_ACCEPT;
+    var code_point: u32 = 0;
+    var count: usize = 0;
+
+    for (bytes) |b| {
+        switch (decodeByte(&state, &code_point, b)) {
+            .accept => count += 1,
+            .reject => return error.InvalidUTF8,
+            .incomplete => {},
+        }
+    }
+
+    if (state != UTF8_ACCEPT)
+        return error.TruncatedUTF8;
+
+    return count;
+}
+
 pub const UTF8ValidationError = error{
     ZeroLengthBytes,
     IndexOutOfBounds,
@@ -733,19 +752,6 @@ pub fn initUTF8View(data: []const u8, resultant_unicode_str_len: *usize) UTF8Val
     return .{ .data = data };
 }
 
-pub fn initUTF8ViewLossy(data: []const u8, resultant_unicode_str_len: *usize) UTF8ValidationLossyError!UTF8View {
-    var i: usize = 0;
-    var scalar_count: usize = 0;
-
-    while (i < data.len) : (scalar_count += 1) {
-        const cp = try validateAndDecodeCodePointBytesLossy(data, i);
-        i += cp.len;
-    }
-
-    resultant_unicode_str_len.* = scalar_count;
-    return .{ .data = data };
-}
-
 pub fn initUTF8ViewUnchecked(data: []const u8) UTF8View {
     return .{ .data = data };
 }
@@ -766,7 +772,7 @@ pub fn utf8ViewToUTF8String(view: *const UTF8View, buf: []u21) (UTF8ValidationEr
     return i;
 }
 
-pub fn bytesToUTF8StringComptime(comptime bytes: []const u8) (UTF8ValidationError || error{BufferTooSmall})![initUTF8ViewUnchecked(bytes).countScalar()]u21 {
+pub fn bytesToUTF8StringComptime(comptime bytes: []const u8) (UTF8ValidationError || error{BufferTooSmall})![countScalars(bytes)]u21 {
     comptime {
         var unicode_str_len: usize = 0;
 
