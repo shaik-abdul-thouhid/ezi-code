@@ -19,12 +19,23 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    const transcoding_module = b.addModule("transcoding", .{
+        .root_source_file = b.path("src/transcoding/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "utils", .module = utils_module },
+            .{ .name = "encoding", .module = encoding_module },
+        },
+    });
+
     const ezi_code_module = b.addModule("ezi_code", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .imports = &.{
             .{ .name = "utils", .module = utils_module },
             .{ .name = "encoding", .module = encoding_module },
+            .{ .name = "transcoding", .module = transcoding_module },
         },
     });
 
@@ -53,21 +64,35 @@ pub fn build(b: *std.Build) void {
         run_cmd.addArgs(args);
     }
 
+    const utils_tests = b.addTest(.{
+        .root_module = utils_module,
+    });
+    const encoding_tests = b.addTest(.{
+        .root_module = encoding_module,
+    });
+    const transcoding_tests = b.addTest(.{
+        .root_module = transcoding_module,
+    });
     const mod_tests = b.addTest(.{
         .root_module = ezi_code_module,
     });
 
     const run_mod_tests = b.addRunArtifact(mod_tests);
+    const run_utils_tests = b.addRunArtifact(utils_tests);
+    const run_encoding_tests = b.addRunArtifact(encoding_tests);
+    const run_transcoding_tests = b.addRunArtifact(transcoding_tests);
 
-    const exe_tests = b.addTest(.{
-        .root_module = exe.root_module,
-    });
+    // const exe_tests = b.addTest(.{
+    //     .root_module = exe.root_module,
+    // });
 
-    const run_exe_tests = b.addRunArtifact(exe_tests);
+    // const run_exe_tests = b.addRunArtifact(exe_tests);
 
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_mod_tests.step);
-    test_step.dependOn(&run_exe_tests.step);
+    test_step.dependOn(&run_utils_tests.step);
+    test_step.dependOn(&run_encoding_tests.step);
+    test_step.dependOn(&run_transcoding_tests.step);
 
     const bench_exe = b.addExecutable(.{
         .name = "bench",

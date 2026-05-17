@@ -30,7 +30,7 @@ fn buildUtf32Corpus(allocator: std.mem.Allocator, utf8_corpus: []const u8) ![]u3
 fn benchReverseFullScan(corpus: []const u32) !void {
     var off = corpus.len;
     while (off > 0) {
-        const cp = try utf32.bufToUTF32CodePointReverseChecked(corpus[0..off]);
+        const cp = try utf32.validateAndDecodeU32CodePointReverse(corpus[0..off]);
         off -= @as(usize, cp.len);
     }
 }
@@ -76,7 +76,7 @@ pub fn runSuite(comptime suite_title: []const u8, utf8_corpus: []const u8, inner
             while (r < inner.validate_scan) : (r += 1) {
                 var i: usize = 0;
                 while (i < corpus.len) {
-                    const cp = try utf32.bufToUTF32CodePointChecked(corpus, i);
+                    const cp = try utf32.validateAndDecodeU32CodePoint(corpus, i);
                     i += @as(usize, cp.len);
                 }
             }
@@ -87,7 +87,7 @@ pub fn runSuite(comptime suite_title: []const u8, utf8_corpus: []const u8, inner
         }
 
         report.printRow(
-            "bufToUTF32CodePointChecked full corpus scan (× inner iterations)",
+            "validateAndDecodeU32CodePoint full corpus scan (× inner iterations)",
             time_sum / config.sample_runs,
             @intCast(peak_sum / config.sample_runs),
             @intCast(vol_sum / config.sample_runs),
@@ -248,7 +248,7 @@ pub fn runSuite(comptime suite_title: []const u8, utf8_corpus: []const u8, inner
         }
 
         report.printRow(
-            "reverse scalar walk (bufToUTF32CodePointReverseChecked, full corpus × inner iterations)",
+            "reverse scalar walk (validateAndDecodeU32CodePointReverse, full corpus × inner iterations)",
             time_sum / config.sample_runs,
             @intCast(peak_sum / config.sample_runs),
             @intCast(vol_sum / config.sample_runs),
