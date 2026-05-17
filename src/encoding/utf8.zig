@@ -10,47 +10,47 @@ const encoding_range_end = 0x10FFFF;
 pub const max_ascii = 0x7F;
 
 // Surrogate range
-pub const surrogate_range_start = 0xD800;
-pub const surrogate_range_end = 0xDFFF;
+const surrogate_range_start = 0xD800;
+const surrogate_range_end = 0xDFFF;
 
 // Continuation byte
-pub const continuation_sequence = 0b1000_0000;
-pub const continuation_sequence_mask = 0b1100_0000;
-pub const continuation_payload_mask = 0b0011_1111;
-pub const continuation_mask_inverse = 0b0011_1111;
+const continuation_sequence = 0b1000_0000;
+const continuation_sequence_mask = 0b1100_0000;
+const continuation_payload_mask = 0b0011_1111;
+const continuation_mask_inverse = 0b0011_1111;
 
 // 2-byte sequence
-pub const two_byte_start_sequence_range_start = 0xC2;
-pub const two_byte_start_sequence_range_end = 0xDF;
+const two_byte_start_sequence_range_start = 0xC2;
+const two_byte_start_sequence_range_end = 0xDF;
 const two_byte_lead_byte_prefix = 0b1100_0000;
-pub const two_byte_payload_mask = 0b0001_1111;
-pub const two_byte_mask_inverse = 0b0001_1111;
+const two_byte_payload_mask = 0b0001_1111;
+const two_byte_mask_inverse = 0b0001_1111;
 
 // 3-byte sequence
-pub const three_byte_start_sequence_range_start = 0xE0;
-pub const three_byte_start_sequence_range_end = 0xEF;
-pub const three_byte_payload_mask = 0b0000_1111;
-pub const three_byte_mask_inverse = 0b0000_1111;
+const three_byte_start_sequence_range_start = 0xE0;
+const three_byte_start_sequence_range_end = 0xEF;
+const three_byte_payload_mask = 0b0000_1111;
+const three_byte_mask_inverse = 0b0000_1111;
 
 // 4-byte sequence
-pub const four_byte_start_sequence_range_start = 0xF0;
-pub const four_byte_start_sequence_range_end = 0xF4;
-pub const four_byte_payload_mask = 0b0000_0111;
-pub const four_byte_mask_inverse = 0b0000_0111;
-pub const four_byte_range_start = 0x10000;
-pub const four_byte_range_end = 0x10FFFF;
+const four_byte_start_sequence_range_start = 0xF0;
+const four_byte_start_sequence_range_end = 0xF4;
+const four_byte_payload_mask = 0b0000_0111;
+const four_byte_mask_inverse = 0b0000_0111;
+const four_byte_range_start = 0x10000;
+const four_byte_range_end = 0x10FFFF;
 
-pub const min_two_byte_code_point = 0x80;
-pub const max_two_byte_code_point = 0x7FF;
-pub const min_three_byte_code_point = 0x800;
-pub const max_three_byte_code_point = 0xFFFF;
-pub const min_four_byte_code_point = 0x10000;
-pub const max_four_byte_code_point = 0x10FFFF;
+const min_two_byte_code_point = 0x80;
+const max_two_byte_code_point = 0x7FF;
+const min_three_byte_code_point = 0x800;
+const max_three_byte_code_point = 0xFFFF;
+const min_four_byte_code_point = 0x10000;
+const max_four_byte_code_point = 0x10FFFF;
 
 const UTF8_ACCEPT: u32 = 0;
 const UTF8_REJECT: u32 = 1;
 
-pub const DecodeResult = enum(u2) { accept, reject, incomplete };
+const DecodeResult = enum(u2) { accept, reject, incomplete };
 
 const hoehrmann_utf8_decode_table = [_]u8{
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 00..1f
@@ -112,7 +112,7 @@ inline fn validateCodePoint(bytes: []const u8, offset: usize) !DecodedCodePoint 
 
 inline fn countScalars(bytes: []const u8) !usize {
     var state: u32 = UTF8_ACCEPT;
-    var code_point: u32 = 0;
+    var code_point: u21 = 0;
     var count: usize = 0;
 
     for (bytes) |b| {
@@ -173,7 +173,7 @@ pub fn codePointLen(byte: u8) UTF8ValidationError!u3 {
 
 /// Returns `0` for any incompatible sequence including the
 /// continuation byte sequence.
-pub fn codePointLenLossy(byte: u8) u3 {
+fn codePointLenLossy(byte: u8) u3 {
     if (byte <= max_ascii) {
         @branchHint(.likely);
         return 1;
@@ -214,13 +214,13 @@ pub fn utf8EncodeLen(code_point: CodePoint) UTF8EncodeError!u3 {
     };
 }
 
-pub inline fn isContinuationByte(byte: u8) bool {
+inline fn isContinuationByte(byte: u8) bool {
     return (byte & continuation_sequence_mask) == continuation_sequence;
 }
 
 // Any sequence that is not leader
 // like `11111101` `11111000`
-pub fn isLeaderByte(byte: u8) bool {
+fn isLeaderByte(byte: u8) bool {
     return switch (byte) {
         two_byte_start_sequence_range_start...two_byte_start_sequence_range_end,
         three_byte_start_sequence_range_start...three_byte_start_sequence_range_end,
@@ -238,6 +238,8 @@ fn validateAndDecodeCodePointBytesWithLenLossy(bytes: []const u8, offset: usize,
         return UTF8ValidationLossyError.IndexOutOfBounds;
     }
 
+    const remaining = bytes.len - offset;
+
     // ASCII fast path
     if (len == 1) {
         @branchHint(.likely);
@@ -246,7 +248,7 @@ fn validateAndDecodeCodePointBytesWithLenLossy(bytes: []const u8, offset: usize,
 
     if (len > 1 and len <= 4) {
         // validate if the successive byte is an continuation sequence
-        if (offset + 1 >= bytes.len or !isContinuationByte(bytes[offset + 1])) {
+        if (remaining < 2 or !isContinuationByte(bytes[offset + 1])) {
             return .{ .code_point = INVALID_CODE_POINT, .len = 1 };
         } else if (len == 2) {
             const code_point = (@as(CodePoint, bytes[offset] & two_byte_payload_mask) << 6) |
@@ -255,7 +257,7 @@ fn validateAndDecodeCodePointBytesWithLenLossy(bytes: []const u8, offset: usize,
             return .{ .code_point = code_point, .len = 2 };
         }
 
-        if (offset + 2 >= bytes.len or !isContinuationByte(bytes[offset + 2])) {
+        if (remaining < 3 or !isContinuationByte(bytes[offset + 2])) {
             return .{ .code_point = INVALID_CODE_POINT, .len = 2 };
         } else if (len == 3) {
             if (bytes[offset] == 0xE0 and bytes[offset + 1] < 0xA0) {
@@ -273,7 +275,7 @@ fn validateAndDecodeCodePointBytesWithLenLossy(bytes: []const u8, offset: usize,
             return .{ .code_point = code_point, .len = 3 };
         }
 
-        if (offset + 3 >= bytes.len or !isContinuationByte(bytes[offset + 3])) {
+        if (remaining < 4 or !isContinuationByte(bytes[offset + 3])) {
             return .{ .code_point = INVALID_CODE_POINT, .len = 3 };
         } else {
             if (bytes[offset] == 0xF0 and bytes[offset + 1] < 0x90) {
@@ -306,7 +308,7 @@ fn validateAndDecodeCodePointBytesWithLenLossy(bytes: []const u8, offset: usize,
     if (len == 0) {
         var i: usize = 0;
 
-        while (offset + i < bytes.len) {
+        while (i < remaining) {
             const byte = bytes[offset + i];
             if (isLeaderByte(byte) or byte <= max_ascii) {
                 break;
@@ -328,7 +330,7 @@ fn validateAndDecodeCodePointBytesWithLen(bytes: []const u8, offset: usize, len:
         return UTF8ValidationError.IndexOutOfBounds;
     }
 
-    if (offset + @as(usize, len) > bytes.len) {
+    if (bytes.len - offset < @as(usize, len)) {
         return UTF8ValidationError.IndexOutOfBounds;
     }
 
@@ -397,6 +399,8 @@ fn validateAndDecodeCodePointBytesWithLen(bytes: []const u8, offset: usize, len:
 pub fn validateAndDecodeCodePointBytes(bytes: []const u8, offset: usize) UTF8ValidationError!DecodedCodePoint {
     if (bytes.len == 0) {
         return UTF8ValidationError.ZeroLengthBytes;
+    } else if (offset >= bytes.len) {
+        return UTF8ValidationError.IndexOutOfBounds;
     }
 
     const len = try codePointLen(bytes[offset]);
@@ -405,6 +409,12 @@ pub fn validateAndDecodeCodePointBytes(bytes: []const u8, offset: usize) UTF8Val
 }
 
 pub fn validateAndDecodeCodePointBytesLossy(bytes: []const u8, offset: usize) UTF8ValidationLossyError!DecodedCodePointLossy {
+    if (bytes.len == 0) {
+        return UTF8ValidationLossyError.ZeroLengthBytes;
+    } else if (offset >= bytes.len) {
+        return UTF8ValidationLossyError.IndexOutOfBounds;
+    }
+
     const len = codePointLenLossy(bytes[offset]);
 
     return validateAndDecodeCodePointBytesWithLenLossy(bytes, offset, len);
@@ -438,16 +448,18 @@ pub fn codePointLenReverse(bytes: []const u8, end_index: usize) UTF8ValidationEr
 
     const len = try codePointLen(bytes[start]);
 
-    if (start + @as(usize, len) - 1 != end_index) {
+    if (end_index - start + 1 != @as(usize, len)) {
         return UTF8ValidationError.InvalidByteSequence;
     }
 
     return len;
 }
 
-pub fn validateCodePointBytesReverse(bytes: []const u8, end_index: usize) UTF8ValidationError!u3 {
+fn validateCodePointBytesReverse(bytes: []const u8, end_index: usize) UTF8ValidationError!u3 {
     if (bytes.len == 0) {
         return UTF8ValidationError.ZeroLengthBytes;
+    } else if (end_index >= bytes.len) {
+        return UTF8ValidationError.IndexOutOfBounds;
     }
 
     var start = end_index;
@@ -464,7 +476,7 @@ pub fn validateCodePointBytesReverse(bytes: []const u8, end_index: usize) UTF8Va
 
     const len = try codePointLen(bytes[start]);
 
-    if (start + @as(usize, len) - 1 != end_index) {
+    if (end_index - start + 1 != @as(usize, len)) {
         return UTF8ValidationError.InvalidByteSequence;
     }
 
@@ -472,12 +484,12 @@ pub fn validateCodePointBytesReverse(bytes: []const u8, end_index: usize) UTF8Va
     return validated.len;
 }
 
-const DecodedCodePoint = struct {
+pub const DecodedCodePoint = struct {
     code_point: CodePoint,
     len: u3,
 };
 
-const DecodedCodePointLossy = struct {
+pub const DecodedCodePointLossy = struct {
     code_point: CodePoint,
     len: usize,
 };
@@ -579,14 +591,18 @@ fn encode(code_point: CodePoint, bytes: []u8) UTF8EncodeError!u3 {
     return len;
 }
 
-pub fn decodeCodePointReverse(bytes: []const u8, end_index: usize) DecodedCodePoint {
+pub fn encodeCodePoint(code_point: CodePoint, bytes: []u8) UTF8EncodeError!u3 {
+    return encode(code_point, bytes);
+}
+
+fn decodeCodePointReverse(bytes: []const u8, end_index: usize) DecodedCodePoint {
     const len = codePointLenReverse(bytes, end_index) catch unreachable;
     const start = end_index + 1 - @as(usize, len);
 
     return decode(bytes, start, len);
 }
 
-pub fn bytesToUTF8CodePoint(bytes: []const u8, offset: usize) DecodedCodePoint {
+fn bytesToUTF8CodePoint(bytes: []const u8, offset: usize) DecodedCodePoint {
     const len = codePointLen(bytes[offset]) catch unreachable;
 
     return decode(bytes, offset, len);
@@ -597,7 +613,7 @@ pub const UTF8SliceError = error{
     InvalidBoundary,
 };
 
-const UTF8ViewIterator = struct {
+pub const UTF8ViewIterator = struct {
     index: usize = 0,
     view: *const UTF8View,
     /// A cache for the current code point
@@ -738,6 +754,71 @@ pub const UTF8View = struct {
     }
 };
 
+pub const UTF8LossyIterator = struct {
+    data: []const u8,
+    index: usize = 0,
+    curr: ?CodePoint = null,
+
+    pub fn next(self: *UTF8LossyIterator) ?CodePoint {
+        if (self.index >= self.data.len) {
+            return null;
+        }
+
+        const decoded = validateAndDecodeCodePointBytesLossy(self.data, self.index) catch unreachable;
+        std.debug.assert(decoded.len > 0);
+        self.index += decoded.len;
+        self.curr = decoded.code_point;
+        return decoded.code_point;
+    }
+
+    pub fn peek(self: *const UTF8LossyIterator) ?CodePoint {
+        if (self.index >= self.data.len) {
+            return null;
+        }
+
+        return (validateAndDecodeCodePointBytesLossy(self.data, self.index) catch unreachable).code_point;
+    }
+};
+
+pub fn lossyIterator(bytes: []const u8) UTF8LossyIterator {
+    return .{ .data = bytes };
+}
+
+pub fn countScalarsLossy(bytes: []const u8) usize {
+    var count: usize = 0;
+    var iter = lossyIterator(bytes);
+
+    while (iter.next()) |_| {
+        count += 1;
+    }
+
+    return count;
+}
+
+pub fn bytesToCodePointsLossyBuffer(bytes: []const u8, buf: []CodePoint) error{BufferTooSmall}!usize {
+    var i: usize = 0;
+    var iter = lossyIterator(bytes);
+
+    while (iter.next()) |code_point| {
+        if (i >= buf.len) {
+            return error.BufferTooSmall;
+        }
+        buf[i] = code_point;
+        i += 1;
+    }
+
+    return i;
+}
+
+pub fn bytesToCodePointsLossy(allocator: std.mem.Allocator, bytes: []const u8) error{ OutOfMemory, BufferTooSmall }![]CodePoint {
+    const len = countScalarsLossy(bytes);
+    const out = try allocator.alloc(CodePoint, len);
+    errdefer allocator.free(out);
+
+    _ = try bytesToCodePointsLossyBuffer(bytes, out);
+    return out;
+}
+
 pub fn initUTF8View(data: []const u8, resultant_unicode_str_len: *usize) UTF8ValidationError!UTF8View {
     var i: usize = 0;
     var scalar_count: usize = 0;
@@ -772,7 +853,7 @@ pub fn utf8ViewToUTF8String(view: *const UTF8View, buf: []u21) (UTF8ValidationEr
     return i;
 }
 
-pub fn bytesToUTF8StringComptime(comptime bytes: []const u8) (UTF8ValidationError || error{BufferTooSmall})![countScalars(bytes)]u21 {
+pub fn bytesToUTF8StringComptime(comptime bytes: []const u8) (UTF8ValidationError || error{BufferTooSmall})![countScalars(bytes) catch {}]u21 {
     comptime {
         var unicode_str_len: usize = 0;
 
@@ -1622,6 +1703,32 @@ test "lossy: surrogate sequence replaced" {
     try std.testing.expectEqual(@as(usize, 3), d.len);
 }
 
+test "lossy: iterator and materialization replace malformed spans" {
+    const input = [_]u8{ 'A', 0xF0, 0x9F, 0x92, '(', 0x80, 0x80, 'B' };
+    var iter = lossyIterator(&input);
+
+    try std.testing.expectEqual(@as(?CodePoint, 'A'), iter.next());
+    try std.testing.expectEqual(@as(?CodePoint, INVALID_CODE_POINT), iter.next());
+    try std.testing.expectEqual(@as(?CodePoint, '('), iter.next());
+    try std.testing.expectEqual(@as(?CodePoint, INVALID_CODE_POINT), iter.next());
+    try std.testing.expectEqual(@as(?CodePoint, 'B'), iter.next());
+    try std.testing.expectEqual(@as(?CodePoint, null), iter.next());
+
+    try std.testing.expectEqual(@as(usize, 5), countScalarsLossy(&input));
+
+    var out: [5]CodePoint = undefined;
+    const n = try bytesToCodePointsLossyBuffer(&input, &out);
+    try std.testing.expectEqual(@as(usize, 5), n);
+    try std.testing.expectEqualSlices(CodePoint, &.{ 'A', INVALID_CODE_POINT, '(', INVALID_CODE_POINT, 'B' }, out[0..n]);
+}
+
+test "encodeCodePoint public wrapper" {
+    var buf: [4]u8 = undefined;
+    const len = try encodeCodePoint(0x20AC, &buf);
+    try std.testing.expectEqual(@as(u3, 3), len);
+    try std.testing.expectEqualSlices(u8, &.{ 0xE2, 0x82, 0xAC }, buf[0..len]);
+}
+
 test "iterator: next then previous returns same scalar" {
     var view = initUTF8ViewUnchecked("a€😀");
     var it = view.iter();
@@ -1682,5 +1789,104 @@ test "checked and unchecked decode agree on valid utf8" {
             unchecked.len,
         );
         i += checked.len;
+    }
+}
+
+test "hostile: every possible byte in lossy decoder makes progress" {
+    var bytes: [256]u8 = undefined;
+    for (&bytes, 0..) |*byte, i| {
+        byte.* = @intCast(i);
+    }
+
+    var i: usize = 0;
+    var replacements: usize = 0;
+    while (i < bytes.len) {
+        const decoded = try validateAndDecodeCodePointBytesLossy(&bytes, i);
+        try std.testing.expect(decoded.len > 0);
+        try std.testing.expect(i + decoded.len <= bytes.len);
+        if (decoded.code_point == INVALID_CODE_POINT) {
+            replacements += 1;
+        }
+        i += decoded.len;
+    }
+
+    try std.testing.expect(replacements > 0);
+}
+
+test "hostile: invalid continuation matrix for legal UTF-8 leads" {
+    var lead_u16: u16 = two_byte_start_sequence_range_start;
+    while (lead_u16 <= two_byte_start_sequence_range_end) : (lead_u16 += 1) {
+        var byte_u16: u16 = 0;
+        while (byte_u16 <= 0xFF) : (byte_u16 += 1) {
+            const second: u8 = @intCast(byte_u16);
+            if (isContinuationByte(second)) continue;
+
+            try std.testing.expectError(
+                error.InvalidContinuationByte,
+                validateAndDecodeCodePointBytes(&.{ @intCast(lead_u16), second }, 0),
+            );
+        }
+    }
+
+    const bad_three = [_][]const u8{
+        &.{ 0xE0, 0x7F, 0x80 },
+        &.{ 0xE1, 0x80, 0x7F },
+        &.{ 0xEF, 0xC0, 0x80 },
+    };
+    for (bad_three) |bytes| {
+        try std.testing.expectError(error.InvalidContinuationByte, validateAndDecodeCodePointBytes(bytes, 0));
+    }
+
+    const bad_four = [_][]const u8{
+        &.{ 0xF0, 0x7F, 0x80, 0x80 },
+        &.{ 0xF1, 0x80, 0x7F, 0x80 },
+        &.{ 0xF4, 0x8F, 0x80, 0x7F },
+    };
+    for (bad_four) |bytes| {
+        try std.testing.expectError(error.InvalidContinuationByte, validateAndDecodeCodePointBytes(bytes, 0));
+    }
+}
+
+test "hostile: every truncated UTF-8 prefix rejects without decoding" {
+    const cases = [_][]const u8{
+        &.{0xC2},
+        &.{0xDF},
+        &.{0xE0},
+        &.{ 0xE0, 0xA0 },
+        &.{0xEF},
+        &.{ 0xEF, 0xBF },
+        &.{0xF0},
+        &.{ 0xF0, 0x90 },
+        &.{ 0xF0, 0x90, 0x80 },
+        &.{0xF4},
+        &.{ 0xF4, 0x8F },
+        &.{ 0xF4, 0x8F, 0xBF },
+    };
+
+    for (cases) |bytes| {
+        try std.testing.expectError(error.IndexOutOfBounds, validateAndDecodeCodePointBytes(bytes, 0));
+    }
+}
+
+test "hostile: continuation-only reverse tails always reject" {
+    const tail = [_]u8{ 0x80, 0x81, 0x82, 0x83, 0x84, 0xBF, 0x80, 0xBF };
+
+    var len: usize = 1;
+    while (len <= tail.len) : (len += 1) {
+        try std.testing.expectError(error.InvalidByteSequence, codePointLenReverse(tail[0..len], len - 1));
+        try std.testing.expectError(error.InvalidByteSequence, validateAndDecodeCodePointBytesReverse(tail[0..len], len - 1));
+    }
+}
+
+test "hostile: encodeCodePoint rejects every undersized output buffer" {
+    const cases = [_]CodePoint{ 0x80, 0x800, 0x10000, 0x10FFFF };
+    var backing: [4]u8 = undefined;
+
+    for (cases) |code_point| {
+        const len = try utf8EncodeLen(code_point);
+        var out_len: usize = 0;
+        while (out_len < len) : (out_len += 1) {
+            try std.testing.expectError(error.BufferTooSmall, encodeCodePoint(code_point, backing[0..out_len]));
+        }
     }
 }
