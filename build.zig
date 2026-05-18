@@ -19,25 +19,25 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    const utils: std.Build.Module.Import = .{ .name = "utils", .module = utils_module };
+    const encoding: std.Build.Module.Import = .{ .name = "encoding", .module = encoding_module };
+
     const transcoding_module = b.addModule("transcoding", .{
         .root_source_file = b.path("src/transcoding/root.zig"),
         .target = target,
         .optimize = optimize,
-        .imports = &.{
-            .{ .name = "utils", .module = utils_module },
-            .{ .name = "encoding", .module = encoding_module },
-        },
+        .imports = &.{ utils, encoding },
     });
+
+    const transcoding: std.Build.Module.Import = .{ .name = "transcoding", .module = transcoding_module };
 
     const ezi_code_module = b.addModule("ezi_code", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
-        .imports = &.{
-            .{ .name = "utils", .module = utils_module },
-            .{ .name = "encoding", .module = encoding_module },
-            .{ .name = "transcoding", .module = transcoding_module },
-        },
+        .imports = &.{ utils, encoding, transcoding },
     });
+
+    const root: std.Build.Module.Import = .{ .name = "ezi_code", .module = ezi_code_module };
 
     const exe = b.addExecutable(.{
         .name = "ezi_code",
@@ -45,9 +45,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
-            .imports = &.{
-                .{ .name = "ezi_code", .module = ezi_code_module },
-            },
+            .imports = &.{root},
         }),
     });
 
@@ -100,9 +98,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("bench/main.zig"),
             .target = target,
             .optimize = optimize,
-            .imports = &.{
-                .{ .name = "ezi_code", .module = ezi_code_module },
-            },
+            .imports = &.{root},
         }),
     });
     const run_bench = b.addRunArtifact(bench_exe);
@@ -115,9 +111,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("tests/fuzz/transcoding.zig"),
             .target = target,
             .optimize = optimize,
-            .imports = &.{
-                .{ .name = "ezi_code", .module = ezi_code_module },
-            },
+            .imports = &.{root},
         }),
     });
 
@@ -127,9 +121,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("tests/fuzz/utf32.zig"),
             .target = target,
             .optimize = optimize,
-            .imports = &.{
-                .{ .name = "ezi_code", .module = ezi_code_module },
-            },
+            .imports = &.{root},
         }),
     });
 
@@ -139,9 +131,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("tests/fuzz/utf16.zig"),
             .target = target,
             .optimize = optimize,
-            .imports = &.{
-                .{ .name = "ezi_code", .module = ezi_code_module },
-            },
+            .imports = &.{root},
         }),
     });
 
@@ -151,9 +141,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("tests/fuzz/utf8.zig"),
             .target = target,
             .optimize = optimize,
-            .imports = &.{
-                .{ .name = "ezi_code", .module = ezi_code_module },
-            },
+            .imports = &.{root},
         }),
     });
 
