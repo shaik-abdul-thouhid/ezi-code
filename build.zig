@@ -102,7 +102,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     const run_bench = b.addRunArtifact(bench_exe);
-    const bench_step = b.step("bench", "Run UTF-8, UTF-16, UTF-32, and u8↔u16 benchmarks (mean of 7 samples)");
+    const bench_step = b.step("bench", "Run Benchmarks");
     bench_step.dependOn(&run_bench.step);
 
     const transcoding_fuzz_exe = b.addExecutable(.{
