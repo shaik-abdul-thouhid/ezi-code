@@ -166,16 +166,18 @@ fn downloadAndGenerateUnicodeData(arena: std.mem.Allocator, io: std.Io) !void {
         const combining_class = field_iter.next() orelse continue;
         const bidi_class = field_iter.next() orelse continue;
 
-        _ = field_iter.next();
-        _ = field_iter.next();
-        _ = field_iter.next();
-        _ = field_iter.next();
-        _ = field_iter.next();
-        _ = field_iter.next();
+        // Skip fields 5..11
+        _ = field_iter.next(); // Decomposition_Mapping
+        _ = field_iter.next(); // Decimal_Digit_Value
+        _ = field_iter.next(); // Digit_Value
+        _ = field_iter.next(); // Numeric_Value
+        _ = field_iter.next(); // Bidi_Mirrored
+        _ = field_iter.next(); // Unicode_1_Name
+        _ = field_iter.next(); // ISO_Comment
 
-        const uppercase_mapping = field_iter.next() orelse "";
-        const lowercase_mapping = field_iter.next() orelse "";
-        const title_case_mapping = field_iter.next() orelse "";
+        const uppercase_mapping = field_iter.next() orelse ""; // field 12
+        const lowercase_mapping = field_iter.next() orelse ""; // field 13
+        const title_case_mapping = field_iter.next() orelse ""; // field 14
         const cp = try std.fmt.parseInt(u21, code_point, 16);
 
         const category_name = blk: {
@@ -366,7 +368,7 @@ fn downloadAndGenerateUnicodeData(arena: std.mem.Allocator, io: std.Io) !void {
                 try title_case_mapping_range.appendSlice(arena, p);
 
                 title_case_range_start = title_cp;
-                title_case_range_start = title_cp;
+                title_case_range_end = title_cp;
                 title_case_current_difference = difference;
             }
         }
@@ -568,6 +570,33 @@ fn downloadAndGenerateUnicodeData(arena: std.mem.Allocator, io: std.Io) !void {
         \\
         \\
     );
+
+    if (lowercase_range_start.len != 0) {
+        const p = try std.fmt.allocPrint(
+            arena,
+            "    .{{ .start = 0x{s}, .end = 0x{s}, .delta = {} }},\n",
+            .{ lowercase_range_start, lowercase_range_end, lowercase_current_difference },
+        );
+        try lowercase_mapping_range.appendSlice(arena, p);
+    }
+
+    if (uppercase_range_start.len != 0) {
+        const p = try std.fmt.allocPrint(
+            arena,
+            "    .{{ .start = 0x{s}, .end = 0x{s}, .delta = {} }},\n",
+            .{ uppercase_range_start, uppercase_range_end, uppercase_current_difference },
+        );
+        try uppercase_mapping_range.appendSlice(arena, p);
+    }
+
+    if (title_case_range_start.len != 0) {
+        const p = try std.fmt.allocPrint(
+            arena,
+            "    .{{ .start = 0x{s}, .end = 0x{s}, .delta = {} }},\n",
+            .{ title_case_range_start, title_case_range_end, title_case_current_difference },
+        );
+        try title_case_mapping_range.appendSlice(arena, p);
+    }
 
     try writer.writeAll("pub const lowercase_range_mapping_table = [_]CaseMappingRangeEntry {\n");
     try writer.writeAll(lowercase_mapping_range.items);
