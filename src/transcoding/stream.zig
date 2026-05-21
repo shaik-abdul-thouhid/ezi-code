@@ -27,11 +27,25 @@ const UTF8Stream = struct {
     partial_buffer_len: u3 = 0,
     /// Reduce the checks for code point length.
     cached_partial_expected_len: u3 = 0,
+    eof: bool = false,
 
     pub fn deinit(self: *UTF8Stream, allocator: std.mem.Allocator) void {
         if (self.buffers) |buffers| allocator.free(buffers);
 
         allocator.destroy(self);
+    }
+
+    pub fn finish(self: *UTF8Stream) void {
+        self.eof = true;
+    }
+
+    pub fn reset(self: *UTF8Stream) void {
+        self.buffers_filled = 0;
+        self.current_buffer_index = null;
+        self.current_byte_index = 0;
+        self.partial_buffer_len = 0;
+        self.cached_partial_expected_len = 0;
+        self.eof = false;
     }
 
     pub fn push(self: *UTF8Stream, allocator: std.mem.Allocator, slice: []const u8) !void {
@@ -69,11 +83,7 @@ const UTF8Stream = struct {
         self.buffers_filled = 1;
     }
 
-    pub fn nextCodePoint(self: *UTF8Stream, out_buf: ?[]u8) (error{
-        BufferIsEmpty,
-        OutputBufferTooSmall,
-        NeedMoreBytes,
-    } || utf8.UTF8ValidationError)!?encoding.utf8.DecodedCodePoint {
+    pub fn nextCodePoint(self: *UTF8Stream, out_buf: ?[]u8) (error{ BufferIsEmpty, OutputBufferTooSmall, NeedMoreBytes, EOFReached } || utf8.UTF8ValidationError)!?encoding.utf8.DecodedCodePoint {
         if (self.buffers == null or self.buffers_filled == 0) return null;
 
         const buffers = self.buffers.?;
@@ -124,6 +134,11 @@ const UTF8Stream = struct {
                 const next_buffer_idx = current_buffer_idx + 1;
 
                 if (next_buffer_idx >= self.buffers_filled) {
+                    if (self.eof) {
+                        self.reset();
+                        return error.EOFReached;
+                    }
+
                     return error.NeedMoreBytes;
                 }
 
@@ -133,6 +148,11 @@ const UTF8Stream = struct {
 
                 if (next_buffer.len < bytes_needed) {
                     if (next_buffer_idx == self.buffers_filled - 1) {
+                        if (self.eof) {
+                            self.reset();
+                            return error.EOFReached;
+                        }
+
                         return error.NeedMoreBytes;
                     }
 
@@ -208,6 +228,11 @@ const UTF8Stream = struct {
                 @memcpy(self.partial_buffer[0..self.partial_buffer_len], current_buffer[current_byte_idx..]);
 
                 if (current_buffer_idx == self.buffers_filled - 1) {
+                    if (self.eof) {
+                        self.reset();
+                        return error.EOFReached;
+                    }
+
                     return error.NeedMoreBytes;
                 } else {
                     continue :loop;
@@ -246,11 +271,7 @@ const UTF8Stream = struct {
         return null;
     }
 
-    pub fn nextCodePointLossy(self: *UTF8Stream, out_buf: ?[]u8) (error{
-        BufferIsEmpty,
-        OutputBufferTooSmall,
-        NeedMoreBytes,
-    } || utf8.UTF8ValidationLossyError)!?encoding.utf8.DecodedCodePointLossy {
+    pub fn nextCodePointLossy(self: *UTF8Stream, out_buf: ?[]u8) (error{ BufferIsEmpty, OutputBufferTooSmall, NeedMoreBytes, EOFReached } || utf8.UTF8ValidationLossyError)!?encoding.utf8.DecodedCodePointLossy {
         if (self.buffers == null or self.buffers_filled == 0) return null;
 
         const buffers = self.buffers.?;
@@ -301,6 +322,21 @@ const UTF8Stream = struct {
                 const next_buffer_idx = current_buffer_idx + 1;
 
                 if (next_buffer_idx >= self.buffers_filled) {
+                    if (self.eof) {
+                        if (out_buf) |out| {
+                            if (out.len < self.partial_buffer_len) {
+                                return error.OutputBufferTooSmall;
+                            }
+
+                            @memcpy(
+                                out[0..self.partial_buffer_len],
+                                self.partial_buffer[0..self.partial_buffer_len],
+                            );
+                        }
+                        self.reset();
+                        return .{ .len = self.partial_buffer_len, .code_point = encoding.INVALID_CODE_POINT };
+                    }
+
                     return error.NeedMoreBytes;
                 }
 
@@ -310,6 +346,30 @@ const UTF8Stream = struct {
 
                 if (next_buffer.len < bytes_needed) {
                     if (next_buffer_idx == self.buffers_filled - 1) {
+                        if (self.eof) {
+                            @memcpy(
+                                self.partial_buffer[self.partial_buffer_len .. self.partial_buffer_len + next_buffer.len],
+                                next_buffer[0..next_buffer.len],
+                            );
+
+                            self.partial_buffer_len += @intCast(next_buffer.len);
+
+                            if (out_buf) |out| {
+                                if (out.len < self.partial_buffer_len) {
+                                    return error.OutputBufferTooSmall;
+                                }
+                                @memcpy(
+                                    out[0..self.partial_buffer_len],
+                                    self.partial_buffer[0..self.partial_buffer_len],
+                                );
+                            }
+                            self.reset();
+
+                            return .{
+                                .len = self.partial_buffer_len,
+                                .code_point = encoding.INVALID_CODE_POINT,
+                            };
+                        }
                         return error.NeedMoreBytes;
                     }
 
@@ -439,6 +499,21 @@ const UTF8Stream = struct {
                 @memcpy(self.partial_buffer[0..self.partial_buffer_len], current_buffer[current_byte_idx..]);
 
                 if (current_buffer_idx == self.buffers_filled - 1) {
+                    if (self.eof) {
+                        if (out_buf) |out| {
+                            if (out.len < self.partial_buffer_len) {
+                                return error.OutputBufferTooSmall;
+                            }
+
+                            @memcpy(
+                                out[0..self.partial_buffer_len],
+                                self.partial_buffer[0..self.partial_buffer_len],
+                            );
+                        }
+                        self.reset();
+                        return .{ .len = self.partial_buffer_len, .code_point = encoding.INVALID_CODE_POINT };
+                    }
+
                     return error.NeedMoreBytes;
                 } else {
                     continue :loop;
@@ -468,11 +543,7 @@ const UTF8Stream = struct {
         }
 
         // Stream fully consumed.
-        self.buffers_filled = 0;
-        self.current_buffer_index = null;
-        self.current_byte_index = 0;
-        self.partial_buffer_len = 0;
-        self.cached_partial_expected_len = 0;
+        self.reset();
 
         return null;
     }
