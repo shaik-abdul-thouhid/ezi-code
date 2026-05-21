@@ -100,6 +100,9 @@ pub fn build(b: *std.Build) !void {
     const transcoding_tests = b.addTest(.{
         .root_module = transcoding_module,
     });
+    const unicode_tests = b.addTest(.{
+        .root_module = unicode_module,
+    });
     const mod_tests = b.addTest(.{
         .root_module = ezi_code_module,
     });
@@ -108,6 +111,7 @@ pub fn build(b: *std.Build) !void {
     const run_utils_tests = b.addRunArtifact(utils_tests);
     const run_encoding_tests = b.addRunArtifact(encoding_tests);
     const run_transcoding_tests = b.addRunArtifact(transcoding_tests);
+    const run_unicode_tests = b.addRunArtifact(unicode_tests);
 
     // const exe_tests = b.addTest(.{
     //     .root_module = exe.root_module,
@@ -120,6 +124,7 @@ pub fn build(b: *std.Build) !void {
     test_step.dependOn(&run_utils_tests.step);
     test_step.dependOn(&run_encoding_tests.step);
     test_step.dependOn(&run_transcoding_tests.step);
+    test_step.dependOn(&run_unicode_tests.step);
 
     const bench_exe = b.addExecutable(.{
         .name = "bench",
