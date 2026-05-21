@@ -678,9 +678,8 @@ pub const UTF8ViewIterator = struct {
         const code_point = bytesToUTF8CodePoint(self.view.data, self.index);
 
         self.index += @as(usize, code_point.len);
-        self.curr = code_point.code_point;
 
-        return self.curr orelse unreachable;
+        return code_point.code_point;
     }
 
     pub fn reset(self: *UTF8ViewIterator) void {
