@@ -620,7 +620,7 @@ pub fn initUTF16ViewUnchecked(data: []const u16, endian: Endian) UTF16View {
     return .{ .data = data, .endian = endian };
 }
 
-pub fn utf16ViewToUTF16String(view: *const UTF16View, buf: []u21) (UTF16ValidationError || error{BufferTooSmall})!usize {
+pub fn utf16ViewToUTF16String(view: *const UTF16View, buf: []CodePoint) (UTF16ValidationError || error{BufferTooSmall})!usize {
     var i: usize = 0;
     var iter = view.iter();
     while (iter.next()) |code_point| {
@@ -636,20 +636,20 @@ pub fn utf16ViewToUTF16String(view: *const UTF16View, buf: []u21) (UTF16Validati
     return i;
 }
 
-pub fn bufToUTF16StringComptime(comptime units: []const u16) (UTF16ValidationError || error{BufferTooSmall})![initUTF16ViewUnchecked(units, .little).countScalar()]u21 {
+pub fn bufToUTF16StringComptime(comptime units: []const u16) (UTF16ValidationError || error{BufferTooSmall})![initUTF16ViewUnchecked(units, .little).countScalar()]CodePoint {
     comptime {
         var unicode_str_len: usize = 0;
         const view = try initUTF16View(units, .little, &unicode_str_len);
-        var buf: [unicode_str_len]u21 = undefined;
+        var buf: [unicode_str_len]CodePoint = undefined;
         _ = try utf16ViewToUTF16String(&view, &buf);
         return buf;
     }
 }
 
-pub fn bufToUTF16String(allocator: std.mem.Allocator, buf: []const u16, endian: Endian) (UTF16ValidationError || error{ BufferTooSmall, OutOfMemory })![]u21 {
+pub fn bufToUTF16String(allocator: std.mem.Allocator, buf: []const u16, endian: Endian) (UTF16ValidationError || error{ BufferTooSmall, OutOfMemory })![]CodePoint {
     var unicode_str_len: usize = 0;
     const view = try initUTF16View(buf, endian, &unicode_str_len);
-    const out = try allocator.alloc(u21, unicode_str_len);
+    const out = try allocator.alloc(CodePoint, unicode_str_len);
     errdefer allocator.free(out);
 
     _ = try utf16ViewToUTF16String(&view, out);
@@ -798,15 +798,15 @@ test "initUTF16View validates full buffer" {
 test "utf16ViewToUTF16String and bufToUTF16String" {
     var n: usize = 0;
     const view = try initUTF16View(&[_]u16{ 0x03B1, 0xD83D, 0xDE00 }, .little, &n);
-    var stack: [2]u21 = undefined;
+    var stack: [2]CodePoint = undefined;
     try std.testing.expectEqual(@as(usize, 2), try utf16ViewToUTF16String(&view, &stack));
-    try std.testing.expectEqual(@as(u21, 0x03B1), stack[0]);
-    try std.testing.expectEqual(@as(u21, 0x1F600), stack[1]);
+    try std.testing.expectEqual(@as(CodePoint, 0x03B1), stack[0]);
+    try std.testing.expectEqual(@as(CodePoint, 0x1F600), stack[1]);
 
     const s = try bufToUTF16String(std.testing.allocator, &[_]u16{'z'}, .little);
     defer std.testing.allocator.free(s);
     try std.testing.expectEqual(@as(usize, 1), s.len);
-    try std.testing.expectEqual(@as(u21, 'z'), s[0]);
+    try std.testing.expectEqual(@as(CodePoint, 'z'), s[0]);
 }
 
 test "hostile: unpaired and swapped surrogates" {
@@ -878,7 +878,7 @@ test "hostile matrix: string conversion APIs propagate validation" {
 
 test "hostile: BMP encode/decode sweep (stride avoids timeout)" {
     var buf: [2]u16 = undefined;
-    var cp: u21 = 0;
+    var cp: CodePoint = 0;
     while (cp <= 0xFFFF) : (cp += 0x111) {
         if (cp >= surrogate_range_start and cp <= surrogate_range_end) continue;
         const len = try encodeCodePoint(@intCast(cp), &buf);
@@ -890,7 +890,7 @@ test "hostile: BMP encode/decode sweep (stride avoids timeout)" {
 
 test "hostile: supplementary encode/decode sweep" {
     var buf: [2]u16 = undefined;
-    var cp: u21 = min_supplementary_code_point;
+    var cp: CodePoint = min_supplementary_code_point;
     while (cp <= max_supplementary_code_point) : (cp += 0x11111) {
         const len = try encodeCodePoint(cp, &buf);
         const d = try validateAndDecodeU16CodePoint(&buf, 0);

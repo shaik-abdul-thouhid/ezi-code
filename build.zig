@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub fn build(b: *std.Build) void {
+pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
@@ -55,6 +55,28 @@ pub fn build(b: *std.Build) void {
 
     const run_cmd = b.addRunArtifact(exe);
     run_step.dependOn(&run_cmd.step);
+
+    run_cmd.step.dependOn(b.getInstallStep());
+
+    if (b.args) |args| {
+        run_cmd.addArgs(args);
+    }
+
+    // Unicode table generation step
+    const generate_unicode_exe = b.addExecutable(.{
+        .name = "generator",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/generate.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{root},
+        }),
+    });
+
+    const generate_unicode_step = b.step("generate", "Generate Unicode tables");
+
+    const generate_unicode_cmd = b.addRunArtifact(generate_unicode_exe);
+    generate_unicode_step.dependOn(&generate_unicode_cmd.step);
 
     run_cmd.step.dependOn(b.getInstallStep());
 

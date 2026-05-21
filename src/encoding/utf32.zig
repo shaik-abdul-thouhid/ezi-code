@@ -335,7 +335,7 @@ pub fn initUTF32ViewUnchecked(data: []const u32, endian: Endian) UTF32View {
     return .{ .data = data, .endian = endian };
 }
 
-pub fn utf32ViewToUTF32String(view: *const UTF32View, buf: []u21) (UTF32ValidationError || error{BufferTooSmall})!usize {
+pub fn utf32ViewToUTF32String(view: *const UTF32View, buf: []CodePoint) (UTF32ValidationError || error{BufferTooSmall})!usize {
     var i: usize = 0;
     var iter = view.iter();
     while (iter.next()) |code_point| {
@@ -351,20 +351,20 @@ pub fn utf32ViewToUTF32String(view: *const UTF32View, buf: []u21) (UTF32Validati
     return i;
 }
 
-pub fn bufToUTF32StringComptime(comptime units: []const u32) (UTF32ValidationError || error{BufferTooSmall})![initUTF32ViewUnchecked(units, .little).countScalar()]u21 {
+pub fn bufToUTF32StringComptime(comptime units: []const u32) (UTF32ValidationError || error{BufferTooSmall})![initUTF32ViewUnchecked(units, .little).countScalar()]CodePoint {
     comptime {
         var unicode_str_len: usize = 0;
         const view = try initUTF32View(units, .little, &unicode_str_len);
-        var buf: [unicode_str_len]u21 = undefined;
+        var buf: [unicode_str_len]CodePoint = undefined;
         _ = try utf32ViewToUTF32String(&view, &buf);
         return buf;
     }
 }
 
-pub fn bufToUTF32String(allocator: std.mem.Allocator, buf: []const u32, endian: Endian) (UTF32ValidationError || error{ BufferTooSmall, OutOfMemory })![]u21 {
+pub fn bufToUTF32String(allocator: std.mem.Allocator, buf: []const u32, endian: Endian) (UTF32ValidationError || error{ BufferTooSmall, OutOfMemory })![]CodePoint {
     var unicode_str_len: usize = 0;
     const view = try initUTF32View(buf, endian, &unicode_str_len);
-    const out = try allocator.alloc(u21, unicode_str_len);
+    const out = try allocator.alloc(CodePoint, unicode_str_len);
     errdefer allocator.free(out);
 
     _ = try utf32ViewToUTF32String(&view, out);
@@ -514,15 +514,15 @@ test "initUTF32View validates full buffer" {
 test "utf32ViewToUTF32String and bufToUTF32String" {
     var n: usize = 0;
     const view = try initUTF32View(&[_]u32{ 0x03B1, 0x1F600 }, .little, &n);
-    var stack: [2]u21 = undefined;
+    var stack: [2]CodePoint = undefined;
     try std.testing.expectEqual(@as(usize, 2), try utf32ViewToUTF32String(&view, &stack));
-    try std.testing.expectEqual(@as(u21, 0x03B1), stack[0]);
-    try std.testing.expectEqual(@as(u21, 0x1F600), stack[1]);
+    try std.testing.expectEqual(@as(CodePoint, 0x03B1), stack[0]);
+    try std.testing.expectEqual(@as(CodePoint, 0x1F600), stack[1]);
 
     const s = try bufToUTF32String(std.testing.allocator, &[_]u32{'z'}, .little);
     defer std.testing.allocator.free(s);
     try std.testing.expectEqual(@as(usize, 1), s.len);
-    try std.testing.expectEqual(@as(u21, 'z'), s[0]);
+    try std.testing.expectEqual(@as(CodePoint, 'z'), s[0]);
 }
 
 test "hostile: high-bit garbage scalars in buffer" {
@@ -615,7 +615,7 @@ test "lossy: UTF-32 offset and zero-length errors" {
 test "hostile: utf32ViewToUTF32String buffer too small path" {
     var n: usize = 0;
     const view = try initUTF32View(&[_]u32{ 'a', 'b' }, .little, &n);
-    var tiny: [1]u21 = undefined;
+    var tiny: [1]CodePoint = undefined;
     try std.testing.expectError(error.BufferTooSmall, utf32ViewToUTF32String(&view, &tiny));
 }
 
@@ -641,7 +641,7 @@ test "hostile matrix: forward APIs agree on prefix walks" {
 
 test "hostile: BMP encode/decode sweep (stride avoids timeout)" {
     var buf: [1]u32 = undefined;
-    var cp: u21 = 0;
+    var cp: CodePoint = 0;
     while (cp <= 0xFFFF) : (cp += 0x111) {
         if (cp >= surrogate_range_start and cp <= surrogate_range_end) continue;
         const len = try encodeCodePoint(@intCast(cp), &buf);
@@ -653,7 +653,7 @@ test "hostile: BMP encode/decode sweep (stride avoids timeout)" {
 
 test "hostile: supplementary encode/decode sweep" {
     var buf: [1]u32 = undefined;
-    var cp: u21 = 0x10000;
+    var cp: CodePoint = 0x10000;
     while (cp <= max_scalar) : (cp += 0x11111) {
         const len = try encodeCodePoint(cp, &buf);
         const d = try validateAndDecodeU32CodePoint(&buf, 0);
@@ -696,10 +696,10 @@ test "hostile matrix: sliceScalars + utf32ViewToUTF32String on emoji-heavy strin
     var n: usize = 0;
     const view = try initUTF32View(&units, .little, &n);
     const slice = try view.sliceScalars(1, 3);
-    var out: [2]u21 = undefined;
+    var out: [2]CodePoint = undefined;
     try std.testing.expectEqual(@as(usize, 2), try utf32ViewToUTF32String(&slice, &out));
-    try std.testing.expectEqual(@as(u21, 0x03B1), out[0]);
-    try std.testing.expectEqual(@as(u21, 'q'), out[1]);
+    try std.testing.expectEqual(@as(CodePoint, 0x03B1), out[0]);
+    try std.testing.expectEqual(@as(CodePoint, 'q'), out[1]);
 }
 
 test "hostile: UTF-32 rejects every surrogate scalar value" {

@@ -75,7 +75,7 @@ inline fn decodeByte(state: *u32, code_point: *CodePoint, byte: u8) DecodeResult
     code_point.* = if (state.* != UTF8_ACCEPT)
         (byte & 0x3f) | (code_point.* << 6)
     else
-        (@as(u21, 0xff) >> @intCast(t)) & byte;
+        (@as(CodePoint, 0xff) >> @intCast(t)) & byte;
 
     state.* = hoehrmann_utf8_decode_table[256 + state.* * 16 + t];
 
@@ -101,7 +101,7 @@ inline fn validateCodePoint(bytes: []const u8, offset: usize) !DecodedCodePoint 
         i += 1;
 
         if (decoded == .accept) {
-            return .{ .code_point = @as(u21, code_point), .len = @as(u3, @intCast(i)) };
+            return .{ .code_point = @as(CodePoint, code_point), .len = @as(u3, @intCast(i)) };
         } else if (decoded == .reject) {
             return UTF8ValidationError.InvalidByteSequence;
         }
@@ -112,7 +112,7 @@ inline fn validateCodePoint(bytes: []const u8, offset: usize) !DecodedCodePoint 
 
 inline fn countScalars(bytes: []const u8) !usize {
     var state: u32 = UTF8_ACCEPT;
-    var code_point: u21 = 0;
+    var code_point: CodePoint = 0;
     var count: usize = 0;
 
     for (bytes) |b| {
@@ -173,7 +173,7 @@ pub fn codePointLen(byte: u8) UTF8ValidationError!u3 {
 
 /// Returns `0` for any incompatible sequence including the
 /// continuation byte sequence.
-fn codePointLenLossy(byte: u8) u3 {
+pub fn codePointLenLossy(byte: u8) u3 {
     if (byte <= max_ascii) {
         @branchHint(.likely);
         return 1;
@@ -220,7 +220,7 @@ inline fn isContinuationByte(byte: u8) bool {
 
 // Any sequence that is not leader
 // like `11111101` `11111000`
-fn isLeaderByte(byte: u8) bool {
+pub fn isLeaderByte(byte: u8) bool {
     return switch (byte) {
         two_byte_start_sequence_range_start...two_byte_start_sequence_range_end,
         three_byte_start_sequence_range_start...three_byte_start_sequence_range_end,
@@ -361,11 +361,12 @@ fn validateAndDecodeCodePointBytesWithLenLossy(bytes: []const u8, offset: usize,
         if (remaining < 4 or !isContinuationByte(bytes[offset + 3])) {
             return .{ .code_point = INVALID_CODE_POINT, .len = 3 };
         } else {
+            // F0 80-8F = overlong
             if (bytes[offset] == 0xF0 and bytes[offset + 1] < 0x90) {
-                // overlong character
                 return .{ .code_point = INVALID_CODE_POINT, .len = 4 };
-            } else if (bytes[offset] == 0xF4 and bytes[offset + 1] > 0x8F) {
-                // too large code point
+            }
+            // F4 90-BF = > U+10FFFF
+            if (bytes[offset] == 0xF4 and bytes[offset + 1] > 0x8F) {
                 return .{ .code_point = INVALID_CODE_POINT, .len = 4 };
             }
 
@@ -374,6 +375,9 @@ fn validateAndDecodeCodePointBytesWithLenLossy(bytes: []const u8, offset: usize,
                 (@as(CodePoint, bytes[offset + 2] & continuation_payload_mask) << 6) |
                 (@as(CodePoint, bytes[offset + 3] & continuation_payload_mask));
 
+            if (code_point > max_four_byte_code_point) {
+                return .{ .code_point = INVALID_CODE_POINT, .len = 4 };
+            }
             return .{ .code_point = code_point, .len = 4 };
         }
     }
@@ -665,8 +669,6 @@ pub const UTF8SliceError = error{
 pub const UTF8ViewIterator = struct {
     index: usize = 0,
     view: *const UTF8View,
-    /// A cache for the current code point
-    curr: ?CodePoint = null,
 
     pub fn next(self: *UTF8ViewIterator) ?CodePoint {
         if (self.index >= self.view.data.len) {
@@ -679,6 +681,10 @@ pub const UTF8ViewIterator = struct {
         self.curr = code_point.code_point;
 
         return self.curr orelse unreachable;
+    }
+
+    pub fn reset(self: *UTF8ViewIterator) void {
+        self.index = 0;
     }
 
     pub fn peek(self: *const UTF8ViewIterator) ?CodePoint {
@@ -697,9 +703,7 @@ pub const UTF8ViewIterator = struct {
         const code_point = decodeCodePointReverseUnchecked(self.view.data, self.index - 1);
 
         self.index -= @as(usize, code_point.len);
-        self.curr = code_point.code_point;
-
-        return self.curr.?;
+        return code_point.code_point;
     }
 
     pub fn peekPrevious(self: *const UTF8ViewIterator) ?CodePoint {
@@ -806,7 +810,6 @@ pub const UTF8View = struct {
 pub const UTF8LossyIterator = struct {
     data: []const u8,
     index: usize = 0,
-    curr: ?CodePoint = null,
 
     pub fn next(self: *UTF8LossyIterator) ?CodePoint {
         if (self.index >= self.data.len) {
@@ -816,7 +819,6 @@ pub const UTF8LossyIterator = struct {
         const decoded = validateAndDecodeCodePointBytesLossy(self.data, self.index) catch unreachable;
         std.debug.assert(decoded.len > 0);
         self.index += decoded.len;
-        self.curr = decoded.code_point;
         return decoded.code_point;
     }
 
@@ -886,7 +888,7 @@ pub fn initUTF8ViewUnchecked(data: []const u8) UTF8View {
     return .{ .data = data };
 }
 
-pub fn utf8ViewToUTF8String(view: *const UTF8View, buf: []u21) (UTF8ValidationError || error{BufferTooSmall})!usize {
+pub fn utf8ViewToUTF8String(view: *const UTF8View, buf: []CodePoint) (UTF8ValidationError || error{BufferTooSmall})!usize {
     var i: usize = 0;
     var iter = view.iter();
     while (iter.next()) |code_point| {
@@ -902,12 +904,12 @@ pub fn utf8ViewToUTF8String(view: *const UTF8View, buf: []u21) (UTF8ValidationEr
     return i;
 }
 
-pub fn bytesToUTF8StringComptime(comptime bytes: []const u8) (UTF8ValidationError || error{BufferTooSmall})![countScalars(bytes) catch {}]u21 {
+pub fn bytesToUTF8StringComptime(comptime bytes: []const u8) (UTF8ValidationError || error{BufferTooSmall})![countScalars(bytes) catch {}]CodePoint {
     comptime {
         var unicode_str_len: usize = 0;
 
         const utf8_view = try initUTF8View(bytes, &unicode_str_len);
-        var buf: [unicode_str_len]u21 = undefined;
+        var buf: [unicode_str_len]CodePoint = undefined;
 
         _ = try utf8ViewToUTF8String(&utf8_view, &buf);
 
@@ -915,10 +917,10 @@ pub fn bytesToUTF8StringComptime(comptime bytes: []const u8) (UTF8ValidationErro
     }
 }
 
-pub fn bytesToUTF8String(allocator: std.mem.Allocator, bytes: []const u8) (UTF8ValidationError || error{ BufferTooSmall, OutOfMemory })![]u21 {
+pub fn bytesToUTF8String(allocator: std.mem.Allocator, bytes: []const u8) (UTF8ValidationError || error{ BufferTooSmall, OutOfMemory })![]CodePoint {
     var unicode_str_len: usize = 0;
     const utf8_view = try initUTF8View(bytes, &unicode_str_len);
-    const buf = try allocator.alloc(u21, unicode_str_len);
+    const buf = try allocator.alloc(CodePoint, unicode_str_len);
     errdefer allocator.free(buf);
 
     _ = try utf8ViewToUTF8String(&utf8_view, buf);
@@ -1324,7 +1326,7 @@ test "initUTF8View validates full buffer" {
 test "utf8ViewToUTF8String and bytesToUTF8String" {
     var size: usize = 0;
     const view = try initUTF8View("αβγ", &size);
-    var buf: [3]u21 = undefined;
+    var buf: [3]CodePoint = undefined;
     const n = try utf8ViewToUTF8String(&view, &buf);
     try std.testing.expectEqual(@as(usize, 3), n);
     try std.testing.expectEqual(@as(CodePoint, 0x03B1), buf[0]);
@@ -1458,7 +1460,7 @@ test "hostile: sliceScalars on emoji-heavy string" {
 test "hostile: utf8ViewToUTF8String buffer too small path" {
     var size: usize = 0;
     const view = try initUTF8View("αβ", &size);
-    var tiny: [1]u21 = undefined;
+    var tiny: [1]CodePoint = undefined;
     try std.testing.expectError(error.BufferTooSmall, utf8ViewToUTF8String(&view, &tiny));
 }
 
@@ -1611,9 +1613,9 @@ test "hostile matrix: string conversion APIs propagate validation" {
     var size: usize = 0;
 
     const view_delta = try initUTF8View("Δ", &size);
-    try std.testing.expectError(error.BufferTooSmall, utf8ViewToUTF8String(&view_delta, &[_]u21{}));
+    try std.testing.expectError(error.BufferTooSmall, utf8ViewToUTF8String(&view_delta, &[_]CodePoint{}));
     // Buffer exactly sized succeeds
-    var buf_two: [2]u21 = undefined;
+    var buf_two: [2]CodePoint = undefined;
     const view_two = try initUTF8View("αβ", &size);
     try std.testing.expectEqual(@as(usize, 2), try utf8ViewToUTF8String(&view_two, buf_two[0..]));
 
