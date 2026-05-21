@@ -1,4 +1,5 @@
 const std = @import("std");
+const utils = @import("utils/root.zig");
 
 pub fn downloadFileToPath(allocator: std.mem.Allocator, io: std.Io, writer: *std.Io.Writer, url: []const u8) !void {
     var client: std.http.Client = .{
@@ -15,14 +16,7 @@ pub fn downloadFileToPath(allocator: std.mem.Allocator, io: std.Io, writer: *std
 const file_name = "src/unicode/unicode_generated.zig";
 const unicode_data_url = "https://www.unicode.org/Public/UCD/latest/ucd/UnicodeData.txt";
 
-pub fn main(init: std.process.Init) !void {
-    const arena = init.arena.allocator();
-    const io = init.io;
-
-    const clock: std.Io.Clock = .real;
-
-    const start = clock.now(io);
-
+fn downloadAndGenerateUnicodeData(arena: std.mem.Allocator, io: std.Io) !void {
     var allocated_writer: std.Io.Writer.Allocating = .init(arena);
     defer allocated_writer.deinit();
 
@@ -41,8 +35,6 @@ pub fn main(init: std.process.Init) !void {
     const writer = &file_writer.interface;
 
     var combining_buffer: std.ArrayList(u8) = .empty;
-
-    var bidi_buffer: std.ArrayList(u8) = .empty;
 
     var lowercase_mapping_range: std.ArrayList(u8) = .empty;
     var lowercase_range_start: []const u8 = "";
@@ -65,6 +57,8 @@ pub fn main(init: std.process.Init) !void {
         \\//! This file is auto-generated. Do not edit directly.
         \\//! To regenerate run `zig build generate` in same level
         \\//! as `build.zig` file.
+        \\
+        \\const CodePoint = @import("encoding").CodePoint;
         \\
         \\pub const GeneralCategory = enum(u8) {
         \\    uppercase_letter,
@@ -125,47 +119,40 @@ pub fn main(init: std.process.Init) !void {
         \\    pop_directional_isolate,
         \\};
         \\
-        \\pub const CategoryEntry = struct {
-        \\    range_start: u21,
-        \\    range_end: u21,
-        \\    category: GeneralCategory,
-        \\};
-        \\
         \\pub const CombiningClassEntry = struct {
-        \\    range_start: u21,
-        \\    range_end: u21,
+        \\    range_start: CodePoint,
+        \\    range_end: CodePoint,
         \\    canonical_combining_class: u8,
         \\};
         \\
         \\pub const BidiEntry = struct {
-        \\    range_start: u21,
-        \\    range_end: u21,
+        \\    range_start: CodePoint,
+        \\    range_end: CodePoint,
         \\    bidi_class: BidiClass,
         \\};
         \\
-        \\pub const CaseMappingRangeEntry = struct { start: u21, end: u21, delta: i32 };
+        \\pub const CaseMappingRangeEntry = struct { start: CodePoint, end: CodePoint, delta: i32 };
         \\
-        \\pub const category_table = [_]CategoryEntry {
         \\
     );
 
     var i: usize = 0;
-
-    var category_start_range: ?u21 = null;
-    var category_end_range: ?u21 = null;
-    var previous_category_cp: ?u21 = null;
-    var current_category: ?[]const u8 = null;
+    // For GeneralCategory two-level page table generation:
+    var category_values = std.ArrayList([]const u8).empty;
+    // For BidiClass two-level page table generation:
+    var bidi_values = std.ArrayList([]const u8).empty;
 
     var combining_start_range: ?u21 = null;
     var combining_end_range: ?u21 = null;
-    var previous_combining_cp: ?u21 = null;
     var current_combining_class: ?[]const u8 = null;
 
-    var bidi_start_range: ?u21 = null;
-    var bidi_end_range: ?u21 = null;
-    var previous_bidi_cp: ?u21 = null;
-    var current_bidi: ?[]const u8 = null;
+    // For BidiClass page-table generation
+    var next_bidi_cp: u21 = 0;
 
+    // Build the GeneralCategory for every codepoint (0..=0x10FFFF)
+    // We parse UnicodeData.txt, which is sparse, so fill gaps with "unassigned"
+    var next_cp: u21 = 0;
+    split_iter.reset();
     while (split_iter.next()) |line| : (i += 1) {
         if (line.len == 0) {
             continue;
@@ -176,10 +163,9 @@ pub fn main(init: std.process.Init) !void {
         const code_point = field_iter.next() orelse continue;
         _ = field_iter.next() orelse continue;
         const category = field_iter.next() orelse continue;
-        const canonical_combining_class = field_iter.next() orelse continue;
+        const combining_class = field_iter.next() orelse continue;
         const bidi_class = field_iter.next() orelse continue;
 
-        _ = field_iter.next();
         _ = field_iter.next();
         _ = field_iter.next();
         _ = field_iter.next();
@@ -225,6 +211,48 @@ pub fn main(init: std.process.Init) !void {
             break :blk "unassigned";
         };
 
+        // Fill any gaps before cp with "unassigned"
+        while (next_cp < cp) : (next_cp += 1) {
+            try category_values.append(arena, "unassigned");
+        }
+        try category_values.append(arena, category_name);
+        next_cp = cp + 1;
+
+        // Combining class range logic
+        if (!std.mem.eql(u8, combining_class, "0")) {
+            if (current_combining_class == null) {
+                combining_start_range = cp;
+                combining_end_range = cp;
+                current_combining_class = combining_class;
+            } else if (std.mem.eql(u8, current_combining_class.?, combining_class) and cp == combining_end_range.? + 1) {
+                combining_end_range = cp;
+            } else {
+                const p = try std.fmt.allocPrint(
+                    arena,
+                    "    .{{ .range_start = 0x{X}, .range_end = 0x{X}, .canonical_combining_class = {s} }},\n",
+                    .{ combining_start_range.?, combining_end_range.?, current_combining_class.? },
+                );
+
+                try combining_buffer.appendSlice(arena, p);
+
+                combining_start_range = cp;
+                combining_end_range = cp;
+                current_combining_class = combining_class;
+            }
+        } else if (current_combining_class != null) {
+            const p = try std.fmt.allocPrint(
+                arena,
+                "    .{{ .range_start = 0x{X}, .range_end = 0x{X}, .canonical_combining_class = {s} }},\n",
+                .{ combining_start_range.?, combining_end_range.?, current_combining_class.? },
+            );
+
+            try combining_buffer.appendSlice(arena, p);
+
+            combining_start_range = null;
+            combining_end_range = null;
+            current_combining_class = null;
+        }
+
         const bidi_name = blk: {
             if (std.mem.eql(u8, bidi_class, "L")) break :blk "left_to_right";
             if (std.mem.eql(u8, bidi_class, "R")) break :blk "right_to_left";
@@ -251,89 +279,12 @@ pub fn main(init: std.process.Init) !void {
             break :blk "pop_directional_isolate";
         };
 
-        if (current_category == null) {
-            current_category = category_name;
-            category_start_range = cp;
-            category_end_range = cp;
-            previous_category_cp = cp;
-        } else {
-            const contiguous = cp == previous_category_cp.? + 1;
-            const same_category = std.mem.eql(u8, current_category.?, category_name);
-
-            if (same_category and contiguous) {
-                category_end_range = cp;
-                previous_category_cp = cp;
-            } else {
-                try writer.print(
-                    "    .{{ .range_start = 0x{X}, .range_end = 0x{X}, .category = .{s} }},\n",
-                    .{ category_start_range.?, category_end_range.?, current_category.? },
-                );
-
-                current_category = category_name;
-                category_start_range = cp;
-                category_end_range = cp;
-                previous_category_cp = cp;
-            }
+        // Fill any gaps before cp with "left_to_right"
+        while (next_bidi_cp < cp) : (next_bidi_cp += 1) {
+            try bidi_values.append(arena, "left_to_right");
         }
-
-        if (!std.mem.eql(u8, canonical_combining_class, "0")) {
-            if (current_combining_class == null) {
-                current_combining_class = canonical_combining_class;
-                combining_start_range = cp;
-                combining_end_range = cp;
-                previous_combining_cp = cp;
-            } else {
-                const contiguous = cp == previous_combining_cp.? + 1;
-                const same_class = std.mem.eql(u8, current_combining_class.?, canonical_combining_class);
-
-                if (same_class and contiguous) {
-                    combining_end_range = cp;
-                    previous_combining_cp = cp;
-                } else {
-                    const p = try std.fmt.allocPrint(
-                        arena,
-                        "    .{{ .range_start = 0x{X}, .range_end = 0x{X}, .canonical_combining_class = {s} }},\n",
-                        .{ combining_start_range.?, combining_end_range.?, current_combining_class.? },
-                    );
-
-                    try combining_buffer.appendSlice(arena, p);
-
-                    current_combining_class = canonical_combining_class;
-                    combining_start_range = cp;
-                    combining_end_range = cp;
-                    previous_combining_cp = cp;
-                }
-            }
-        }
-        if (!std.mem.eql(u8, bidi_name, "left_to_right")) {
-            if (current_bidi == null) {
-                current_bidi = bidi_name;
-                bidi_start_range = cp;
-                bidi_end_range = cp;
-                previous_bidi_cp = cp;
-            } else {
-                const contiguous = cp == previous_bidi_cp.? + 1;
-                const same_bidi = std.mem.eql(u8, current_bidi.?, bidi_name);
-
-                if (same_bidi and contiguous) {
-                    bidi_end_range = cp;
-                    previous_bidi_cp = cp;
-                } else {
-                    const p = try std.fmt.allocPrint(
-                        arena,
-                        "    .{{ .range_start = 0x{X}, .range_end = 0x{X}, .bidi_class = .{s} }},\n",
-                        .{ bidi_start_range.?, bidi_end_range.?, current_bidi.? },
-                    );
-
-                    try bidi_buffer.appendSlice(arena, p);
-
-                    current_bidi = bidi_name;
-                    bidi_start_range = cp;
-                    bidi_end_range = cp;
-                    previous_bidi_cp = cp;
-                }
-            }
-        }
+        try bidi_values.append(arena, bidi_name);
+        next_bidi_cp = cp + 1;
 
         if (uppercase_mapping.len != 0) {
             const upper_cp = try std.fmt.allocPrint(arena, "{X}", .{cp});
@@ -421,12 +372,105 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
-    if (current_category != null) {
-        try writer.print(
-            "    .{{ .range_start = 0x{X}, .range_end = 0x{X}, .category = .{s} }},\n",
-            .{ category_start_range.?, category_end_range.?, current_category.? },
-        );
+    // Fill any remaining codepoints with "unassigned"
+    while (next_cp <= 0x10FFFF) : (next_cp += 1) {
+        try category_values.append(arena, "unassigned");
     }
+
+    // Fill any remaining codepoints with "left_to_right" for bidi
+    while (next_bidi_cp <= 0x10FFFF) : (next_bidi_cp += 1) {
+        try bidi_values.append(arena, "left_to_right");
+    }
+
+    // Build two-level page table
+    const PAGE_BITS = 8;
+    const PAGE_SIZE = 1 << PAGE_BITS;
+    // const PAGE_COUNT = (0x10FFFF + PAGE_SIZE) >> PAGE_BITS;
+
+    // Build unique pages and level1/level2 tables
+    var unique_pages = std.ArrayList([]const []const u8).empty;
+    // var unique_page_indices = std.ArrayList(usize).empty;
+    var level1 = std.ArrayList(usize).empty;
+
+    var page_map: std.AutoHashMapUnmanaged(u64, usize) = .empty;
+    const page_buf = try arena.alloc([]const u8, PAGE_SIZE);
+
+    var total_cps: usize = 0;
+    while (total_cps < category_values.items.len) : (total_cps += PAGE_SIZE) {
+        const page_start = total_cps;
+        const page_end = @min(page_start + PAGE_SIZE, category_values.items.len);
+        for (page_buf, 0..) |*slot, j| {
+            const idx = page_start + j;
+            if (idx < page_end) {
+                slot.* = category_values.items[idx];
+            } else {
+                slot.* = "unassigned";
+            }
+        }
+        // Hash the page for deduplication
+        var hasher = std.hash.Wyhash.init(0);
+        for (page_buf) |cat| {
+            hasher.update(cat);
+        }
+        const page_hash = hasher.final();
+        var found = false;
+        var found_idx: usize = 0;
+        if (page_map.get(page_hash)) |idx| {
+            var same = true;
+            for (unique_pages.items[idx], page_buf) |a, b| {
+                if (!std.mem.eql(u8, a, b)) {
+                    same = false;
+                    break;
+                }
+            }
+            if (same) {
+                found = true;
+                found_idx = idx;
+            }
+        }
+        if (!found) {
+            // Copy the page to arena and add to unique_pages
+            const new_page = try arena.alloc([]const u8, PAGE_SIZE);
+            for (page_buf, 0..) |cat, j| new_page[j] = cat;
+            found_idx = unique_pages.items.len;
+            try unique_pages.append(arena, new_page);
+            try page_map.put(arena, page_hash, found_idx);
+        }
+        try level1.append(arena, found_idx);
+    }
+
+    // Emit the tables
+    try writer.writeAll("//zig fmt: off\nconst category_level1 = [_]u16 {");
+    for (level1.items, 0..) |idx, n| {
+        if (n % 12 == 0) try writer.writeAll("\n    ");
+        try writer.print("{},", .{idx});
+        if (n + 1 != level1.items.len) {
+            try writer.writeAll(" ");
+        }
+    }
+    try writer.writeAll("\n};\n//zig fmt: on\n\n");
+
+    try writer.writeAll("//zig fmt: off\nconst category_level_2 = [_][256]GeneralCategory {\n");
+    for (unique_pages.items) |page| {
+        try writer.writeAll("    .{\n        ");
+        for (page, 0..) |cat, j| {
+            try writer.writeAll(".");
+            try writer.writeAll(cat);
+            try writer.writeAll(",");
+            if ((j + 1) % 12 == 0 and (j + 1) != page.len) try writer.writeAll("\n        ");
+        }
+        try writer.writeAll("\n    },\n");
+    }
+    try writer.writeAll("};\n//zig fmt: on\n\n");
+
+    try writer.writeAll(
+        \\pub inline fn generalCategory(cp: CodePoint) GeneralCategory {
+        \\    const page = category_level1[cp >> 8];
+        \\    return category_level_2[page][cp & 0xFF];
+        \\}
+        \\
+        \\
+    );
 
     if (current_combining_class != null) {
         const p = try std.fmt.allocPrint(
@@ -438,23 +482,94 @@ pub fn main(init: std.process.Init) !void {
         try combining_buffer.appendSlice(arena, p);
     }
 
-    if (current_bidi != null) {
-        const p = try std.fmt.allocPrint(
-            arena,
-            "    .{{ .range_start = 0x{X}, .range_end = 0x{X}, .bidi_class = .{s} }},\n",
-            .{ bidi_start_range.?, bidi_end_range.?, current_bidi.? },
-        );
+    try writer.writeAll("pub const combining_class_table = [_]CombiningClassEntry {\n");
+    try writer.writeAll(combining_buffer.items);
+    try writer.writeAll("};\n\n");
 
-        try bidi_buffer.appendSlice(arena, p);
+    // --- BidiClass two-level page table generation ---
+    const bidi_PAGE_BITS = 8;
+    const bidi_PAGE_SIZE = 1 << bidi_PAGE_BITS;
+    var unique_bidi_pages = std.ArrayList([]const []const u8).empty;
+    var bidi_level1_items = std.ArrayList(usize).empty;
+    var bidi_page_map: std.AutoHashMapUnmanaged(u64, usize) = .empty;
+    const bidi_page_buf = try arena.alloc([]const u8, bidi_PAGE_SIZE);
+    var total_bidi_cps: usize = 0;
+    while (total_bidi_cps < bidi_values.items.len) : (total_bidi_cps += bidi_PAGE_SIZE) {
+        const page_start = total_bidi_cps;
+        const page_end = @min(page_start + bidi_PAGE_SIZE, bidi_values.items.len);
+        for (bidi_page_buf, 0..) |*slot, j| {
+            const idx = page_start + j;
+            if (idx < page_end) {
+                slot.* = bidi_values.items[idx];
+            } else {
+                slot.* = "left_to_right";
+            }
+        }
+        // Hash the page for deduplication
+        var hasher = std.hash.Wyhash.init(0);
+        for (bidi_page_buf) |cat| {
+            hasher.update(cat);
+        }
+        const page_hash = hasher.final();
+        var found = false;
+        var found_idx: usize = 0;
+        if (bidi_page_map.get(page_hash)) |idx| {
+            var same = true;
+            for (unique_bidi_pages.items[idx], bidi_page_buf) |a, b| {
+                if (!std.mem.eql(u8, a, b)) {
+                    same = false;
+                    break;
+                }
+            }
+            if (same) {
+                found = true;
+                found_idx = idx;
+            }
+        }
+        if (!found) {
+            const new_page = try arena.alloc([]const u8, bidi_PAGE_SIZE);
+            for (bidi_page_buf, 0..) |cat, j| new_page[j] = cat;
+            found_idx = unique_bidi_pages.items.len;
+            try unique_bidi_pages.append(arena, new_page);
+            try bidi_page_map.put(arena, page_hash, found_idx);
+        }
+        try bidi_level1_items.append(arena, found_idx);
     }
 
-    try writer.writeAll("};\n\npub const combining_class_table = [_]CombiningClassEntry {\n");
-    try writer.writeAll(combining_buffer.items);
+    // Emit the tables
+    try writer.writeAll("//zig fmt: off\nconst bidi_level1 = [_]u16 {");
+    for (bidi_level1_items.items, 0..) |idx, n| {
+        if (n % 12 == 0) try writer.writeAll("\n    ");
+        try writer.print("{},", .{idx});
+        if (n + 1 != bidi_level1_items.items.len) {
+            try writer.writeAll(" ");
+        }
+    }
+    try writer.writeAll("\n};\n//zig fmt: on\n\n");
 
-    try writer.writeAll("};\n\npub const bidi_table = [_]BidiEntry {\n");
-    try writer.writeAll(bidi_buffer.items);
+    try writer.writeAll("//zig fmt: off\nconst bidi_level_2 = [_][256]BidiClass {\n");
+    for (unique_bidi_pages.items) |page| {
+        try writer.writeAll("    .{\n        ");
+        for (page, 0..) |cat, j| {
+            try writer.writeAll(".");
+            try writer.writeAll(cat);
+            try writer.writeAll(",");
+            if ((j + 1) % 12 == 0 and (j + 1) != page.len) try writer.writeAll("\n        ");
+        }
+        try writer.writeAll("\n    },\n");
+    }
+    try writer.writeAll("};\n//zig fmt: on\n\n");
 
-    try writer.writeAll("};\n\npub const lowercase_range_mapping_table = [_]CaseMappingRangeEntry {\n");
+    try writer.writeAll(
+        \\pub inline fn bidiClass(cp: CodePoint) BidiClass {
+        \\    const page = bidi_level1[cp >> 8];
+        \\    return bidi_level_2[page][cp & 0xFF];
+        \\}
+        \\
+        \\
+    );
+
+    try writer.writeAll("pub const lowercase_range_mapping_table = [_]CaseMappingRangeEntry {\n");
     try writer.writeAll(lowercase_mapping_range.items);
 
     try writer.writeAll("};\n\npub const uppercase_range_mapping_table = [_]CaseMappingRangeEntry {\n");
@@ -467,7 +582,22 @@ pub fn main(init: std.process.Init) !void {
 
     try file_writer.flush();
 
+    std.debug.print("parsed and wrote {} table data\n", .{i});
+}
+
+pub fn main(init: std.process.Init) !void {
+    const arena = init.arena.allocator();
+    const io = init.io;
+
+    const clock: std.Io.Clock = .real;
+
+    const start = clock.now(io);
+
+    {
+        try downloadAndGenerateUnicodeData(arena, io);
+    }
+
     const end = clock.now(io);
 
-    std.debug.print("parsed and wrote {} table data, took: {}ms\n", .{ i, end.toMilliseconds() - start.toMilliseconds() });
+    std.debug.print("generate command took: {}ms\n", .{end.toMilliseconds() - start.toMilliseconds()});
 }

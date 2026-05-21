@@ -10,16 +10,14 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
     });
 
+    const utils: std.Build.Module.Import = .{ .name = "utils", .module = utils_module };
+
     const encoding_module = b.addModule("encoding", .{
         .root_source_file = b.path("src/encoding/root.zig"),
         .target = target,
         .optimize = optimize,
-        .imports = &.{
-            .{ .name = "utils", .module = utils_module },
-        },
+        .imports = &.{utils},
     });
-
-    const utils: std.Build.Module.Import = .{ .name = "utils", .module = utils_module };
     const encoding: std.Build.Module.Import = .{ .name = "encoding", .module = encoding_module };
 
     const transcoding_module = b.addModule("transcoding", .{
@@ -31,10 +29,19 @@ pub fn build(b: *std.Build) !void {
 
     const transcoding: std.Build.Module.Import = .{ .name = "transcoding", .module = transcoding_module };
 
+    const unicode_module = b.addModule("unicode", .{
+        .root_source_file = b.path("src/unicode/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{ utils, encoding },
+    });
+
+    const unicode: std.Build.Module.Import = .{ .name = "unicode", .module = unicode_module };
+
     const ezi_code_module = b.addModule("ezi_code", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
-        .imports = &.{ utils, encoding, transcoding },
+        .imports = &.{ utils, encoding, transcoding, unicode },
     });
 
     const root: std.Build.Module.Import = .{ .name = "ezi_code", .module = ezi_code_module };
