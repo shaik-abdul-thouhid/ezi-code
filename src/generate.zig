@@ -37,18 +37,18 @@ fn downloadAndGenerateUnicodeData(arena: std.mem.Allocator, io: std.Io) !void {
     var combining_buffer: std.ArrayList(u8) = .empty;
 
     var lowercase_mapping_range: std.ArrayList(u8) = .empty;
-    var lowercase_range_start: []const u8 = "";
-    var lowercase_range_end: []const u8 = "";
+    var lowercase_range_start: ?u21 = null;
+    var lowercase_range_end: ?u21 = null;
     var lowercase_current_difference: i32 = 0;
 
     var uppercase_mapping_range: std.ArrayList(u8) = .empty;
-    var uppercase_range_start: []const u8 = "";
-    var uppercase_range_end: []const u8 = "";
+    var uppercase_range_start: ?u21 = null;
+    var uppercase_range_end: ?u21 = null;
     var uppercase_current_difference: i32 = 0;
 
     var title_case_mapping_range: std.ArrayList(u8) = .empty;
-    var title_case_range_start: []const u8 = "";
-    var title_case_range_end: []const u8 = "";
+    var title_case_range_start: ?u21 = null;
+    var title_case_range_end: ?u21 = null;
     var title_case_current_difference: i32 = 0;
 
     var split_iter = std.mem.splitScalar(u8, allocated_writer.written(), '\n');
@@ -151,6 +151,9 @@ fn downloadAndGenerateUnicodeData(arena: std.mem.Allocator, io: std.Io) !void {
 
     // Build the GeneralCategory for every codepoint (0..=0x10FFFF)
     // We parse UnicodeData.txt, which is sparse, so fill gaps with "unassigned"
+    var pending_range_start: ?u21 = null;
+    var pending_range_category: ?[]const u8 = null;
+    var pending_range_bidi: ?[]const u8 = null;
     var next_cp: u21 = 0;
     split_iter.reset();
     while (split_iter.next()) |line| : (i += 1) {
@@ -161,23 +164,30 @@ fn downloadAndGenerateUnicodeData(arena: std.mem.Allocator, io: std.Io) !void {
         var field_iter = std.mem.splitScalar(u8, line, ';');
 
         const code_point = field_iter.next() orelse continue;
-        _ = field_iter.next() orelse continue;
+        const range_hint = field_iter.next() orelse continue;
         const category = field_iter.next() orelse continue;
         const combining_class = field_iter.next() orelse continue;
         const bidi_class = field_iter.next() orelse continue;
 
-        // Skip fields 5..11
-        _ = field_iter.next(); // Decomposition_Mapping
-        _ = field_iter.next(); // Decimal_Digit_Value
-        _ = field_iter.next(); // Digit_Value
-        _ = field_iter.next(); // Numeric_Value
-        _ = field_iter.next(); // Bidi_Mirrored
-        _ = field_iter.next(); // Unicode_1_Name
-        _ = field_iter.next(); // ISO_Comment
+        // UnicodeData.txt fields:
+        // 5 Decomposition_Mapping
+        // 6 Decimal_Digit_Value
+        // 7 Digit_Value
+        // 8 Numeric_Value
+        // 9 Bidi_Mirrored
+        // 10 Unicode_1_Name
+        // 11 ISO_Comment
+        _ = field_iter.next();
+        _ = field_iter.next();
+        _ = field_iter.next();
+        _ = field_iter.next();
+        _ = field_iter.next();
+        _ = field_iter.next();
+        _ = field_iter.next();
 
-        const uppercase_mapping = field_iter.next() orelse ""; // field 12
-        const lowercase_mapping = field_iter.next() orelse ""; // field 13
-        const title_case_mapping = field_iter.next() orelse ""; // field 14
+        const uppercase_mapping = field_iter.next() orelse "";
+        const lowercase_mapping = field_iter.next() orelse "";
+        const title_case_mapping = field_iter.next() orelse "";
         const cp = try std.fmt.parseInt(u21, code_point, 16);
 
         const category_name = blk: {
@@ -212,6 +222,66 @@ fn downloadAndGenerateUnicodeData(arena: std.mem.Allocator, io: std.Io) !void {
             if (std.mem.eql(u8, category, "Co")) break :blk "private_use";
             break :blk "unassigned";
         };
+
+        const bidi_name = blk: {
+            if (std.mem.eql(u8, bidi_class, "L")) break :blk "left_to_right";
+            if (std.mem.eql(u8, bidi_class, "R")) break :blk "right_to_left";
+            if (std.mem.eql(u8, bidi_class, "AL")) break :blk "arabic_letter";
+            if (std.mem.eql(u8, bidi_class, "EN")) break :blk "european_number";
+            if (std.mem.eql(u8, bidi_class, "ES")) break :blk "european_separator";
+            if (std.mem.eql(u8, bidi_class, "ET")) break :blk "european_terminator";
+            if (std.mem.eql(u8, bidi_class, "AN")) break :blk "arabic_number";
+            if (std.mem.eql(u8, bidi_class, "CS")) break :blk "common_separator";
+            if (std.mem.eql(u8, bidi_class, "NSM")) break :blk "non_spacing_mark";
+            if (std.mem.eql(u8, bidi_class, "BN")) break :blk "boundary_neutral";
+            if (std.mem.eql(u8, bidi_class, "B")) break :blk "paragraph_separator";
+            if (std.mem.eql(u8, bidi_class, "S")) break :blk "segment_separator";
+            if (std.mem.eql(u8, bidi_class, "WS")) break :blk "whitespace";
+            if (std.mem.eql(u8, bidi_class, "ON")) break :blk "other_neutral";
+            if (std.mem.eql(u8, bidi_class, "LRE")) break :blk "left_to_right_embedding";
+            if (std.mem.eql(u8, bidi_class, "LRO")) break :blk "left_to_right_override";
+            if (std.mem.eql(u8, bidi_class, "RLE")) break :blk "right_to_left_embedding";
+            if (std.mem.eql(u8, bidi_class, "RLO")) break :blk "right_to_left_override";
+            if (std.mem.eql(u8, bidi_class, "PDF")) break :blk "pop_directional_format";
+            if (std.mem.eql(u8, bidi_class, "LRI")) break :blk "left_to_right_isolate";
+            if (std.mem.eql(u8, bidi_class, "RLI")) break :blk "right_to_left_isolate";
+            if (std.mem.eql(u8, bidi_class, "FSI")) break :blk "first_strong_isolate";
+            break :blk "pop_directional_isolate";
+        };
+
+        // UnicodeData.txt <..., First> / <..., Last> range handling
+        if (std.mem.endsWith(u8, range_hint, ", First>")) {
+            pending_range_start = cp;
+            pending_range_category = category_name;
+            pending_range_bidi = bidi_name;
+            continue;
+        }
+
+        if (std.mem.endsWith(u8, range_hint, ", Last>")) {
+            const start_cp = pending_range_start orelse {
+                return error.InvalidUnicodeRange;
+            };
+            const range_category = pending_range_category.?;
+            const range_bidi = pending_range_bidi.?;
+
+            while (next_cp < start_cp) : (next_cp += 1) {
+                try category_values.append(arena, "unassigned");
+            }
+            while (next_bidi_cp < start_cp) : (next_bidi_cp += 1) {
+                try bidi_values.append(arena, "left_to_right");
+            }
+            var range_cp = start_cp;
+            while (range_cp <= cp) : (range_cp += 1) {
+                try category_values.append(arena, range_category);
+                try bidi_values.append(arena, range_bidi);
+            }
+            next_cp = cp + 1;
+            next_bidi_cp = cp + 1;
+            pending_range_start = null;
+            pending_range_category = null;
+            pending_range_bidi = null;
+            continue;
+        }
 
         // Fill any gaps before cp with "unassigned"
         while (next_cp < cp) : (next_cp += 1) {
@@ -255,32 +325,6 @@ fn downloadAndGenerateUnicodeData(arena: std.mem.Allocator, io: std.Io) !void {
             current_combining_class = null;
         }
 
-        const bidi_name = blk: {
-            if (std.mem.eql(u8, bidi_class, "L")) break :blk "left_to_right";
-            if (std.mem.eql(u8, bidi_class, "R")) break :blk "right_to_left";
-            if (std.mem.eql(u8, bidi_class, "AL")) break :blk "arabic_letter";
-            if (std.mem.eql(u8, bidi_class, "EN")) break :blk "european_number";
-            if (std.mem.eql(u8, bidi_class, "ES")) break :blk "european_separator";
-            if (std.mem.eql(u8, bidi_class, "ET")) break :blk "european_terminator";
-            if (std.mem.eql(u8, bidi_class, "AN")) break :blk "arabic_number";
-            if (std.mem.eql(u8, bidi_class, "CS")) break :blk "common_separator";
-            if (std.mem.eql(u8, bidi_class, "NSM")) break :blk "non_spacing_mark";
-            if (std.mem.eql(u8, bidi_class, "BN")) break :blk "boundary_neutral";
-            if (std.mem.eql(u8, bidi_class, "B")) break :blk "paragraph_separator";
-            if (std.mem.eql(u8, bidi_class, "S")) break :blk "segment_separator";
-            if (std.mem.eql(u8, bidi_class, "WS")) break :blk "whitespace";
-            if (std.mem.eql(u8, bidi_class, "ON")) break :blk "other_neutral";
-            if (std.mem.eql(u8, bidi_class, "LRE")) break :blk "left_to_right_embedding";
-            if (std.mem.eql(u8, bidi_class, "LRO")) break :blk "left_to_right_override";
-            if (std.mem.eql(u8, bidi_class, "RLE")) break :blk "right_to_left_embedding";
-            if (std.mem.eql(u8, bidi_class, "RLO")) break :blk "right_to_left_override";
-            if (std.mem.eql(u8, bidi_class, "PDF")) break :blk "pop_directional_format";
-            if (std.mem.eql(u8, bidi_class, "LRI")) break :blk "left_to_right_isolate";
-            if (std.mem.eql(u8, bidi_class, "RLI")) break :blk "right_to_left_isolate";
-            if (std.mem.eql(u8, bidi_class, "FSI")) break :blk "first_strong_isolate";
-            break :blk "pop_directional_isolate";
-        };
-
         // Fill any gaps before cp with "left_to_right"
         while (next_bidi_cp < cp) : (next_bidi_cp += 1) {
             try bidi_values.append(arena, "left_to_right");
@@ -289,86 +333,77 @@ fn downloadAndGenerateUnicodeData(arena: std.mem.Allocator, io: std.Io) !void {
         next_bidi_cp = cp + 1;
 
         if (uppercase_mapping.len != 0) {
-            const upper_cp = try std.fmt.allocPrint(arena, "{X}", .{cp});
-
-            const cp_num_from = try std.fmt.parseInt(u21, upper_cp, 16);
+            const cp_num_from = cp;
             const cp_num_to = try std.fmt.parseInt(u21, uppercase_mapping, 16);
+            const difference = @as(i32, @intCast(cp_num_to)) - @as(i32, @intCast(cp_num_from));
 
-            const difference = @as(i32, @intCast(cp_num_from)) - @as(i32, @intCast(cp_num_to));
-
-            if (uppercase_range_start.len == 0 or uppercase_range_end.len == 0 or uppercase_current_difference == 0) {
-                uppercase_range_start = upper_cp;
-                uppercase_range_end = upper_cp;
+            if (uppercase_range_start == null or uppercase_range_end == null or uppercase_current_difference == 0) {
+                uppercase_range_start = cp;
+                uppercase_range_end = cp;
                 uppercase_current_difference = difference;
-            } else if (uppercase_current_difference == difference) {
-                uppercase_range_end = upper_cp;
-            } else if (uppercase_current_difference != difference) {
+            } else if (uppercase_current_difference == difference and cp == uppercase_range_end.? + 1) {
+                uppercase_range_end = cp;
+            } else if (uppercase_current_difference != difference or cp != uppercase_range_end.? + 1) {
                 const p = try std.fmt.allocPrint(
                     arena,
-                    "    .{{ .start = 0x{s}, .end = 0x{s}, .delta = {} }},\n",
-                    .{ uppercase_range_start, uppercase_range_end, uppercase_current_difference },
+                    "    .{{ .start = 0x{X}, .end = 0x{X}, .delta = {} }},\n",
+                    .{ uppercase_range_start.?, uppercase_range_end.?, uppercase_current_difference },
                 );
 
                 try uppercase_mapping_range.appendSlice(arena, p);
 
-                uppercase_range_start = upper_cp;
-                uppercase_range_end = upper_cp;
+                uppercase_range_start = cp;
+                uppercase_range_end = cp;
                 uppercase_current_difference = difference;
             }
         }
         if (lowercase_mapping.len != 0) {
-            const lower_cp = try std.fmt.allocPrint(arena, "{X}", .{cp});
-
-            const cp_num_from = try std.fmt.parseInt(u21, lower_cp, 16);
+            const cp_num_from = cp;
             const cp_num_to = try std.fmt.parseInt(u21, lowercase_mapping, 16);
+            const difference = @as(i32, @intCast(cp_num_to)) - @as(i32, @intCast(cp_num_from));
 
-            const difference = @as(i32, @intCast(cp_num_from)) - @as(i32, @intCast(cp_num_to));
-
-            if (lowercase_range_start.len == 0 or lowercase_range_end.len == 0 or lowercase_current_difference == 0) {
-                lowercase_range_start = lower_cp;
-                lowercase_range_end = lower_cp;
+            if (lowercase_range_start == null or lowercase_range_end == null or lowercase_current_difference == 0) {
+                lowercase_range_start = cp;
+                lowercase_range_end = cp;
                 lowercase_current_difference = difference;
-            } else if (lowercase_current_difference == difference) {
-                lowercase_range_end = lower_cp;
-            } else if (lowercase_current_difference != difference) {
+            } else if (lowercase_current_difference == difference and cp == lowercase_range_end.? + 1) {
+                lowercase_range_end = cp;
+            } else if (lowercase_current_difference != difference or cp != lowercase_range_end.? + 1) {
                 const p = try std.fmt.allocPrint(
                     arena,
-                    "    .{{ .start = 0x{s}, .end = 0x{s}, .delta = {} }},\n",
-                    .{ lowercase_range_start, lowercase_range_end, lowercase_current_difference },
+                    "    .{{ .start = 0x{X}, .end = 0x{X}, .delta = {} }},\n",
+                    .{ lowercase_range_start.?, lowercase_range_end.?, lowercase_current_difference },
                 );
 
                 try lowercase_mapping_range.appendSlice(arena, p);
 
-                lowercase_range_start = lower_cp;
-                lowercase_range_end = lower_cp;
+                lowercase_range_start = cp;
+                lowercase_range_end = cp;
                 lowercase_current_difference = difference;
             }
         }
         if (title_case_mapping.len != 0) {
-            const title_cp = try std.fmt.allocPrint(arena, "{X}", .{cp});
-
-            const cp_num_from = try std.fmt.parseInt(u21, title_cp, 16);
+            const cp_num_from = cp;
             const cp_num_to = try std.fmt.parseInt(u21, title_case_mapping, 16);
+            const difference = @as(i32, @intCast(cp_num_to)) - @as(i32, @intCast(cp_num_from));
 
-            const difference = @as(i32, @intCast(cp_num_from)) - @as(i32, @intCast(cp_num_to));
-
-            if (title_case_range_start.len == 0 or title_case_range_end.len == 0 or title_case_current_difference == 0) {
-                title_case_range_start = title_cp;
-                title_case_range_end = title_cp;
+            if (title_case_range_start == null or title_case_range_end == null or title_case_current_difference == 0) {
+                title_case_range_start = cp;
+                title_case_range_end = cp;
                 title_case_current_difference = difference;
-            } else if (title_case_current_difference == difference) {
-                title_case_range_end = title_cp;
-            } else if (title_case_current_difference != difference) {
+            } else if (title_case_current_difference == difference and cp == title_case_range_end.? + 1) {
+                title_case_range_end = cp;
+            } else if (title_case_current_difference != difference or cp != title_case_range_end.? + 1) {
                 const p = try std.fmt.allocPrint(
                     arena,
-                    "    .{{ .start = 0x{s}, .end = 0x{s}, .delta = {} }},\n",
-                    .{ title_case_range_start, title_case_range_end, title_case_current_difference },
+                    "    .{{ .start = 0x{X}, .end = 0x{X}, .delta = {} }},\n",
+                    .{ title_case_range_start.?, title_case_range_end.?, title_case_current_difference },
                 );
 
                 try title_case_mapping_range.appendSlice(arena, p);
 
-                title_case_range_start = title_cp;
-                title_case_range_end = title_cp;
+                title_case_range_start = cp;
+                title_case_range_end = cp;
                 title_case_current_difference = difference;
             }
         }
@@ -467,6 +502,7 @@ fn downloadAndGenerateUnicodeData(arena: std.mem.Allocator, io: std.Io) !void {
 
     try writer.writeAll(
         \\pub inline fn generalCategory(cp: CodePoint) GeneralCategory {
+        \\    if (cp > 0x10FFFF) return .unassigned;
         \\    const page = category_level1[cp >> 8];
         \\    return category_level_2[page][cp & 0xFF];
         \\}
@@ -571,29 +607,29 @@ fn downloadAndGenerateUnicodeData(arena: std.mem.Allocator, io: std.Io) !void {
         \\
     );
 
-    if (lowercase_range_start.len != 0) {
+    if (lowercase_range_start != null) {
         const p = try std.fmt.allocPrint(
             arena,
-            "    .{{ .start = 0x{s}, .end = 0x{s}, .delta = {} }},\n",
-            .{ lowercase_range_start, lowercase_range_end, lowercase_current_difference },
+            "    .{{ .start = 0x{X}, .end = 0x{X}, .delta = {} }},\n",
+            .{ lowercase_range_start.?, lowercase_range_end.?, lowercase_current_difference },
         );
         try lowercase_mapping_range.appendSlice(arena, p);
     }
 
-    if (uppercase_range_start.len != 0) {
+    if (uppercase_range_start != null) {
         const p = try std.fmt.allocPrint(
             arena,
-            "    .{{ .start = 0x{s}, .end = 0x{s}, .delta = {} }},\n",
-            .{ uppercase_range_start, uppercase_range_end, uppercase_current_difference },
+            "    .{{ .start = 0x{X}, .end = 0x{X}, .delta = {} }},\n",
+            .{ uppercase_range_start.?, uppercase_range_end.?, uppercase_current_difference },
         );
         try uppercase_mapping_range.appendSlice(arena, p);
     }
 
-    if (title_case_range_start.len != 0) {
+    if (title_case_range_start != null) {
         const p = try std.fmt.allocPrint(
             arena,
-            "    .{{ .start = 0x{s}, .end = 0x{s}, .delta = {} }},\n",
-            .{ title_case_range_start, title_case_range_end, title_case_current_difference },
+            "    .{{ .start = 0x{X}, .end = 0x{X}, .delta = {} }},\n",
+            .{ title_case_range_start.?, title_case_range_end.?, title_case_current_difference },
         );
         try title_case_mapping_range.appendSlice(arena, p);
     }
@@ -615,7 +651,8 @@ fn downloadAndGenerateUnicodeData(arena: std.mem.Allocator, io: std.Io) !void {
 }
 
 pub fn main(init: std.process.Init) !void {
-    const arena = init.arena.allocator();
+    const arena = init.arena;
+    const arena_allocator = arena.allocator();
     const io = init.io;
 
     const clock: std.Io.Clock = .real;
@@ -623,7 +660,8 @@ pub fn main(init: std.process.Init) !void {
     const start = clock.now(io);
 
     {
-        try downloadAndGenerateUnicodeData(arena, io);
+        try downloadAndGenerateUnicodeData(arena_allocator, io);
+        _ = arena.reset(.free_all);
     }
 
     const end = clock.now(io);
