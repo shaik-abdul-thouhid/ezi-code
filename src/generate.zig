@@ -13,18 +13,31 @@ pub fn downloadFileToPath(allocator: std.mem.Allocator, io: std.Io, writer: *std
     _ = try client.fetch(.{ .location = .{ .uri = uri }, .response_writer = writer });
 }
 
-const file_name = "src/unicode/unicode_generated.zig";
-const unicode_data_url = "https://www.unicode.org/Public/UCD/latest/ucd/UnicodeData.txt";
+fn extractFileNameFromPath(path: []const u8) []const u8 {
+    if (path.len == 0) return "";
 
-fn downloadAndGenerateUnicodeData(arena: std.mem.Allocator, io: std.Io) !void {
+    var split_iter = std.mem.splitScalar(u8, path, '/');
+
+    while (split_iter.next()) |path_section| {
+        if (split_iter.peek() == null) {
+            return path_section;
+        }
+    }
+
+    return "";
+}
+
+const ucd_folder = "ucd";
+
+fn downloadAndGenerateUnicodeData(arena: std.mem.Allocator, io: std.Io, url: []const u8, f_name: []const u8) !void {
     var allocated_writer: std.Io.Writer.Allocating = .init(arena);
     defer allocated_writer.deinit();
 
-    try downloadFileToPath(arena, io, &allocated_writer.writer, unicode_data_url);
+    try downloadFileToPath(arena, io, &allocated_writer.writer, url);
 
     const dir: std.Io.Dir = .cwd();
 
-    var file = try dir.createFile(io, file_name, .{
+    var file = try dir.createFile(io, f_name, .{
         .truncate = true,
         .permissions = .default_file,
     });
@@ -647,8 +660,25 @@ fn downloadAndGenerateUnicodeData(arena: std.mem.Allocator, io: std.Io) !void {
 
     try file_writer.flush();
 
+    const ucd_file_name: []const u8 = extractFileNameFromPath(url);
+
+    const ucd_file = try dir.createFile(io, try std.fmt.allocPrint(arena, "ucd/{s}", .{ucd_file_name}), .{
+        .truncate = true,
+        .permissions = .default_file,
+    });
+    defer ucd_file.close(io);
+
+    var ucd_file_writer = ucd_file.writer(io, buf);
+    const ucd_writer = &ucd_file_writer.interface;
+    defer ucd_writer.flush() catch {};
+
+    try ucd_writer.writeAll(allocated_writer.written());
+
     std.debug.print("parsed and wrote {} table data\n", .{i});
 }
+
+const file_name = "src/unicode/unicode_generated.zig";
+const unicode_data_url = "https://www.unicode.org/Public/UCD/latest/ucd/UnicodeData.txt";
 
 pub fn main(init: std.process.Init) !void {
     const arena = init.arena;
@@ -660,7 +690,7 @@ pub fn main(init: std.process.Init) !void {
     const start = clock.now(io);
 
     {
-        try downloadAndGenerateUnicodeData(arena_allocator, io);
+        try downloadAndGenerateUnicodeData(arena_allocator, io, unicode_data_url, file_name);
         _ = arena.reset(.free_all);
     }
 
