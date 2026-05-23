@@ -2,6 +2,9 @@ const std = @import("std");
 const encoding = @import("encoding");
 pub const unicode_data = @import("unicode_data_generated.zig");
 
+const property_alias = @import("property_alias.zig");
+const CanonicalCombiningClass = property_alias.CanonicalCombiningClass;
+
 const CodePoint = encoding.CodePoint;
 
 pub const GeneralCategory = unicode_data.GeneralCategory;
@@ -11,7 +14,7 @@ pub const lowercase_mapping_table = unicode_data.lowercase_range_mapping_table;
 pub const uppercase_mapping_table = unicode_data.uppercase_range_mapping_table;
 pub const title_case_mapping_table = unicode_data.title_case_range_mapping_table;
 
-pub fn canonicalCombiningClass(code_point: CodePoint) u8 {
+pub fn canonicalCombiningClass(code_point: CodePoint) CanonicalCombiningClass {
     if (combining_class_table.len == 0) return 0;
 
     var low: usize = 0;
@@ -26,11 +29,11 @@ pub fn canonicalCombiningClass(code_point: CodePoint) u8 {
         } else if (code_point > range.range_end) {
             low = mid + 1;
         } else {
-            return range.canonical_combining_class;
+            return range.ccc;
         }
     }
 
-    return 0;
+    return .not_reordered;
 }
 
 pub fn isLetter(code_point: CodePoint) bool {
@@ -286,17 +289,17 @@ test "canonicalCombiningClass: ASCII has class 0" {
     for (0x00..0x80) |cp_usize| {
         const cp: CodePoint = @intCast(cp_usize);
         const cc = canonicalCombiningClass(cp);
-        try testing.expectEqual(@as(u8, 0), cc);
+        try testing.expectEqual(.not_reordered, cc);
     }
 }
 
 test "canonicalCombiningClass: boundaries and ranges" {
     // Test code points with known combining classes
-    const tests = [_]struct { cp: CodePoint, expected: u8 }{
-        .{ .cp = 0x0300, .expected = 230 }, // Combining Grave Accent
-        .{ .cp = 0x0301, .expected = 230 }, // Combining Acute Accent
-        .{ .cp = 0x0315, .expected = 232 }, // Combining Comma Above
-        .{ .cp = 0x0330, .expected = 220 }, // Combining Tilde Below
+    const tests = [_]struct { cp: CodePoint, expected: CanonicalCombiningClass }{
+        .{ .cp = 0x0300, .expected = .above }, // Combining Grave Accent
+        .{ .cp = 0x0301, .expected = .above }, // Combining Acute Accent
+        .{ .cp = 0x0315, .expected = .above_right }, // Combining Comma Above
+        .{ .cp = 0x0330, .expected = .below }, // Combining Tilde Below
     };
 
     for (tests) |tc| {
@@ -309,15 +312,15 @@ test "canonicalCombiningClass: binary search correctness" {
     // Test that binary search correctly finds combining classes
     // Start of table lookup
     const start = canonicalCombiningClass(0x0300);
-    try testing.expect(start > 0);
+    try testing.expect(@intFromEnum(start) > 0);
 
     // Middle range
     const middle = canonicalCombiningClass(0x0320);
-    try testing.expect(middle >= 0);
+    try testing.expect(@intFromEnum(middle) >= 0);
 
     // End range
     const end = canonicalCombiningClass(0xFE20);
-    try testing.expect(end >= 0);
+    try testing.expect(@intFromEnum(end) >= 0);
 }
 
 // ============================================================================
@@ -953,7 +956,7 @@ test "properties: ASCII control NOT printable" {
 // ============================================================================
 
 test "edge case: null code point" {
-    try testing.expectEqual(@as(u8, 0), canonicalCombiningClass(0));
+    try testing.expectEqual(.not_reordered, canonicalCombiningClass(0));
     try testing.expect(!isLetter(0));
     try testing.expect(!isUpperCase(0));
     try testing.expect(!isLowerCase(0));
@@ -1029,8 +1032,8 @@ test "hostile: combining class lookup correctness" {
         const cp: CodePoint = @intCast(cp_usize);
         const cc = canonicalCombiningClass(cp);
         // Combining classes should be valid values (0-255)
-        try testing.expect(cc >= 0);
-        try testing.expect(cc <= 255);
+        try testing.expect(@intFromEnum(cc) >= 0);
+        try testing.expect(@intFromEnum(cc) <= 255);
         _ = prev_class;
     }
 }
@@ -1094,10 +1097,10 @@ test "binary search: combining class correctness in ranges" {
     const last_combining = 0xFE2F;
 
     const start = canonicalCombiningClass(first_combining);
-    try testing.expect(start > 0);
+    try testing.expect(@intFromEnum(start) > 0);
 
     const end = canonicalCombiningClass(last_combining);
-    try testing.expect(end >= 0);
+    try testing.expect(@intFromEnum(end) >= 0);
 
     // Points in between should have consistent results
     for (first_combining..last_combining) |cp_usize| {
