@@ -1,6 +1,9 @@
 const std = @import("std");
 const utils = @import("utils/root.zig");
 
+const property_alias = @import("unicode/property_alias.zig");
+const CanonicalCombiningClass = property_alias.CanonicalCombiningClass;
+
 const some = @import("utils/helpers.zig").some;
 
 fn downloadFileToPath(allocator: std.mem.Allocator, io: std.Io, writer: *std.Io.Writer, url: []const u8) !void {
@@ -228,10 +231,12 @@ fn downloadAndGenerateUnicodeData(arena: std.mem.Allocator, io: std.Io, data: []
             } else if (std.mem.eql(u8, current_combining_class.?, combining_class) and cp == combining_end_range.? + 1) {
                 combining_end_range = cp;
             } else {
+                const ccc = try std.fmt.parseInt(u8, current_combining_class.?, 10);
+
                 const p = try std.fmt.allocPrint(
                     arena,
-                    "    .{{ .range_start = 0x{X}, .range_end = 0x{X}, .canonical_combining_class = {s} }},\n",
-                    .{ combining_start_range.?, combining_end_range.?, current_combining_class.? },
+                    "    .{{ .range_start = 0x{X}, .range_end = 0x{X}, .ccc = {any} }},\n",
+                    .{ combining_start_range.?, combining_end_range.?, CanonicalCombiningClass.fromU8(ccc) },
                 );
 
                 try combining_buffer.appendSlice(arena, p);
@@ -241,10 +246,12 @@ fn downloadAndGenerateUnicodeData(arena: std.mem.Allocator, io: std.Io, data: []
                 current_combining_class = combining_class;
             }
         } else if (current_combining_class != null) {
+            const ccc = try std.fmt.parseInt(u8, current_combining_class.?, 10);
+
             const p = try std.fmt.allocPrint(
                 arena,
-                "    .{{ .range_start = 0x{X}, .range_end = 0x{X}, .canonical_combining_class = {s} }},\n",
-                .{ combining_start_range.?, combining_end_range.?, current_combining_class.? },
+                "    .{{ .range_start = 0x{X}, .range_end = 0x{X}, .ccc = {any} }},\n",
+                .{ combining_start_range.?, combining_end_range.?, CanonicalCombiningClass.fromU8(ccc) },
             );
 
             try combining_buffer.appendSlice(arena, p);
@@ -411,6 +418,9 @@ fn downloadAndGenerateUnicodeData(arena: std.mem.Allocator, io: std.Io, data: []
         \\//! as `build.zig` file.
         \\
         \\const CodePoint = @import("encoding").CodePoint;
+        \\const property_alias = @import("property_alias.zig");
+        \\
+        \\const CanonicalCombiningClass = property_alias.CanonicalCombiningClass;
         \\
         \\pub const GeneralCategory = enum(u8) {
         \\    uppercase_letter,
@@ -474,7 +484,7 @@ fn downloadAndGenerateUnicodeData(arena: std.mem.Allocator, io: std.Io, data: []
         \\pub const CombiningClassEntry = struct {
         \\    range_start: CodePoint,
         \\    range_end: CodePoint,
-        \\    canonical_combining_class: u8,
+        \\    ccc: CanonicalCombiningClass,
         \\};
         \\
         \\pub const BidiEntry = struct {
@@ -525,7 +535,7 @@ fn downloadAndGenerateUnicodeData(arena: std.mem.Allocator, io: std.Io, data: []
     if (current_combining_class != null) {
         const p = try std.fmt.allocPrint(
             arena,
-            "    .{{ .range_start = 0x{X}, .range_end = 0x{X}, .canonical_combining_class = {s} }},\n",
+            "    .{{ .range_start = 0x{X}, .range_end = 0x{X}, .ccc = {s} }},\n",
             .{ combining_start_range.?, combining_end_range.?, current_combining_class.? },
         );
 
@@ -1001,6 +1011,109 @@ fn downloadAndGenerateDerivedCoreProperty(arena: std.mem.Allocator, io: std.Io, 
     std.debug.print("wrote ranges {}\n", .{max - min});
 }
 
+pub const CaseFoldingStatus = enum {
+    common,
+    full,
+    simple,
+    turkic,
+};
+
+fn downloadAndGenerateCaseFolding(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
+    _ = url;
+
+    const dir: std.Io.Dir = .cwd();
+
+    var file = try dir.createFile(io, file_name, .{
+        .truncate = true,
+        .permissions = .default_file,
+    });
+    defer file.close(io);
+
+    const buf = try arena.alloc(u8, 4096);
+    var file_writer = file.writer(io, buf);
+    const writer = &file_writer.interface;
+
+    var mapping_pool = std.ArrayList(u21).empty;
+    var entries = std.ArrayList(u8).empty;
+
+    var lines = std.mem.splitScalar(u8, data, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (trimmed.len == 0 or trimmed[0] == '#') continue;
+
+        var parts = std.mem.splitScalar(u8, trimmed, ';');
+
+        const cp_raw = std.mem.trim(u8, parts.next() orelse continue, " ");
+        const status_raw = std.mem.trim(u8, parts.next() orelse continue, " ");
+        const mapping_raw = std.mem.trim(u8, parts.next() orelse continue, " ");
+
+        const cp = try std.fmt.parseInt(u21, cp_raw, 16);
+        const offset = mapping_pool.items.len;
+
+        var mapping_iter = std.mem.splitScalar(u8, mapping_raw, ' ');
+        var mapping_len: usize = 0;
+        while (mapping_iter.next()) |m| {
+            if (m.len == 0) continue;
+            try mapping_pool.append(arena, try std.fmt.parseInt(u21, m, 16));
+            mapping_len += 1;
+        }
+
+        const status_name = if (std.mem.eql(u8, status_raw, "C")) "common" else if (std.mem.eql(u8, status_raw, "F")) "full" else if (std.mem.eql(u8, status_raw, "S")) "simple" else "turkic";
+
+        const row = try std.fmt.allocPrint(
+            arena,
+            "    .{{ .code_point = 0x{X}, .mapping_offset = {}, .mapping_len = {}, .status = .{s} }},\n",
+            .{ cp, offset, mapping_len, status_name },
+        );
+        try entries.appendSlice(arena, row);
+    }
+
+    try writer.writeAll("//! auto-generated\nconst CodePoint = @import(\"encoding\").CodePoint;\n\npub const CaseFoldingEntry = struct {\n    code_point: CodePoint,\n    mapping_offset: u32,\n    mapping_len: u8,\n    status: CaseFoldingStatus,\n};\n\npub const case_folding_mapping_pool = [_]CodePoint{\n");
+
+    for (mapping_pool.items) |cp| {
+        try writer.print("    0x{X},\n", .{cp});
+    }
+
+    try writer.writeAll("};\n\npub const case_folding_table = [_]CaseFoldingEntry{\n");
+    try writer.writeAll(entries.items);
+    try writer.writeAll("};\n");
+
+    try file_writer.flush();
+}
+
+fn downloadAndGenerateSpecialCasing(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
+    _ = url;
+
+    const dir: std.Io.Dir = .cwd();
+
+    var file = try dir.createFile(io, file_name, .{
+        .truncate = true,
+        .permissions = .default_file,
+    });
+    defer file.close(io);
+
+    const buf = try arena.alloc(u8, 4096);
+    var file_writer = file.writer(io, buf);
+    const writer = &file_writer.interface;
+
+    try writer.writeAll("//! auto-generated\n// TODO: conditional and locale-sensitive mappings from SpecialCasing.txt\n");
+
+    var lines = std.mem.splitScalar(u8, data, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (trimmed.len == 0 or trimmed[0] == '#') continue;
+        if (std.mem.indexOfScalar(u8, trimmed, '#')) |idx| {
+            try writer.writeAll(trimmed[0..idx]);
+            try writer.writeAll("\n");
+        } else {
+            try writer.writeAll(trimmed);
+            try writer.writeAll("\n");
+        }
+    }
+
+    try file_writer.flush();
+}
+
 pub fn main(init: std.process.Init) !void {
     const arena = init.arena;
     const arena_allocator = arena.allocator();
@@ -1037,7 +1150,25 @@ pub fn main(init: std.process.Init) !void {
         allocated_writer.clearRetainingCapacity();
     }
 
+    // {
+    //     const file_name = "src/unicode/case_folding_generated.zig";
+    //     const source_url = "https://www.unicode.org/Public/UCD/latest/ucd/CaseFolding.txt";
+
+    //     try downloadFileToPath(arena_allocator, io, &allocated_writer.writer, source_url);
+    //     try downloadAndGenerateCaseFolding(arena_allocator, io, allocated_writer.written(), source_url, file_name);
+    //     allocated_writer.clearRetainingCapacity();
+    // }
+
+    // {
+    //     const file_name = "src/unicode/special_casing_generated.zig";
+    //     const source_url = "https://www.unicode.org/Public/UCD/latest/ucd/SpecialCasing.txt";
+
+    //     try downloadFileToPath(arena_allocator, io, &allocated_writer.writer, source_url);
+    //     try downloadAndGenerateSpecialCasing(arena_allocator, io, allocated_writer.written(), source_url, file_name);
+    //     allocated_writer.clearRetainingCapacity();
+    // }
+
     const end = clock.now(io);
 
-    std.debug.print("generate command took: {}ms\n", .{end.toMilliseconds() - start.toMilliseconds()});
+    std.debug.print("generate command took: {}ms, total memory: {}\n", .{ end.toMilliseconds() - start.toMilliseconds(), arena.queryCapacity() / (1024 * 1024) });
 }
