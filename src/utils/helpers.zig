@@ -4,11 +4,18 @@ pub fn isInRange(comptime T: type, range_start: T, range_end: T, value: T) bool 
     return value >= range_start and value <= range_end;
 }
 
-pub fn every(comptime T: type, elements: []const T, predicate: fn (T) bool) bool {
-    for (elements) |element| {
-        if (!predicate(element)) return false;
+pub fn every(comptime T: type, context: anytype, elements: []const T, predicate: fn (ctx: @TypeOf(context), T, index: usize) bool) bool {
+    for (elements, 0..) |element, i| {
+        if (!predicate(context, element, i)) return false;
     }
     return true;
+}
+
+pub fn some(comptime T: type, context: anytype, elements: []const T, predicate: fn (ctx: @TypeOf(context), T, index: usize) bool) bool {
+    for (elements, 0..) |element, i| {
+        if (predicate(context, element, i)) return true;
+    }
+    return false;
 }
 
 test "isInRange: inclusive unsigned bounds" {
@@ -40,47 +47,47 @@ test "isInRange: reversed range (start > end) yields false for typical interior 
 
 test "every: empty slice is vacuously true" {
     const is_even = struct {
-        fn f(x: i32) bool {
+        fn f(_: void, x: i32, _: usize) bool {
             return @rem(x, 2) == 0;
         }
     }.f;
-    try std.testing.expect(every(i32, &[_]i32{}, is_even));
+    try std.testing.expect(every(i32, {}, &[_]i32{}, is_even));
 }
 
 test "every: all elements pass" {
     const is_positive = struct {
-        fn f(x: i32) bool {
+        fn f(_: void, x: i32, _: usize) bool {
             return x > 0;
         }
     }.f;
-    try std.testing.expect(every(i32, &[_]i32{ 1, 2, 3 }, is_positive));
+    try std.testing.expect(every(i32, {}, &[_]i32{ 1, 2, 3 }, is_positive));
 }
 
 test "every: first failure" {
     const under_ten = struct {
-        fn f(x: u32) bool {
+        fn f(_: void, x: u32, _: usize) bool {
             return x < 10;
         }
     }.f;
-    try std.testing.expect(!every(u32, &[_]u32{ 1, 2, 99, 3 }, under_ten));
+    try std.testing.expect(!every(u32, {}, &[_]u32{ 1, 2, 99, 3 }, under_ten));
 }
 
 test "every: single element" {
     const id = struct {
-        fn f(b: bool) bool {
+        fn f(_: void, b: bool, _: usize) bool {
             return b;
         }
     }.f;
-    try std.testing.expect(every(bool, &[_]bool{true}, id));
-    try std.testing.expect(!every(bool, &[_]bool{false}, id));
+    try std.testing.expect(every(bool, {}, &[_]bool{true}, id));
+    try std.testing.expect(!every(bool, {}, &[_]bool{false}, id));
 }
 
 test "every: all u8 non-zero" {
     const nz = struct {
-        fn f(x: u8) bool {
+        fn f(_: void, x: u8, _: usize) bool {
             return x != 0;
         }
     }.f;
-    try std.testing.expect(every(u8, &[_]u8{ 1, 2, 3 }, nz));
-    try std.testing.expect(!every(u8, &[_]u8{ 1, 0, 3 }, nz));
+    try std.testing.expect(every(u8, {}, &[_]u8{ 1, 2, 3 }, nz));
+    try std.testing.expect(!every(u8, {}, &[_]u8{ 1, 0, 3 }, nz));
 }
