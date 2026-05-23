@@ -677,9 +677,6 @@ fn downloadAndGenerateUnicodeData(arena: std.mem.Allocator, io: std.Io, url: []c
     std.debug.print("parsed and wrote {} table data\n", .{i});
 }
 
-const file_name = "src/unicode/unicode_generated.zig";
-const unicode_data_url = "https://www.unicode.org/Public/UCD/latest/ucd/UnicodeData.txt";
-
 pub fn main(init: std.process.Init) !void {
     const arena = init.arena;
     const arena_allocator = arena.allocator();
@@ -690,6 +687,9 @@ pub fn main(init: std.process.Init) !void {
     const start = clock.now(io);
 
     {
+        const file_name = "src/unicode/unicode_generated.zig";
+        const unicode_data_url = "https://www.unicode.org/Public/UCD/latest/ucd/UnicodeData.txt";
+
         try downloadAndGenerateUnicodeData(arena_allocator, io, unicode_data_url, file_name);
         _ = arena.reset(.free_all);
     }
