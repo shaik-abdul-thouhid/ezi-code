@@ -1,7 +1,9 @@
 const std = @import("std");
 const utils = @import("utils/root.zig");
 
-pub fn downloadFileToPath(allocator: std.mem.Allocator, io: std.Io, writer: *std.Io.Writer, url: []const u8) !void {
+const some = @import("utils/helpers.zig").some;
+
+fn downloadFileToPath(allocator: std.mem.Allocator, io: std.Io, writer: *std.Io.Writer, url: []const u8) !void {
     var client: std.http.Client = .{
         .allocator = allocator,
         .io = io,
@@ -27,17 +29,14 @@ fn extractFileNameFromPath(path: []const u8) []const u8 {
     return "";
 }
 
+const RangeType = struct { start: u21, end: u21 };
+
 const ucd_folder = "ucd";
 
-fn downloadAndGenerateUnicodeData(arena: std.mem.Allocator, io: std.Io, url: []const u8, f_name: []const u8) !void {
-    var allocated_writer: std.Io.Writer.Allocating = .init(arena);
-    defer allocated_writer.deinit();
-
-    try downloadFileToPath(arena, io, &allocated_writer.writer, url);
-
+fn downloadAndGenerateUnicodeData(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
     const dir: std.Io.Dir = .cwd();
 
-    var file = try dir.createFile(io, f_name, .{
+    var file = try dir.createFile(io, file_name, .{
         .truncate = true,
         .permissions = .default_file,
     });
@@ -64,90 +63,7 @@ fn downloadAndGenerateUnicodeData(arena: std.mem.Allocator, io: std.Io, url: []c
     var title_case_range_end: ?u21 = null;
     var title_case_current_difference: i32 = 0;
 
-    var split_iter = std.mem.splitScalar(u8, allocated_writer.written(), '\n');
-
-    try writer.writeAll(
-        \\//! This file is auto-generated. Do not edit directly.
-        \\//! To regenerate run `zig build generate` in same level
-        \\//! as `build.zig` file.
-        \\
-        \\const CodePoint = @import("encoding").CodePoint;
-        \\
-        \\pub const GeneralCategory = enum(u8) {
-        \\    uppercase_letter,
-        \\    lowercase_letter,
-        \\    title_case_letter,
-        \\    modifier_letter,
-        \\    other_letter,
-        \\    non_spacing_mark,
-        \\    spacing_mark,
-        \\    enclosing_mark,
-        \\    decimal_number,
-        \\    letter_number,
-        \\    other_number,
-        \\    connector_punctuation,
-        \\    dash_punctuation,
-        \\    open_punctuation,
-        \\    close_punctuation,
-        \\    initial_punctuation,
-        \\    final_punctuation,
-        \\    other_punctuation,
-        \\    math_symbol,
-        \\    currency_symbol,
-        \\    modifier_symbol,
-        \\    other_symbol,
-        \\    space_separator,
-        \\    line_separator,
-        \\    paragraph_separator,
-        \\    control,
-        \\    format,
-        \\    surrogate,
-        \\    private_use,
-        \\    unassigned,
-        \\};
-        \\
-        \\pub const BidiClass = enum(u8) {
-        \\    left_to_right,
-        \\    right_to_left,
-        \\    arabic_letter,
-        \\    european_number,
-        \\    european_separator,
-        \\    european_terminator,
-        \\    arabic_number,
-        \\    common_separator,
-        \\    non_spacing_mark,
-        \\    boundary_neutral,
-        \\    paragraph_separator,
-        \\    segment_separator,
-        \\    whitespace,
-        \\    other_neutral,
-        \\    left_to_right_embedding,
-        \\    left_to_right_override,
-        \\    right_to_left_embedding,
-        \\    right_to_left_override,
-        \\    pop_directional_format,
-        \\    left_to_right_isolate,
-        \\    right_to_left_isolate,
-        \\    first_strong_isolate,
-        \\    pop_directional_isolate,
-        \\};
-        \\
-        \\pub const CombiningClassEntry = struct {
-        \\    range_start: CodePoint,
-        \\    range_end: CodePoint,
-        \\    canonical_combining_class: u8,
-        \\};
-        \\
-        \\pub const BidiEntry = struct {
-        \\    range_start: CodePoint,
-        \\    range_end: CodePoint,
-        \\    bidi_class: BidiClass,
-        \\};
-        \\
-        \\pub const CaseMappingRangeEntry = struct { start: CodePoint, end: CodePoint, delta: i32 };
-        \\
-        \\
-    );
+    var split_iter = std.mem.splitScalar(u8, data, '\n');
 
     var i: usize = 0;
     // For GeneralCategory two-level page table generation:
@@ -489,6 +405,89 @@ fn downloadAndGenerateUnicodeData(arena: std.mem.Allocator, io: std.Io, url: []c
         try level1.append(arena, found_idx);
     }
 
+    try writer.writeAll(
+        \\//! This file is auto-generated. Do not edit directly.
+        \\//! To regenerate run `zig build generate` in same level
+        \\//! as `build.zig` file.
+        \\
+        \\const CodePoint = @import("encoding").CodePoint;
+        \\
+        \\pub const GeneralCategory = enum(u8) {
+        \\    uppercase_letter,
+        \\    lowercase_letter,
+        \\    title_case_letter,
+        \\    modifier_letter,
+        \\    other_letter,
+        \\    non_spacing_mark,
+        \\    spacing_mark,
+        \\    enclosing_mark,
+        \\    decimal_number,
+        \\    letter_number,
+        \\    other_number,
+        \\    connector_punctuation,
+        \\    dash_punctuation,
+        \\    open_punctuation,
+        \\    close_punctuation,
+        \\    initial_punctuation,
+        \\    final_punctuation,
+        \\    other_punctuation,
+        \\    math_symbol,
+        \\    currency_symbol,
+        \\    modifier_symbol,
+        \\    other_symbol,
+        \\    space_separator,
+        \\    line_separator,
+        \\    paragraph_separator,
+        \\    control,
+        \\    format,
+        \\    surrogate,
+        \\    private_use,
+        \\    unassigned,
+        \\};
+        \\
+        \\pub const BidiClass = enum(u8) {
+        \\    left_to_right,
+        \\    right_to_left,
+        \\    arabic_letter,
+        \\    european_number,
+        \\    european_separator,
+        \\    european_terminator,
+        \\    arabic_number,
+        \\    common_separator,
+        \\    non_spacing_mark,
+        \\    boundary_neutral,
+        \\    paragraph_separator,
+        \\    segment_separator,
+        \\    whitespace,
+        \\    other_neutral,
+        \\    left_to_right_embedding,
+        \\    left_to_right_override,
+        \\    right_to_left_embedding,
+        \\    right_to_left_override,
+        \\    pop_directional_format,
+        \\    left_to_right_isolate,
+        \\    right_to_left_isolate,
+        \\    first_strong_isolate,
+        \\    pop_directional_isolate,
+        \\};
+        \\
+        \\pub const CombiningClassEntry = struct {
+        \\    range_start: CodePoint,
+        \\    range_end: CodePoint,
+        \\    canonical_combining_class: u8,
+        \\};
+        \\
+        \\pub const BidiEntry = struct {
+        \\    range_start: CodePoint,
+        \\    range_end: CodePoint,
+        \\    bidi_class: BidiClass,
+        \\};
+        \\
+        \\pub const CaseMappingRangeEntry = struct { start: CodePoint, end: CodePoint, delta: i32 };
+        \\
+        \\
+    );
+
     // Emit the tables
     try writer.writeAll("//zig fmt: off\nconst category_level1 = [_]u16 {");
     for (level1.items, 0..) |idx, n| {
@@ -672,9 +671,334 @@ fn downloadAndGenerateUnicodeData(arena: std.mem.Allocator, io: std.Io, url: []c
     const ucd_writer = &ucd_file_writer.interface;
     defer ucd_writer.flush() catch {};
 
-    try ucd_writer.writeAll(allocated_writer.written());
+    try ucd_writer.writeAll(data);
 
     std.debug.print("parsed and wrote {} table data\n", .{i});
+}
+
+fn downloadAndGenerateDerivedCoreProperty(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
+    const dir: std.Io.Dir = .cwd();
+
+    var file = try dir.createFile(io, file_name, .{
+        .truncate = true,
+        .permissions = .default_file,
+    });
+    defer file.close(io);
+
+    const buf = try arena.alloc(u8, 1024 * 4);
+    var file_writer = file.writer(io, buf);
+    const writer = &file_writer.interface;
+
+    var total_keys: u8 = 0;
+
+    // the raw labels like `Alphabetic`, `Grapheme_Extend`, `InCB; Extend`, etc
+    // will be converted to `alphabetic`, `grapheme_extend`, `in_cb_extend`
+    var derived_label_hash: std.StringHashMapUnmanaged(struct {
+        index: u8,
+        normalized_key: []u8,
+        items: std.ArrayList(RangeType) = .empty,
+    }) = .empty;
+
+    const normalizeKey = struct {
+        fn normalize(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
+            var slice: std.ArrayList(u8) = .empty;
+            defer slice.deinit(allocator);
+            try slice.ensureTotalCapacity(allocator, input.len);
+
+            for (input, 0..) |c, idx| {
+                switch (c) {
+                    'A'...'Z' => {
+                        if (idx != 0) {
+                            const prev = switch (input[idx - 1]) {
+                                'A'...'Z' => true,
+                                else => false,
+                            };
+                            if (!prev) {
+                                try slice.append(allocator, '_');
+                            }
+                        }
+                        try slice.append(allocator, c + 32);
+                    },
+                    'a'...'z' => {
+                        try slice.append(allocator, c);
+                    },
+                    else => {},
+                }
+            }
+
+            return slice.toOwnedSlice(allocator);
+        }
+    }.normalize;
+
+    var lines = std.mem.splitScalar(u8, data, '\n');
+
+    loop: while (lines.next()) |line| {
+        // skip empty and comment lines.
+        if (line.len == 0 or line[0] == '#') {
+            continue :loop;
+        }
+
+        var semicolon_delimited_tokens = std.mem.splitSequence(u8, line, " ; ");
+
+        const code_points_raw = semicolon_delimited_tokens.next() orelse continue :loop;
+        const code_points = std.mem.trim(u8, code_points_raw, " ");
+
+        var split_comments = std.mem.splitScalar(u8, semicolon_delimited_tokens.next() orelse continue :loop, '#');
+        const label_raw = split_comments.next() orelse continue :loop;
+        const label = std.mem.trim(u8, label_raw, " ");
+
+        var entry = try derived_label_hash.getOrPut(arena, label);
+
+        if (!entry.found_existing) {
+            entry.value_ptr.* = .{
+                .index = total_keys,
+                .normalized_key = try normalizeKey(arena, label),
+            };
+            try entry.value_ptr.items.ensureTotalCapacity(arena, 128);
+            total_keys += 1;
+        }
+
+        var code_point_split_range = std.mem.splitSequence(u8, code_points, "..");
+
+        const start_raw = code_point_split_range.next() orelse continue :loop;
+        const start = try std.fmt.parseInt(u21, start_raw, 16);
+
+        const end = if (code_point_split_range.next()) |val| try std.fmt.parseInt(u21, val, 16) else start;
+
+        try entry.value_ptr.items.append(arena, .{ .start = start, .end = end });
+    }
+
+    const map_count = derived_label_hash.size;
+
+    var sorted_normalize_keys = try arena.alloc([]const u8, map_count);
+    const sorted_property_ranges = try arena.alloc([]RangeType, map_count);
+    const items_indices = try arena.alloc(usize, map_count);
+
+    @memset(items_indices, 0);
+
+    // print keys and normalized keys
+    var iter = derived_label_hash.valueIterator();
+
+    while (iter.next()) |val| {
+        sorted_normalize_keys[val.index] = val.normalized_key;
+        sorted_property_ranges[val.index] = val.items.items;
+    }
+
+    // assert that the number of properties is less than 32.
+    // for 32 bit mask.
+    std.debug.assert(map_count < 32);
+
+    var final_result_table: std.ArrayList(struct { start: u21, end: u21, bitmask: u32 }) = .empty;
+    try final_result_table.ensureTotalCapacity(arena, 2048);
+
+    const predicate = struct {
+        pub fn predicate(ranges: []const []RangeType, val: usize, index: usize) bool {
+            return val < ranges[index].len;
+        }
+    }.predicate;
+
+    var previous_bit_mask: u32 = 0;
+
+    var min: u21 = sorted_property_ranges[0][0].start;
+    var max: u21 = sorted_property_ranges[0][sorted_property_ranges[0].len - 1].end;
+
+    var i_min_max: usize = 1;
+
+    while (i_min_max < sorted_property_ranges.len) : (i_min_max += 1) {
+        if (sorted_property_ranges[i_min_max][0].start < min) {
+            min = sorted_property_ranges[i_min_max][0].start;
+        }
+
+        if (sorted_property_ranges[i_min_max][sorted_property_ranges[i_min_max].len - 1].end > max) {
+            max = sorted_property_ranges[i_min_max][sorted_property_ranges[i_min_max].len - 1].end;
+        }
+    }
+
+    var code_point: u21 = min;
+
+    while (some(usize, sorted_property_ranges, items_indices, predicate) and
+        code_point <= max) : (code_point += 1)
+    {
+        var i: usize = 0;
+        var current_mask: u32 = 0;
+
+        inner_loop: while (i < sorted_property_ranges.len) {
+            var idx = items_indices[i];
+            const ranges = sorted_property_ranges[i];
+
+            while (idx < ranges.len and code_point > ranges[idx].end) {
+                idx += 1;
+            }
+
+            items_indices[i] = idx;
+
+            if (idx >= ranges.len) {
+                i += 1;
+                continue :inner_loop;
+            }
+
+            const range = ranges[idx];
+
+            if (code_point >= range.start and code_point <= range.end) {
+                current_mask |= @as(u32, 1) << @intCast(i + 1);
+            }
+
+            i += 1;
+        }
+
+        if (final_result_table.items.len == 0) {
+            if (current_mask != 0) {
+                try final_result_table.append(arena, .{
+                    .start = code_point,
+                    .end = code_point,
+                    .bitmask = current_mask,
+                });
+            }
+        } else if (previous_bit_mask == current_mask and current_mask != 0) {
+            final_result_table.items[final_result_table.items.len - 1].end = code_point;
+        } else if (current_mask != 0) {
+            try final_result_table.append(arena, .{
+                .start = code_point,
+                .end = code_point,
+                .bitmask = current_mask,
+            });
+        }
+
+        previous_bit_mask = current_mask;
+    }
+
+    // Expand merged ranges into dense bitmask array and build deduplicated 2-level page table.
+    const PROPERTY_PAGE_BITS = 8;
+    const PROPERTY_PAGE_SIZE = 1 << PROPERTY_PAGE_BITS;
+
+    var property_values = try arena.alloc(u32, 0x110000);
+    @memset(property_values, 0);
+
+    for (final_result_table.items) |entry| {
+        var cp = entry.start;
+        while (cp <= entry.end) : (cp += 1) {
+            property_values[cp] = entry.bitmask;
+        }
+    }
+
+    var unique_property_pages = std.ArrayList([]const u32).empty;
+    var property_level1_items = std.ArrayList(usize).empty;
+    var property_page_map: std.AutoHashMapUnmanaged(u64, usize) = .empty;
+
+    const property_page_buf = try arena.alloc(u32, PROPERTY_PAGE_SIZE);
+
+    var total_property_cps: usize = 0;
+    while (total_property_cps < property_values.len) : (total_property_cps += PROPERTY_PAGE_SIZE) {
+        const page_start = total_property_cps;
+        const page_end = @min(page_start + PROPERTY_PAGE_SIZE, property_values.len);
+
+        for (property_page_buf, 0..) |*slot, j| {
+            const idx = page_start + j;
+            slot.* = if (idx < page_end) property_values[idx] else 0;
+        }
+
+        var hasher = std.hash.Wyhash.init(0);
+        hasher.update(std.mem.sliceAsBytes(property_page_buf));
+        const page_hash = hasher.final();
+
+        var found = false;
+        var found_idx: usize = 0;
+
+        if (property_page_map.get(page_hash)) |idx| {
+            if (std.mem.eql(u32, unique_property_pages.items[idx], property_page_buf)) {
+                found = true;
+                found_idx = idx;
+            }
+        }
+
+        if (!found) {
+            const new_page = try arena.alloc(u32, PROPERTY_PAGE_SIZE);
+            @memcpy(new_page, property_page_buf);
+
+            found_idx = unique_property_pages.items.len;
+            try unique_property_pages.append(arena, new_page);
+            try property_page_map.put(arena, page_hash, found_idx);
+        }
+
+        try property_level1_items.append(arena, found_idx);
+    }
+
+    // Emit generated Zig file for property page table.
+    try writer.writeAll(
+        \\//! This file is auto-generated. Do not edit directly.
+        \\//! To regenerate run `zig build generate` in same level
+        \\//! as `build.zig` file.
+        \\
+        \\const CodePoint = @import("encoding").CodePoint;
+        \\
+        \\const Property = enum(32) {
+        \\
+    );
+
+    for (sorted_normalize_keys, 0..) |key, idx| {
+        try writer.print("    {s} = 1 << {},\n", .{ key, idx + 1 });
+    }
+    try writer.writeAll(
+        \\};
+        \\
+    );
+
+    // Emit property_level1 table
+    try writer.writeAll("//zig fmt: off\nconst property_level1 = [_]u16 {");
+    for (property_level1_items.items, 0..) |idx, n| {
+        if (n % 12 == 0) try writer.writeAll("\n    ");
+        try writer.print("{},", .{idx});
+        if (n + 1 != property_level1_items.items.len) {
+            try writer.writeAll(" ");
+        }
+    }
+    try writer.writeAll("\n};\n//zig fmt: on\n\n");
+
+    // Emit property_level2 table
+    try writer.writeAll("//zig fmt: off\nconst property_level2 = [_][256]u32 {\n");
+    for (unique_property_pages.items) |page| {
+        try writer.writeAll("    .{\n        ");
+        for (page, 0..) |val, j| {
+            try writer.print("0x{X},", .{val});
+            if ((j + 1) % 12 == 0 and (j + 1) != page.len)
+                try writer.writeAll("\n        ")
+            else if (j + 1 != page.len) try writer.writeAll(" ");
+        }
+        try writer.writeAll("\n    },\n");
+    }
+    try writer.writeAll("};\n//zig fmt: on\n\n");
+
+    // Emit propertyMask() and codePointProperty() functions
+    try writer.writeAll(
+        \\pub inline fn propertyMask(code_point: CodePoint) u32 {
+        \\    if (code_point > 0x10FFFF) return 0;
+        \\    const page = property_level1[code_point >> 8];
+        \\    return property_level2[page][code_point & 0xFF];
+        \\}
+        \\
+        \\pub inline fn codePointProperty(code_point: CodePoint, property: Property) bool {
+        \\    return (propertyMask(code_point) & @intFromEnum(property)) != 0;
+        \\}
+        \\
+    );
+
+    try file_writer.flush();
+
+    const ucd_file_name: []const u8 = extractFileNameFromPath(url);
+
+    const ucd_file = try dir.createFile(io, try std.fmt.allocPrint(arena, "ucd/{s}", .{ucd_file_name}), .{
+        .truncate = true,
+        .permissions = .default_file,
+    });
+    defer ucd_file.close(io);
+
+    var ucd_file_writer = ucd_file.writer(io, buf);
+    const ucd_writer = &ucd_file_writer.interface;
+    defer ucd_writer.flush() catch {};
+
+    try ucd_writer.writeAll(data);
+
+    std.debug.print("wrote ranges {}\n", .{max - min});
 }
 
 pub fn main(init: std.process.Init) !void {
@@ -686,12 +1010,31 @@ pub fn main(init: std.process.Init) !void {
 
     const start = clock.now(io);
 
+    var allocated_writer: std.Io.Writer.Allocating = .init(arena_allocator);
+    defer allocated_writer.deinit();
+
+    try allocated_writer.ensureTotalCapacity(1024 * 1024);
+
     {
-        const file_name = "src/unicode/unicode_generated.zig";
+        const file_name = "src/unicode/unicode_data_generated.zig";
         const unicode_data_url = "https://www.unicode.org/Public/UCD/latest/ucd/UnicodeData.txt";
 
-        try downloadAndGenerateUnicodeData(arena_allocator, io, unicode_data_url, file_name);
-        _ = arena.reset(.free_all);
+        try downloadFileToPath(arena_allocator, io, &allocated_writer.writer, unicode_data_url);
+
+        try downloadAndGenerateUnicodeData(arena_allocator, io, allocated_writer.written(), unicode_data_url, file_name);
+
+        allocated_writer.clearRetainingCapacity();
+    }
+
+    {
+        const file_name = "src/unicode/derived_core_properties_generated.zig";
+        const derived_core_properties_url = "https://www.unicode.org/Public/UCD/latest/ucd/DerivedCoreProperties.txt";
+
+        try downloadFileToPath(arena_allocator, io, &allocated_writer.writer, derived_core_properties_url);
+
+        try downloadAndGenerateDerivedCoreProperty(arena_allocator, io, allocated_writer.written(), derived_core_properties_url, file_name);
+
+        allocated_writer.clearRetainingCapacity();
     }
 
     const end = clock.now(io);

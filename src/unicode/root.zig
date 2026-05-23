@@ -1,6 +1,6 @@
 const std = @import("std");
 const encoding = @import("encoding");
-pub const unicode_data = @import("unicode_generated.zig");
+pub const unicode_data = @import("unicode_data_generated.zig");
 
 const CodePoint = encoding.CodePoint;
 
