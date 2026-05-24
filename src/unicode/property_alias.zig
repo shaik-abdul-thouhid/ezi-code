@@ -1,3 +1,5 @@
+const CodePoint = @import("encoding").CodePoint;
+
 pub const CanonicalCombiningClass = enum(u8) {
     not_reordered = 0,
     overlay = 1,
@@ -64,3 +66,14 @@ pub const CanonicalCombiningClass = enum(u8) {
         return @enumFromInt(c);
     }
 };
+
+pub const CaseFoldingMode = enum { simple, full };
+
+pub const CaseFoldingLocale = enum { default, turkic };
+
+pub fn FoldResult(comptime mode: CaseFoldingMode) type {
+    return switch (mode) {
+        .simple => CodePoint,
+        .full => []const CodePoint,
+    };
+}
