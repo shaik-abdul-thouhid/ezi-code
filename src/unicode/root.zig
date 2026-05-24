@@ -1,210 +1,102 @@
 const std = @import("std");
 const encoding = @import("encoding");
-pub const unicode_data = @import("unicode_data_generated.zig");
-pub const derived_core_properties = @import("derived_core_properties_generated.zig");
-pub const case_folding = @import("case_folding_generated.zig");
-pub const special_casing = @import("special_casing_generated.zig");
+pub const types = @import("types.zig");
+pub const properties = @import("properties/root.zig");
+pub const casing = @import("casing/root.zig");
 
-const property_alias = @import("property_alias.zig");
-const CanonicalCombiningClass = property_alias.CanonicalCombiningClass;
+pub const unicode_data = properties.unicode_data;
+pub const derived_core_properties = properties.derived_core_properties;
+pub const case_folding = casing.case_folding;
+pub const special_casing = casing.special_casing;
+
+const CanonicalCombiningClass = types.CanonicalCombiningClass;
 
 const CodePoint = encoding.CodePoint;
 
 pub const GeneralCategory = unicode_data.GeneralCategory;
 pub const BidiClass = unicode_data.BidiClass;
 pub const DerivedProperty = derived_core_properties.Property;
-pub const CaseFoldingMode = property_alias.CaseFoldingMode;
-pub const CaseFoldingLocale = property_alias.CaseFoldingLocale;
+pub const CaseFoldingMode = types.CaseFoldingMode;
+pub const CaseFoldingLocale = types.CaseFoldingLocale;
 pub const SpecialCaseLocale = special_casing.Locale;
 pub const SpecialCaseCondition = special_casing.Condition;
 pub const SpecialCaseMapping = special_casing.Mapping;
 pub const max_case_mapping_len = 3;
 
-pub const combining_class_table = unicode_data.combining_class_table;
-pub const lowercase_mapping_table = unicode_data.lowercase_range_mapping_table;
-pub const uppercase_mapping_table = unicode_data.uppercase_range_mapping_table;
-pub const title_case_mapping_table = unicode_data.title_case_range_mapping_table;
-
 pub fn derivedPropertyMask(code_point: CodePoint) u32 {
-    return derived_core_properties.propertyMask(code_point);
+    return properties.derivedPropertyMask(code_point);
 }
 
 pub fn hasDerivedProperty(code_point: CodePoint, property: DerivedProperty) bool {
-    return derived_core_properties.codePointProperty(code_point, property);
+    return properties.hasDerivedProperty(code_point, property);
 }
 
 pub fn canonicalCombiningClass(code_point: CodePoint) CanonicalCombiningClass {
-    if (combining_class_table.len == 0) return 0;
-
-    var low: usize = 0;
-    var high: usize = combining_class_table.len;
-
-    while (low < high) {
-        const mid = low + (high - low) / 2;
-        const range = combining_class_table[mid];
-
-        if (code_point < range.range_start) {
-            high = mid;
-        } else if (code_point > range.range_end) {
-            low = mid + 1;
-        } else {
-            return range.ccc;
-        }
-    }
-
-    return .not_reordered;
+    return properties.canonicalCombiningClass(code_point);
 }
 
 pub fn isLetter(code_point: CodePoint) bool {
-    const category = generalCategory(code_point);
-    return switch (category) {
-        .uppercase_letter, .lowercase_letter, .title_case_letter, .modifier_letter, .other_letter => true,
-        else => false,
-    };
+    return properties.isLetter(code_point);
 }
 
 pub fn isUpperCase(code_point: CodePoint) bool {
-    return hasDerivedProperty(code_point, .uppercase);
+    return properties.isUpperCase(code_point);
 }
 
 pub fn isLowerCase(code_point: CodePoint) bool {
-    return hasDerivedProperty(code_point, .lowercase);
+    return properties.isLowerCase(code_point);
 }
 
 pub fn isAlphabetic(code_point: CodePoint) bool {
-    return hasDerivedProperty(code_point, .alphabetic);
+    return properties.isAlphabetic(code_point);
 }
 
 pub fn isNumeric(code_point: CodePoint) bool {
-    const category = generalCategory(code_point);
-    return switch (category) {
-        .decimal_number, .letter_number, .other_number => true,
-        else => false,
-    };
+    return properties.isNumeric(code_point);
 }
 
 pub fn isWhitespace(code_point: CodePoint) bool {
-    return switch (code_point) {
-        0x0009, // Tab
-        0x000A, // Line Feed
-        0x000B, // Vertical Tab
-        0x000C, // Form Feed
-        0x000D, // Carriage Return
-        0x0020, // Space
-        0x0085, // Next Line
-        0x00A0, // No-Break Space
-        0x1680, // Ogham Space Mark
-        0x2000...0x200A, // En Quad to Hair Space
-        0x2028, // Line Separator
-        0x2029, // Paragraph Separator
-        0x202F, // Narrow No-Break Space
-        0x205F, // Medium Mathematical Space
-        0x3000, // Ideographic Space
-        => true,
-        else => false,
-    };
+    return properties.isWhitespace(code_point);
 }
 
 pub fn isPrintable(code_point: CodePoint) bool {
-    const category = generalCategory(code_point);
-    return switch (category) {
-        .control, .format, .surrogate, .private_use, .unassigned => false,
-        else => true,
-    };
+    return properties.isPrintable(code_point);
 }
 
 pub fn isValidCodePoint(code_point: CodePoint) bool {
-    return code_point <= 0x10FFFF and !isSurrogate(code_point);
+    return properties.isValidCodePoint(code_point);
 }
 
 pub fn isSurrogate(code_point: CodePoint) bool {
-    return code_point >= 0xD800 and code_point <= 0xDFFF;
+    return properties.isSurrogate(code_point);
 }
 
 pub fn toUpperCase(code_point: CodePoint) CodePoint {
-    if (uppercase_mapping_table.len == 0) return code_point;
-
-    var low: usize = 0;
-    var high: usize = uppercase_mapping_table.len;
-
-    while (low < high) {
-        const mid = low + (high - low) / 2;
-        const range = uppercase_mapping_table[mid];
-
-        if (code_point < range.start) {
-            high = mid;
-        } else if (code_point > range.end) {
-            low = mid + 1;
-        } else {
-            return @intCast(@as(i32, @intCast(code_point)) + range.delta);
-        }
-    }
-
-    return code_point;
+    return casing.toUpperCase(code_point);
 }
 
 pub fn toLowerCase(code_point: CodePoint) CodePoint {
-    if (lowercase_mapping_table.len == 0) return code_point;
-
-    var low: usize = 0;
-    var high: usize = lowercase_mapping_table.len;
-
-    while (low < high) {
-        const mid = low + (high - low) / 2;
-        const range = lowercase_mapping_table[mid];
-
-        if (code_point < range.start) {
-            high = mid;
-        } else if (code_point > range.end) {
-            low = mid + 1;
-        } else {
-            return @intCast(@as(i32, @intCast(code_point)) + range.delta);
-        }
-    }
-
-    return code_point;
+    return casing.toLowerCase(code_point);
 }
 
 pub fn toTitleCase(code_point: CodePoint) CodePoint {
-    if (title_case_mapping_table.len == 0) return code_point;
-
-    var low: usize = 0;
-    var high: usize = title_case_mapping_table.len;
-
-    while (low < high) {
-        const mid = low + (high - low) / 2;
-        const range = title_case_mapping_table[mid];
-
-        if (code_point < range.start) {
-            high = mid;
-        } else if (code_point > range.end) {
-            low = mid + 1;
-        } else {
-            return @intCast(@as(i32, @intCast(code_point)) + range.delta);
-        }
-    }
-
-    return code_point;
+    return casing.toTitleCase(code_point);
 }
 
 pub fn caseFoldSimple(code_point: CodePoint) CodePoint {
-    return case_folding.lookup(.simple, .default, code_point) orelse code_point;
+    return casing.caseFoldSimple(code_point);
 }
 
 pub fn caseFoldSimpleTurkic(code_point: CodePoint) CodePoint {
-    return case_folding.lookup(.simple, .turkic, code_point) orelse code_point;
+    return casing.caseFoldSimpleTurkic(code_point);
 }
 
 pub fn caseFoldFull(code_point: CodePoint, fallback: *[max_case_mapping_len]CodePoint) []const CodePoint {
-    if (case_folding.lookup(.full, .default, code_point)) |mapped| return mapped;
-    fallback[0] = code_point;
-    return fallback[0..1];
+    return casing.caseFoldFull(code_point, fallback);
 }
 
 pub fn caseFoldFullTurkic(code_point: CodePoint, fallback: *[max_case_mapping_len]CodePoint) []const CodePoint {
-    if (case_folding.lookup(.full, .turkic, code_point)) |mapped| return mapped;
-    fallback[0] = code_point;
-    return fallback[0..1];
+    return casing.caseFoldFullTurkic(code_point, fallback);
 }
 
 pub fn specialCaseMapping(
@@ -212,45 +104,7 @@ pub fn specialCaseMapping(
     condition: SpecialCaseCondition,
     code_point: CodePoint,
 ) ?SpecialCaseMapping {
-    return switch (locale) {
-        .none => switch (condition) {
-            .none => special_casing.lookup(.none, .none, code_point),
-            .after_i => special_casing.lookup(.none, .after_i, code_point),
-            .not_before_dot => special_casing.lookup(.none, .not_before_dot, code_point),
-            .after_soft_dotted => special_casing.lookup(.none, .after_soft_dotted, code_point),
-            .more_above => special_casing.lookup(.none, .more_above, code_point),
-            .final_sigma => special_casing.lookup(.none, .final_sigma, code_point),
-            else => null,
-        },
-        .tr => switch (condition) {
-            .none => special_casing.lookup(.tr, .none, code_point),
-            .after_i => special_casing.lookup(.tr, .after_i, code_point),
-            .not_before_dot => special_casing.lookup(.tr, .not_before_dot, code_point),
-            .after_soft_dotted => special_casing.lookup(.tr, .after_soft_dotted, code_point),
-            .more_above => special_casing.lookup(.tr, .more_above, code_point),
-            .final_sigma => special_casing.lookup(.tr, .final_sigma, code_point),
-            else => null,
-        },
-        .az => switch (condition) {
-            .none => special_casing.lookup(.az, .none, code_point),
-            .after_i => special_casing.lookup(.az, .after_i, code_point),
-            .not_before_dot => special_casing.lookup(.az, .not_before_dot, code_point),
-            .after_soft_dotted => special_casing.lookup(.az, .after_soft_dotted, code_point),
-            .more_above => special_casing.lookup(.az, .more_above, code_point),
-            .final_sigma => special_casing.lookup(.az, .final_sigma, code_point),
-            else => null,
-        },
-        .lt => switch (condition) {
-            .none => special_casing.lookup(.lt, .none, code_point),
-            .after_i => special_casing.lookup(.lt, .after_i, code_point),
-            .not_before_dot => special_casing.lookup(.lt, .not_before_dot, code_point),
-            .after_soft_dotted => special_casing.lookup(.lt, .after_soft_dotted, code_point),
-            .more_above => special_casing.lookup(.lt, .more_above, code_point),
-            .final_sigma => special_casing.lookup(.lt, .final_sigma, code_point),
-            else => null,
-        },
-        else => null,
-    };
+    return casing.specialCaseMapping(locale, condition, code_point);
 }
 
 pub fn toLowerCaseFull(
@@ -259,11 +113,7 @@ pub fn toLowerCaseFull(
     condition: SpecialCaseCondition,
     fallback: *[max_case_mapping_len]CodePoint,
 ) []const CodePoint {
-    if (specialCaseMapping(locale, condition, code_point)) |mapping| {
-        if (mapping.lower.len != 0) return mapping.lower;
-    }
-    fallback[0] = toLowerCase(code_point);
-    return fallback[0..1];
+    return casing.toLowerCaseFull(code_point, locale, condition, fallback);
 }
 
 pub fn toUpperCaseFull(
@@ -272,11 +122,7 @@ pub fn toUpperCaseFull(
     condition: SpecialCaseCondition,
     fallback: *[max_case_mapping_len]CodePoint,
 ) []const CodePoint {
-    if (specialCaseMapping(locale, condition, code_point)) |mapping| {
-        if (mapping.upper.len != 0) return mapping.upper;
-    }
-    fallback[0] = toUpperCase(code_point);
-    return fallback[0..1];
+    return casing.toUpperCaseFull(code_point, locale, condition, fallback);
 }
 
 pub fn toTitleCaseFull(
@@ -285,153 +131,121 @@ pub fn toTitleCaseFull(
     condition: SpecialCaseCondition,
     fallback: *[max_case_mapping_len]CodePoint,
 ) []const CodePoint {
-    if (specialCaseMapping(locale, condition, code_point)) |mapping| {
-        if (mapping.title.len != 0) return mapping.title;
-    }
-    fallback[0] = toTitleCase(code_point);
-    return fallback[0..1];
+    return casing.toTitleCaseFull(code_point, locale, condition, fallback);
 }
 
 /// Check if a code point is a combining mark (diacritic, accent, etc.)
 /// This includes non-spacing marks, spacing marks, and enclosing marks.
 pub fn isMark(code_point: CodePoint) bool {
-    const category = generalCategory(code_point);
-    return switch (category) {
-        .non_spacing_mark, .spacing_mark, .enclosing_mark => true,
-        else => false,
-    };
+    return properties.isMark(code_point);
 }
 
 pub fn isMath(code_point: CodePoint) bool {
-    return hasDerivedProperty(code_point, .math);
+    return properties.isMath(code_point);
 }
 
 pub fn isCased(code_point: CodePoint) bool {
-    return hasDerivedProperty(code_point, .cased);
+    return properties.isCased(code_point);
 }
 
 pub fn isCaseIgnorable(code_point: CodePoint) bool {
-    return hasDerivedProperty(code_point, .case_ignorable);
+    return properties.isCaseIgnorable(code_point);
 }
 
 pub fn changesWhenLowercased(code_point: CodePoint) bool {
-    return hasDerivedProperty(code_point, .changes_when_lowercased);
+    return properties.changesWhenLowercased(code_point);
 }
 
 pub fn changesWhenUppercased(code_point: CodePoint) bool {
-    return hasDerivedProperty(code_point, .changes_when_uppercased);
+    return properties.changesWhenUppercased(code_point);
 }
 
 pub fn changesWhenTitlecased(code_point: CodePoint) bool {
-    return hasDerivedProperty(code_point, .changes_when_titlecased);
+    return properties.changesWhenTitlecased(code_point);
 }
 
 pub fn changesWhenCasefolded(code_point: CodePoint) bool {
-    return hasDerivedProperty(code_point, .changes_when_casefolded);
+    return properties.changesWhenCasefolded(code_point);
 }
 
 pub fn changesWhenCasemapped(code_point: CodePoint) bool {
-    return hasDerivedProperty(code_point, .changes_when_casemapped);
+    return properties.changesWhenCasemapped(code_point);
 }
 
 /// Check if a code point is a decimal digit (0-9 in ASCII and other scripts)
 /// More specific than isNumeric() which includes letter_number and other_number.
 pub fn isDecimalDigit(code_point: CodePoint) bool {
-    return generalCategory(code_point) == .decimal_number;
+    return properties.isDecimalDigit(code_point);
 }
 
 /// Check if a code point is a valid hexadecimal digit (0-9, a-f, A-F).
 /// Useful for parsing hex literals and other hex-based formats.
 pub fn isHexDigit(code_point: CodePoint) bool {
-    return switch (code_point) {
-        '0'...'9', 'a'...'f', 'A'...'F' => true,
-        else => false,
-    };
+    return properties.isHexDigit(code_point);
 }
 
 /// Check if a code point can start an identifier.
 /// This follows common identifier rules (letters, underscore, maybe some other categories).
 pub fn isIdentifierStart(code_point: CodePoint) bool {
-    if (code_point == '_') return true;
-    return isIdStart(code_point);
+    return properties.isIdentifierStart(code_point);
 }
 
 /// Check if a code point can continue an identifier.
 /// This includes identifier start characters plus digits and marks.
 pub fn isIdentifierContinue(code_point: CodePoint) bool {
-    if (code_point == '_') return true;
-    return isIdContinue(code_point);
+    return properties.isIdentifierContinue(code_point);
 }
 
 pub fn isIdStart(code_point: CodePoint) bool {
-    return hasDerivedProperty(code_point, .id_start);
+    return properties.isIdStart(code_point);
 }
 
 pub fn isIdContinue(code_point: CodePoint) bool {
-    return hasDerivedProperty(code_point, .id_continue);
+    return properties.isIdContinue(code_point);
 }
 
 pub fn isXidStart(code_point: CodePoint) bool {
-    return hasDerivedProperty(code_point, .xid_start);
+    return properties.isXidStart(code_point);
 }
 
 pub fn isXidContinue(code_point: CodePoint) bool {
-    return hasDerivedProperty(code_point, .xid_continue);
+    return properties.isXidContinue(code_point);
 }
 
 pub fn isDefaultIgnorableCodePoint(code_point: CodePoint) bool {
-    return hasDerivedProperty(code_point, .default_ignorable_code_point);
+    return properties.isDefaultIgnorableCodePoint(code_point);
 }
 
 pub fn isGraphemeExtend(code_point: CodePoint) bool {
-    return hasDerivedProperty(code_point, .grapheme_extend);
+    return properties.isGraphemeExtend(code_point);
 }
 
 pub fn isGraphemeBase(code_point: CodePoint) bool {
-    return hasDerivedProperty(code_point, .grapheme_base);
+    return properties.isGraphemeBase(code_point);
 }
 
 pub fn isGraphemeLink(code_point: CodePoint) bool {
-    return hasDerivedProperty(code_point, .grapheme_link);
+    return properties.isGraphemeLink(code_point);
 }
 
 /// Check if a code point is a space separator (excludes other whitespace like tabs, newlines).
 pub fn isSpaceSeparator(code_point: CodePoint) bool {
-    return generalCategory(code_point) == .space_separator;
+    return properties.isSpaceSeparator(code_point);
 }
 
 /// Check if a code point is punctuation.
 pub fn isPunctuation(code_point: CodePoint) bool {
-    const category = generalCategory(code_point);
-    return switch (category) {
-        .connector_punctuation,
-        .dash_punctuation,
-        .open_punctuation,
-        .close_punctuation,
-        .initial_punctuation,
-        .final_punctuation,
-        .other_punctuation,
-        => true,
-        else => false,
-    };
+    return properties.isPunctuation(code_point);
 }
 
 /// Check if a code point is a symbol.
 pub fn isSymbol(code_point: CodePoint) bool {
-    const category = generalCategory(code_point);
-    return switch (category) {
-        .math_symbol,
-        .currency_symbol,
-        .modifier_symbol,
-        .other_symbol,
-        => true,
-        else => false,
-    };
+    return properties.isSymbol(code_point);
 }
 
 /// Check if a code point is in the ASCII range (0x00-0x7F).
 pub fn isAscii(code_point: CodePoint) bool {
-    return code_point <= 0x7F;
+    return properties.isAscii(code_point);
 }
 
 // ============================================================================
@@ -439,7 +253,7 @@ pub fn isAscii(code_point: CodePoint) bool {
 // ============================================================================
 
 const testing = std.testing;
-const ucd_conformance_tests = @import("ucd_conformance_tests.zig");
+const ucd_conformance_tests = @import("tests/ucd_conformance.zig");
 
 test {
     std.testing.refAllDecls(ucd_conformance_tests);
@@ -1620,9 +1434,9 @@ test "isDecimalDigit: decimal digit handling" {
 }
 
 pub fn generalCategory(code_point: CodePoint) GeneralCategory {
-    return unicode_data.generalCategory(code_point);
+    return properties.generalCategory(code_point);
 }
 
 pub fn bidiClass(code_point: CodePoint) BidiClass {
-    return unicode_data.bidiClass(code_point);
+    return properties.bidiClass(code_point);
 }
