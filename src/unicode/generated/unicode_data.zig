@@ -80,7 +80,7 @@ pub const BidiEntry = struct {
 
 pub const CaseMappingRangeEntry = struct { start: CodePoint, end: CodePoint, delta: i32 };
 
-// zig fmt: off
+//zig fmt: off
 const category_level1 = [_]u16 {
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 
     12, 13, 14, 15, 16, 17, 18, 19, 20, 17, 21, 22, 
@@ -446,9 +446,9 @@ const category_level1 = [_]u16 {
     60, 60, 60, 60, 60, 60, 60, 60, 60, 60, 60, 60, 
     60, 60, 60, 60, 60, 60, 60, 161,
 };
-// zig fmt: on
+//zig fmt: on
 
-// zig fmt: off
+//zig fmt: off
 const category_level_2 = [_][256]GeneralCategory {
     .{
         .control,.control,.control,.control,.control,.control,.control,.control,.control,.control,.control,.control,
@@ -4339,7 +4339,7 @@ const category_level_2 = [_][256]GeneralCategory {
         .private_use,.private_use,.unassigned,.unassigned,
     },
 };
-// zig fmt: on
+//zig fmt: on
 
 pub inline fn generalCategory(cp: CodePoint) GeneralCategory {
     if (cp > 0x10FFFF) return .unassigned;
@@ -4347,7 +4347,7 @@ pub inline fn generalCategory(cp: CodePoint) GeneralCategory {
     return category_level_2[page][cp & 0xFF];
 }
 
-pub const combining_class_table = [_]CombiningClassEntry{
+pub const combining_class_table = [_]CombiningClassEntry {
     .{ .range_start = 0x300, .range_end = 0x314, .ccc = .above },
     .{ .range_start = 0x315, .range_end = 0x315, .ccc = .above_right },
     .{ .range_start = 0x316, .range_end = 0x319, .ccc = .below },
@@ -4753,7 +4753,7 @@ pub const combining_class_table = [_]CombiningClassEntry{
     .{ .range_start = 0x1E94A, .range_end = 0x1E94A, .ccc = .nukta },
 };
 
-// zig fmt: off
+//zig fmt: off
 const bidi_level1 = [_]u16 {
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 
     12, 13, 14, 15, 16, 1, 1, 17, 18, 1, 19, 20, 
@@ -5119,9 +5119,9 @@ const bidi_level1 = [_]u16 {
     1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 
     1, 1, 1, 1, 1, 1, 1, 1,
 };
-// zig fmt: on
+//zig fmt: on
 
-// zig fmt: off
+//zig fmt: off
 const bidi_level_2 = [_][256]BidiClass {
     .{
         .boundary_neutral,.boundary_neutral,.boundary_neutral,.boundary_neutral,.boundary_neutral,.boundary_neutral,.boundary_neutral,.boundary_neutral,.boundary_neutral,.segment_separator,.paragraph_separator,.segment_separator,
@@ -7980,14 +7980,14 @@ const bidi_level_2 = [_][256]BidiClass {
         .left_to_right,.left_to_right,.left_to_right,.left_to_right,
     },
 };
-// zig fmt: on
+//zig fmt: on
 
 pub inline fn bidiClass(cp: CodePoint) BidiClass {
     const page = bidi_level1[cp >> 8];
     return bidi_level_2[page][cp & 0xFF];
 }
 
-pub const lowercase_range_mapping_table = [_]CaseMappingRangeEntry{
+pub const lowercase_range_mapping_table = [_]CaseMappingRangeEntry {
     .{ .start = 0x41, .end = 0x5A, .delta = 32 },
     .{ .start = 0xC0, .end = 0xD6, .delta = 32 },
     .{ .start = 0xD8, .end = 0xDE, .delta = 32 },
@@ -8668,7 +8668,7 @@ pub const lowercase_range_mapping_table = [_]CaseMappingRangeEntry{
     .{ .start = 0x1E900, .end = 0x1E921, .delta = 34 },
 };
 
-pub const uppercase_range_mapping_table = [_]CaseMappingRangeEntry{
+pub const uppercase_range_mapping_table = [_]CaseMappingRangeEntry {
     .{ .start = 0x61, .end = 0x7A, .delta = -32 },
     .{ .start = 0xB5, .end = 0xB5, .delta = 743 },
     .{ .start = 0xE0, .end = 0xF6, .delta = -32 },
@@ -9365,7 +9365,7 @@ pub const uppercase_range_mapping_table = [_]CaseMappingRangeEntry{
     .{ .start = 0x1E922, .end = 0x1E943, .delta = -34 },
 };
 
-pub const titlecase_range_mapping_table = [_]CaseMappingRangeEntry{
+pub const titlecase_range_mapping_table = [_]CaseMappingRangeEntry {
     .{ .start = 0x61, .end = 0x7A, .delta = -32 },
     .{ .start = 0xB5, .end = 0xB5, .delta = 743 },
     .{ .start = 0xE0, .end = 0xF6, .delta = -32 },
