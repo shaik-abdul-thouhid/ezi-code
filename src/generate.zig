@@ -34,10 +34,26 @@ fn extractFileNameFromPath(path: []const u8) []const u8 {
 
 const RangeType = struct { start: u21, end: u21 };
 
+fn saveUCDFile(arena: std.mem.Allocator, io: std.Io, dir: *std.Io.Dir, data: []const u8, url: []const u8, buf: []u8) !void {
+    const ucd_file_name: []const u8 = extractFileNameFromPath(url);
+
+    const ucd_file = try dir.createFile(io, try std.fmt.allocPrint(arena, "ucd/{s}", .{ucd_file_name}), .{
+        .truncate = true,
+        .permissions = .default_file,
+    });
+    defer ucd_file.close(io);
+
+    var ucd_file_writer = ucd_file.writer(io, buf);
+    const ucd_writer = &ucd_file_writer.interface;
+    defer ucd_writer.flush() catch {};
+
+    try ucd_writer.writeAll(data);
+}
+
 const ucd_folder = "ucd";
 
 fn downloadAndGenerateUnicodeData(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
-    const dir: std.Io.Dir = .cwd();
+    var dir: std.Io.Dir = .cwd();
 
     var file = try dir.createFile(io, file_name, .{
         .truncate = true,
@@ -669,25 +685,11 @@ fn downloadAndGenerateUnicodeData(arena: std.mem.Allocator, io: std.Io, data: []
 
     try file_writer.flush();
 
-    const ucd_file_name: []const u8 = extractFileNameFromPath(url);
-
-    const ucd_file = try dir.createFile(io, try std.fmt.allocPrint(arena, "ucd/{s}", .{ucd_file_name}), .{
-        .truncate = true,
-        .permissions = .default_file,
-    });
-    defer ucd_file.close(io);
-
-    var ucd_file_writer = ucd_file.writer(io, buf);
-    const ucd_writer = &ucd_file_writer.interface;
-    defer ucd_writer.flush() catch {};
-
-    try ucd_writer.writeAll(data);
-
-    std.debug.print("parsed and wrote {} table data\n", .{i});
+    try saveUCDFile(arena, io, &dir, data, url, buf);
 }
 
 fn downloadAndGenerateDerivedCoreProperty(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
-    const dir: std.Io.Dir = .cwd();
+    var dir: std.Io.Dir = .cwd();
 
     var file = try dir.createFile(io, file_name, .{
         .truncate = true,
@@ -1007,21 +1009,10 @@ fn downloadAndGenerateDerivedCoreProperty(arena: std.mem.Allocator, io: std.Io, 
     defer ucd_writer.flush() catch {};
 
     try ucd_writer.writeAll(data);
-
-    std.debug.print("wrote ranges {}\n", .{max - min});
 }
 
-pub const CaseFoldingStatus = enum {
-    common,
-    full,
-    simple,
-    turkic,
-};
-
 fn downloadAndGenerateCaseFolding(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
-    _ = url;
-
-    const dir: std.Io.Dir = .cwd();
+    var dir: std.Io.Dir = .cwd();
 
     var file = try dir.createFile(io, file_name, .{
         .truncate = true,
@@ -1033,58 +1024,163 @@ fn downloadAndGenerateCaseFolding(arena: std.mem.Allocator, io: std.Io, data: []
     var file_writer = file.writer(io, buf);
     const writer = &file_writer.interface;
 
-    var mapping_pool = std.ArrayList(u21).empty;
-    var entries = std.ArrayList(u8).empty;
+    // --- Begin new implementation ---
+    // 1. Define FoldEntry
+    const FoldEntry = struct {
+        from: u21,
+        to: []const u21,
+    };
 
-    var lines = std.mem.splitScalar(u8, data, '\n');
-    while (lines.next()) |line| {
-        const trimmed = std.mem.trim(u8, line, " \t\r");
-        if (trimmed.len == 0 or trimmed[0] == '#') continue;
+    // 2. Create four arrays
+    var common_simple = std.ArrayList(FoldEntry).empty;
+    var common_full = std.ArrayList(FoldEntry).empty;
+    var turkic_simple = std.ArrayList(FoldEntry).empty;
+    var turkic_full = std.ArrayList(FoldEntry).empty;
 
-        var parts = std.mem.splitScalar(u8, trimmed, ';');
+    // 3. Parse every non-comment line of CaseFolding.txt.
+    var split_lines = std.mem.splitScalar(u8, data, '\n');
+    line_loop: while (split_lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r\n");
+        if (trimmed.len == 0 or trimmed[0] == '#') continue :line_loop;
 
-        const cp_raw = std.mem.trim(u8, parts.next() orelse continue, " ");
-        const status_raw = std.mem.trim(u8, parts.next() orelse continue, " ");
-        const mapping_raw = std.mem.trim(u8, parts.next() orelse continue, " ");
+        // 4. For each record:
+        // - Parse source code point.
+        // - Parse fold status (C,S,F,T).
+        // - Parse fold sequence into a heap allocated slice.
+        var semi = std.mem.splitScalar(u8, trimmed, ';');
+        const src_raw = semi.next() orelse continue :line_loop;
+        const status_raw = semi.next() orelse continue :line_loop;
+        const mapping_raw = semi.next() orelse continue :line_loop;
+        // Ignore any comment after the mapping
 
-        const cp = try std.fmt.parseInt(u21, cp_raw, 16);
-        const offset = mapping_pool.items.len;
+        const from = try std.fmt.parseInt(u21, std.mem.trim(u8, src_raw, " \t"), 16);
+        const status = std.mem.trim(u8, status_raw, " \t");
+        const mapping_str = std.mem.trim(u8, mapping_raw, " \t");
 
-        var mapping_iter = std.mem.splitScalar(u8, mapping_raw, ' ');
-        var mapping_len: usize = 0;
-        while (mapping_iter.next()) |m| {
-            if (m.len == 0) continue;
-            try mapping_pool.append(arena, try std.fmt.parseInt(u21, m, 16));
-            mapping_len += 1;
+        // Parse mapping_str as 1 or more hex codepoints
+        var mapping_buf = std.ArrayList(u21).empty;
+        var mapping_split = std.mem.splitScalar(u8, mapping_str, ' ');
+        while (mapping_split.next()) |cpstr| {
+            const cp_trim = std.mem.trim(u8, cpstr, " \t");
+            if (cp_trim.len == 0) continue;
+            try mapping_buf.append(arena, try std.fmt.parseInt(u21, cp_trim, 16));
         }
+        const to = try arena.dupe(u21, mapping_buf.items);
 
-        const status_name = if (std.mem.eql(u8, status_raw, "C")) "common" else if (std.mem.eql(u8, status_raw, "F")) "full" else if (std.mem.eql(u8, status_raw, "S")) "simple" else "turkic";
-
-        const row = try std.fmt.allocPrint(
-            arena,
-            "    .{{ .code_point = 0x{X}, .mapping_offset = {}, .mapping_len = {}, .status = .{s} }},\n",
-            .{ cp, offset, mapping_len, status_name },
-        );
-        try entries.appendSlice(arena, row);
+        // 5. Route entries
+        if (std.mem.eql(u8, status, "C")) {
+            try common_simple.append(arena, FoldEntry{ .from = from, .to = to });
+            try common_full.append(arena, FoldEntry{ .from = from, .to = to });
+        } else if (std.mem.eql(u8, status, "S")) {
+            try common_simple.append(arena, FoldEntry{ .from = from, .to = to });
+        } else if (std.mem.eql(u8, status, "F")) {
+            try common_full.append(arena, FoldEntry{ .from = from, .to = to });
+        } else if (std.mem.eql(u8, status, "T")) {
+            try turkic_simple.append(arena, FoldEntry{ .from = from, .to = to });
+            try turkic_full.append(arena, FoldEntry{ .from = from, .to = to });
+        }
     }
 
-    try writer.writeAll("//! auto-generated\nconst CodePoint = @import(\"encoding\").CodePoint;\n\npub const CaseFoldingEntry = struct {\n    code_point: CodePoint,\n    mapping_offset: u32,\n    mapping_len: u8,\n    status: CaseFoldingStatus,\n};\n\npub const case_folding_mapping_pool = [_]CodePoint{\n");
+    // 7. Write the header
+    try writer.writeAll(
+        \\//! This file is auto-generated. Do not edit directly.
+        \\//! To regenerate run `zig build generate` in same level
+        \\//! as `build.zig` file.
+        \\
+        \\const CodePoint = @import("encoding").CodePoint;
+        \\
+        \\const property_alias = @import("property_alias.zig");
+        \\const CaseFoldingMode = property_alias.CaseFoldingMode;
+        \\const CaseFoldingLocale = property_alias.CaseFoldingLocale;
+        \\const FoldResult = property_alias.FoldResult;
+        \\
+        \\pub const FoldEntry = struct {
+        \\    from: CodePoint,
+        \\    to: []const CodePoint,
+        \\};
+        \\
+        \\
+    );
 
-    for (mapping_pool.items) |cp| {
-        try writer.print("    0x{X},\n", .{cp});
-    }
+    // 8. Add a local helper emitTable
+    const emitTable = struct {
+        fn emitTable(
+            w: *std.Io.Writer,
+            table_name: []const u8,
+            entries: []const FoldEntry,
+        ) !void {
+            try w.writeAll("// zig fmt: off\npub const ");
+            try w.writeAll(table_name);
+            try w.writeAll(" = [_]FoldEntry{\n");
+            var i: usize = 0;
+            for (entries) |entry| {
+                try w.writeAll("    .{ .from = 0x");
+                try w.print("{X}", .{entry.from});
+                try w.writeAll(", .to = &.{");
+                for (entry.to, 0..) |cp, idx| {
+                    if (idx > 0) try w.writeAll(", ");
+                    try w.print("0x{X}", .{cp});
+                }
+                try w.writeAll("} },");
+                if (i >= 2) {
+                    try w.writeAll("\n");
+                    i = 0;
+                } else i += 1;
+            }
+            try w.writeAll("\n};\n// zig fmt: off\n\n");
+        }
+    }.emitTable;
 
-    try writer.writeAll("};\n\npub const case_folding_table = [_]CaseFoldingEntry{\n");
-    try writer.writeAll(entries.items);
-    try writer.writeAll("};\n");
+    // 9. Emit the four tables
+    try emitTable(writer, "common_simple_table", common_simple.items);
+    try emitTable(writer, "common_full_table", common_full.items);
+    try emitTable(writer, "turkic_simple_table", turkic_simple.items);
+    try emitTable(writer, "turkic_full_table", turkic_full.items);
 
+    try writer.writeAll(
+        \\pub fn lookup(comptime mode: CaseFoldingMode, comptime locale: CaseFoldingLocale, code_point: CodePoint) ?FoldResult(mode) {
+        \\    const table = switch (locale) {
+        \\        .default => switch (mode) {
+        \\            .simple => &common_simple_table,
+        \\            .full => &common_full_table,
+        \\        },
+        \\        .turkic => switch (mode) {
+        \\            .simple => &turkic_simple_table,
+        \\            .full => &turkic_full_table,
+        \\        },
+        \\    };
+        \\
+        \\    var left: usize = 0;
+        \\    var right: usize = table.len;
+        \\
+        \\    while (left < right) {
+        \\        const mid = left + (right - left) / 2;
+        \\        const entry = table[mid];
+        \\
+        \\        if (code_point < entry.from) {
+        \\            right = mid;
+        \\        } else if (code_point > entry.from) {
+        \\            left = mid + 1;
+        \\        } else {
+        \\            return if (FoldResult(mode) == CodePoint)
+        \\                entry.to[0]
+        \\            else entry.to;
+        \\        }
+        \\    }
+        \\
+        \\    return null;
+        \\}
+        \\
+    );
+
+    // 10. Preserve file_writer.flush
     try file_writer.flush();
+
+    try saveUCDFile(arena, io, &dir, data, url, buf);
 }
 
 fn downloadAndGenerateSpecialCasing(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
-    _ = url;
-
-    const dir: std.Io.Dir = .cwd();
+    var dir: std.Io.Dir = .cwd();
 
     var file = try dir.createFile(io, file_name, .{
         .truncate = true,
@@ -1095,23 +1191,11 @@ fn downloadAndGenerateSpecialCasing(arena: std.mem.Allocator, io: std.Io, data: 
     const buf = try arena.alloc(u8, 4096);
     var file_writer = file.writer(io, buf);
     const writer = &file_writer.interface;
-
-    try writer.writeAll("//! auto-generated\n// TODO: conditional and locale-sensitive mappings from SpecialCasing.txt\n");
-
-    var lines = std.mem.splitScalar(u8, data, '\n');
-    while (lines.next()) |line| {
-        const trimmed = std.mem.trim(u8, line, " \t\r");
-        if (trimmed.len == 0 or trimmed[0] == '#') continue;
-        if (std.mem.indexOfScalar(u8, trimmed, '#')) |idx| {
-            try writer.writeAll(trimmed[0..idx]);
-            try writer.writeAll("\n");
-        } else {
-            try writer.writeAll(trimmed);
-            try writer.writeAll("\n");
-        }
-    }
+    _ = writer;
 
     try file_writer.flush();
+
+    try saveUCDFile(arena, io, &dir, data, url, buf);
 }
 
 pub fn main(init: std.process.Init) !void {
@@ -1123,12 +1207,12 @@ pub fn main(init: std.process.Init) !void {
 
     const start = clock.now(io);
 
-    var allocated_writer: std.Io.Writer.Allocating = .init(arena_allocator);
-    defer allocated_writer.deinit();
-
-    try allocated_writer.ensureTotalCapacity(1024 * 1024);
-
     {
+        var allocated_writer: std.Io.Writer.Allocating = .init(arena_allocator);
+        defer allocated_writer.deinit();
+
+        try allocated_writer.ensureTotalCapacity(1024 * 1024);
+
         const file_name = "src/unicode/unicode_data_generated.zig";
         const unicode_data_url = "https://www.unicode.org/Public/UCD/latest/ucd/UnicodeData.txt";
 
@@ -1136,10 +1220,15 @@ pub fn main(init: std.process.Init) !void {
 
         try downloadAndGenerateUnicodeData(arena_allocator, io, allocated_writer.written(), unicode_data_url, file_name);
 
-        allocated_writer.clearRetainingCapacity();
+        _ = arena.reset(.{ .retain_with_limit = 1024 * 1024 * 4 });
     }
 
     {
+        var allocated_writer: std.Io.Writer.Allocating = .init(arena_allocator);
+        defer allocated_writer.deinit();
+
+        try allocated_writer.ensureTotalCapacity(1024 * 1024);
+
         const file_name = "src/unicode/derived_core_properties_generated.zig";
         const derived_core_properties_url = "https://www.unicode.org/Public/UCD/latest/ucd/DerivedCoreProperties.txt";
 
@@ -1148,27 +1237,39 @@ pub fn main(init: std.process.Init) !void {
         try downloadAndGenerateDerivedCoreProperty(arena_allocator, io, allocated_writer.written(), derived_core_properties_url, file_name);
 
         allocated_writer.clearRetainingCapacity();
+
+        _ = arena.reset(.{ .retain_with_limit = 1024 * 1024 * 4 });
     }
 
-    // {
-    //     const file_name = "src/unicode/case_folding_generated.zig";
-    //     const source_url = "https://www.unicode.org/Public/UCD/latest/ucd/CaseFolding.txt";
+    {
+        var allocated_writer: std.Io.Writer.Allocating = .init(arena_allocator);
+        defer allocated_writer.deinit();
 
-    //     try downloadFileToPath(arena_allocator, io, &allocated_writer.writer, source_url);
-    //     try downloadAndGenerateCaseFolding(arena_allocator, io, allocated_writer.written(), source_url, file_name);
-    //     allocated_writer.clearRetainingCapacity();
-    // }
+        try allocated_writer.ensureTotalCapacity(1024 * 1024);
 
-    // {
-    //     const file_name = "src/unicode/special_casing_generated.zig";
-    //     const source_url = "https://www.unicode.org/Public/UCD/latest/ucd/SpecialCasing.txt";
+        const file_name = "src/unicode/case_folding_generated.zig";
+        const source_url = "https://www.unicode.org/Public/UCD/latest/ucd/CaseFolding.txt";
 
-    //     try downloadFileToPath(arena_allocator, io, &allocated_writer.writer, source_url);
-    //     try downloadAndGenerateSpecialCasing(arena_allocator, io, allocated_writer.written(), source_url, file_name);
-    //     allocated_writer.clearRetainingCapacity();
-    // }
+        try downloadFileToPath(arena_allocator, io, &allocated_writer.writer, source_url);
+        try downloadAndGenerateCaseFolding(arena_allocator, io, allocated_writer.written(), source_url, file_name);
+        allocated_writer.clearRetainingCapacity();
+    }
+
+    {
+        var allocated_writer: std.Io.Writer.Allocating = .init(arena_allocator);
+        defer allocated_writer.deinit();
+
+        try allocated_writer.ensureTotalCapacity(1024 * 1024);
+
+        const file_name = "src/unicode/special_casing_generated.zig";
+        const source_url = "https://www.unicode.org/Public/UCD/latest/ucd/SpecialCasing.txt";
+
+        try downloadFileToPath(arena_allocator, io, &allocated_writer.writer, source_url);
+        try downloadAndGenerateSpecialCasing(arena_allocator, io, allocated_writer.written(), source_url, file_name);
+        allocated_writer.clearRetainingCapacity();
+    }
 
     const end = clock.now(io);
 
-    std.debug.print("generate command took: {}ms, total memory: {}\n", .{ end.toMilliseconds() - start.toMilliseconds(), arena.queryCapacity() / (1024 * 1024) });
+    std.debug.print("generate command took: {}ms\n", .{end.toMilliseconds() - start.toMilliseconds()});
 }
