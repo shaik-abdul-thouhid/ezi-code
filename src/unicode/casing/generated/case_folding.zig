@@ -4,10 +4,10 @@
 
 const CodePoint = @import("encoding").CodePoint;
 
-const property_alias = @import("property_alias.zig");
-const CaseFoldingMode = property_alias.CaseFoldingMode;
-const CaseFoldingLocale = property_alias.CaseFoldingLocale;
-const FoldResult = property_alias.FoldResult;
+const unicode_types = @import("../../types.zig");
+const CaseFoldingMode = unicode_types.CaseFoldingMode;
+const CaseFoldingLocale = unicode_types.CaseFoldingLocale;
+const FoldResult = unicode_types.FoldResult;
 
 pub const FoldEntry = struct {
     from: CodePoint,

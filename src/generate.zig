@@ -3,8 +3,8 @@ const utils = @import("utils/root.zig");
 
 const every = utils.every;
 
-const property_alias = @import("unicode/property_alias.zig");
-const CanonicalCombiningClass = property_alias.CanonicalCombiningClass;
+const unicode_types = @import("unicode/types.zig");
+const CanonicalCombiningClass = unicode_types.CanonicalCombiningClass;
 
 const some = @import("utils/helpers.zig").some;
 
@@ -108,10 +108,10 @@ fn downloadAndGenerateUnicodeData(arena: std.mem.Allocator, io: std.Io, data: []
     var uppercase_range_end: ?u21 = null;
     var uppercase_current_difference: i32 = 0;
 
-    var title_case_mapping_range: std.ArrayList(u8) = .empty;
-    var title_case_range_start: ?u21 = null;
-    var title_case_range_end: ?u21 = null;
-    var title_case_current_difference: i32 = 0;
+    var titlecase_mapping_range: std.ArrayList(u8) = .empty;
+    var titlecase_range_start: ?u21 = null;
+    var titlecase_range_end: ?u21 = null;
+    var titlecase_current_difference: i32 = 0;
 
     var split_iter = std.mem.splitScalar(u8, data, '\n');
 
@@ -166,13 +166,13 @@ fn downloadAndGenerateUnicodeData(arena: std.mem.Allocator, io: std.Io, data: []
 
         const uppercase_mapping = field_iter.next() orelse "";
         const lowercase_mapping = field_iter.next() orelse "";
-        const title_case_mapping = field_iter.next() orelse "";
+        const titlecase_mapping = field_iter.next() orelse "";
         const cp = try std.fmt.parseInt(u21, code_point, 16);
 
         const category_name = blk: {
             if (std.mem.eql(u8, category, "Lu")) break :blk "uppercase_letter";
             if (std.mem.eql(u8, category, "Ll")) break :blk "lowercase_letter";
-            if (std.mem.eql(u8, category, "Lt")) break :blk "title_case_letter";
+            if (std.mem.eql(u8, category, "Lt")) break :blk "titlecase_letter";
             if (std.mem.eql(u8, category, "Lm")) break :blk "modifier_letter";
             if (std.mem.eql(u8, category, "Lo")) break :blk "other_letter";
             if (std.mem.eql(u8, category, "Mn")) break :blk "non_spacing_mark";
@@ -365,29 +365,29 @@ fn downloadAndGenerateUnicodeData(arena: std.mem.Allocator, io: std.Io, data: []
                 lowercase_current_difference = difference;
             }
         }
-        if (title_case_mapping.len != 0) {
+        if (titlecase_mapping.len != 0) {
             const cp_num_from = cp;
-            const cp_num_to = try std.fmt.parseInt(u21, title_case_mapping, 16);
+            const cp_num_to = try std.fmt.parseInt(u21, titlecase_mapping, 16);
             const difference = @as(i32, @intCast(cp_num_to)) - @as(i32, @intCast(cp_num_from));
 
-            if (title_case_range_start == null or title_case_range_end == null or title_case_current_difference == 0) {
-                title_case_range_start = cp;
-                title_case_range_end = cp;
-                title_case_current_difference = difference;
-            } else if (title_case_current_difference == difference and cp == title_case_range_end.? + 1) {
-                title_case_range_end = cp;
-            } else if (title_case_current_difference != difference or cp != title_case_range_end.? + 1) {
+            if (titlecase_range_start == null or titlecase_range_end == null or titlecase_current_difference == 0) {
+                titlecase_range_start = cp;
+                titlecase_range_end = cp;
+                titlecase_current_difference = difference;
+            } else if (titlecase_current_difference == difference and cp == titlecase_range_end.? + 1) {
+                titlecase_range_end = cp;
+            } else if (titlecase_current_difference != difference or cp != titlecase_range_end.? + 1) {
                 const p = try std.fmt.allocPrint(
                     arena,
                     "    .{{ .start = 0x{X}, .end = 0x{X}, .delta = {} }},\n",
-                    .{ title_case_range_start.?, title_case_range_end.?, title_case_current_difference },
+                    .{ titlecase_range_start.?, titlecase_range_end.?, titlecase_current_difference },
                 );
 
-                try title_case_mapping_range.appendSlice(arena, p);
+                try titlecase_mapping_range.appendSlice(arena, p);
 
-                title_case_range_start = cp;
-                title_case_range_end = cp;
-                title_case_current_difference = difference;
+                titlecase_range_start = cp;
+                titlecase_range_end = cp;
+                titlecase_current_difference = difference;
             }
         }
     }
@@ -465,14 +465,14 @@ fn downloadAndGenerateUnicodeData(arena: std.mem.Allocator, io: std.Io, data: []
         \\//! as `build.zig` file.
         \\
         \\const CodePoint = @import("encoding").CodePoint;
-        \\const property_alias = @import("property_alias.zig");
+        \\const unicode_types = @import("../types.zig");
         \\
-        \\const CanonicalCombiningClass = property_alias.CanonicalCombiningClass;
+        \\const CanonicalCombiningClass = unicode_types.CanonicalCombiningClass;
         \\
         \\pub const GeneralCategory = enum(u8) {
         \\    uppercase_letter,
         \\    lowercase_letter,
-        \\    title_case_letter,
+        \\    titlecase_letter,
         \\    modifier_letter,
         \\    other_letter,
         \\    non_spacing_mark,
@@ -694,13 +694,13 @@ fn downloadAndGenerateUnicodeData(arena: std.mem.Allocator, io: std.Io, data: []
         try uppercase_mapping_range.appendSlice(arena, p);
     }
 
-    if (title_case_range_start != null) {
+    if (titlecase_range_start != null) {
         const p = try std.fmt.allocPrint(
             arena,
             "    .{{ .start = 0x{X}, .end = 0x{X}, .delta = {} }},\n",
-            .{ title_case_range_start.?, title_case_range_end.?, title_case_current_difference },
+            .{ titlecase_range_start.?, titlecase_range_end.?, titlecase_current_difference },
         );
-        try title_case_mapping_range.appendSlice(arena, p);
+        try titlecase_mapping_range.appendSlice(arena, p);
     }
 
     try writer.writeAll("pub const lowercase_range_mapping_table = [_]CaseMappingRangeEntry {\n");
@@ -709,8 +709,8 @@ fn downloadAndGenerateUnicodeData(arena: std.mem.Allocator, io: std.Io, data: []
     try writer.writeAll("};\n\npub const uppercase_range_mapping_table = [_]CaseMappingRangeEntry {\n");
     try writer.writeAll(uppercase_mapping_range.items);
 
-    try writer.writeAll("};\n\npub const title_case_range_mapping_table = [_]CaseMappingRangeEntry {\n");
-    try writer.writeAll(title_case_mapping_range.items);
+    try writer.writeAll("};\n\npub const titlecase_range_mapping_table = [_]CaseMappingRangeEntry {\n");
+    try writer.writeAll(titlecase_mapping_range.items);
 
     try writer.writeAll("};\n");
 
@@ -1089,10 +1089,10 @@ fn downloadAndGenerateCaseFolding(arena: std.mem.Allocator, io: std.Io, data: []
         \\
         \\const CodePoint = @import("encoding").CodePoint;
         \\
-        \\const property_alias = @import("property_alias.zig");
-        \\const CaseFoldingMode = property_alias.CaseFoldingMode;
-        \\const CaseFoldingLocale = property_alias.CaseFoldingLocale;
-        \\const FoldResult = property_alias.FoldResult;
+        \\const unicode_types = @import("../../types.zig");
+        \\const CaseFoldingMode = unicode_types.CaseFoldingMode;
+        \\const CaseFoldingLocale = unicode_types.CaseFoldingLocale;
+        \\const FoldResult = unicode_types.FoldResult;
         \\
         \\pub const FoldEntry = struct {
         \\    from: CodePoint,
@@ -1523,7 +1523,7 @@ pub fn main(init: std.process.Init) !void {
 
         try allocated_writer.ensureTotalCapacity(1024 * 1024);
 
-        const file_name = "src/unicode/unicode_data_generated.zig";
+        const file_name = "src/unicode/generated/unicode_data.zig";
         const unicode_data_url = "https://www.unicode.org/Public/UCD/latest/ucd/UnicodeData.txt";
 
         try downloadFileToPath(arena_allocator, io, &allocated_writer.writer, unicode_data_url);
@@ -1540,7 +1540,7 @@ pub fn main(init: std.process.Init) !void {
 
         try allocated_writer.ensureTotalCapacity(1024 * 1024);
 
-        const file_name = "src/unicode/derived_core_properties_generated.zig";
+        const file_name = "src/unicode/properties/generated/derived_core_properties.zig";
         const derived_core_properties_url = "https://www.unicode.org/Public/UCD/latest/ucd/DerivedCoreProperties.txt";
 
         try downloadFileToPath(arena_allocator, io, &allocated_writer.writer, derived_core_properties_url);
@@ -1557,7 +1557,7 @@ pub fn main(init: std.process.Init) !void {
 
         try allocated_writer.ensureTotalCapacity(1024 * 1024);
 
-        const file_name = "src/unicode/case_folding_generated.zig";
+        const file_name = "src/unicode/casing/generated/case_folding.zig";
         const source_url = "https://www.unicode.org/Public/UCD/latest/ucd/CaseFolding.txt";
 
         try downloadFileToPath(arena_allocator, io, &allocated_writer.writer, source_url);
@@ -1572,7 +1572,7 @@ pub fn main(init: std.process.Init) !void {
 
         try allocated_writer.ensureTotalCapacity(1024 * 1024);
 
-        const file_name = "src/unicode/special_casing_generated.zig";
+        const file_name = "src/unicode/casing/generated/special_casing.zig";
         const source_url = "https://www.unicode.org/Public/UCD/latest/ucd/SpecialCasing.txt";
 
         try downloadFileToPath(arena_allocator, io, &allocated_writer.writer, source_url);

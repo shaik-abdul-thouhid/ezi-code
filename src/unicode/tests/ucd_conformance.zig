@@ -1,11 +1,11 @@
 const std = @import("std");
 const encoding = @import("encoding");
 
-const unicode_data = @import("unicode_data_generated.zig");
-const derived = @import("derived_core_properties_generated.zig");
-const case_folding = @import("case_folding_generated.zig");
-const special_casing = @import("special_casing_generated.zig");
-const property_alias = @import("property_alias.zig");
+const unicode_data = @import("../generated/unicode_data.zig");
+const derived = @import("../properties/generated/derived_core_properties.zig");
+const case_folding = @import("../casing/generated/case_folding.zig");
+const special_casing = @import("../casing/generated/special_casing.zig");
+const unicode_types = @import("../types.zig");
 
 const CodePoint = encoding.CodePoint;
 const testing = std.testing;
@@ -53,7 +53,7 @@ fn expectCodePointSlices(expected: []const CodePoint, actual: []const CodePoint)
 fn categoryFromUcd(raw: []const u8) unicode_data.GeneralCategory {
     if (std.mem.eql(u8, raw, "Lu")) return .uppercase_letter;
     if (std.mem.eql(u8, raw, "Ll")) return .lowercase_letter;
-    if (std.mem.eql(u8, raw, "Lt")) return .title_case_letter;
+    if (std.mem.eql(u8, raw, "Lt")) return .titlecase_letter;
     if (std.mem.eql(u8, raw, "Lm")) return .modifier_letter;
     if (std.mem.eql(u8, raw, "Lo")) return .other_letter;
     if (std.mem.eql(u8, raw, "Mn")) return .non_spacing_mark;
@@ -219,7 +219,7 @@ test "ucd hostile: UnicodeData generated categories, bidi classes, combining cla
     var pending_range_start: ?CodePoint = null;
     var pending_category: unicode_data.GeneralCategory = undefined;
     var pending_bidi: unicode_data.BidiClass = undefined;
-    var pending_ccc: property_alias.CanonicalCombiningClass = undefined;
+    var pending_ccc: unicode_types.CanonicalCombiningClass = undefined;
 
     var lines = std.mem.splitScalar(u8, unicode_data_txt, '\n');
     while (lines.next()) |raw_line| {
@@ -239,7 +239,7 @@ test "ucd hostile: UnicodeData generated categories, bidi classes, combining cla
         const cp = try parseCodePoint(fields[0]);
         const name = fields[1];
         const category = categoryFromUcd(fields[2]);
-        const ccc = property_alias.CanonicalCombiningClass.fromU8(try std.fmt.parseInt(u8, fields[3], 10));
+        const ccc = unicode_types.CanonicalCombiningClass.fromU8(try std.fmt.parseInt(u8, fields[3], 10));
         const bidi = bidiFromUcd(fields[4]);
 
         if (std.mem.endsWith(u8, name, ", First>")) {
@@ -270,12 +270,12 @@ test "ucd hostile: UnicodeData generated categories, bidi classes, combining cla
             const title = if (fields[14].len == 0) cp else try parseCodePoint(fields[14]);
             try testing.expectEqual(upper, simpleCaseMap(&unicode_data.uppercase_range_mapping_table, cp));
             try testing.expectEqual(lower, simpleCaseMap(&unicode_data.lowercase_range_mapping_table, cp));
-            try testing.expectEqual(title, simpleCaseMap(&unicode_data.title_case_range_mapping_table, cp));
+            try testing.expectEqual(title, simpleCaseMap(&unicode_data.titlecase_range_mapping_table, cp));
         }
     }
 }
 
-fn lookupCombiningClass(cp: CodePoint) property_alias.CanonicalCombiningClass {
+fn lookupCombiningClass(cp: CodePoint) unicode_types.CanonicalCombiningClass {
     var low: usize = 0;
     var high: usize = unicode_data.combining_class_table.len;
     while (low < high) {
