@@ -1518,6 +1518,7 @@ fn generatePropList(arena: std.mem.Allocator, io: std.Io, data: []const u8, url:
     const buf = try arena.alloc(u8, 4096);
     var file_writer = file.writer(io, buf);
     const writer = &file_writer.interface;
+    _ = writer;
 
     var split_lines = std.mem.splitScalar(u8, data, '\n');
 
@@ -1555,136 +1556,6 @@ fn generatePropList(arena: std.mem.Allocator, io: std.Io, data: []const u8, url:
 
         try entry.value_ptr.ranges.append(arena, .{ .start = start, .end = end });
     }
-
-    // --- New implementation: two-level property bitmask table like generateDerivedCoreProperty ---
-    // 1. Collect all properties into a stable indexed list.
-    const map_count = tables.count();
-    var sorted_normalized_keys = try arena.alloc([]const u8, map_count);
-    const sorted_property_ranges = try arena.alloc([]RangeType, map_count);
-
-    {
-        var iter = tables.valueIterator();
-        var idx: usize = 0;
-        while (iter.next()) |val| {
-            sorted_normalized_keys[idx] = val.normalized_name;
-            sorted_property_ranges[idx] = val.ranges.items;
-            idx += 1;
-        }
-    }
-
-    // 2. Build a dense bitmask array
-    std.debug.assert(map_count < 64); // 64 bit mask
-    var property_values = try arena.alloc(u64, 0x110000);
-    @memset(property_values, 0);
-    for (sorted_property_ranges, 0..) |ranges, i| {
-        for (ranges) |range| {
-            var cp = range.start;
-            while (cp <= range.end) : (cp += 1) {
-                property_values[cp] |= (@as(u64, 1) << @intCast(i));
-            }
-        }
-    }
-
-    // 3. Build a deduplicated two-level table (like generateDerivedCoreProperty)
-    const PROPERTY_PAGE_BITS = 8;
-    const PROPERTY_PAGE_SIZE = 1 << PROPERTY_PAGE_BITS;
-    var unique_property_pages = std.ArrayList([]const u64).empty;
-    var property_level1_items = std.ArrayList(usize).empty;
-    var property_page_map: std.AutoHashMapUnmanaged(u64, usize) = .empty;
-    const property_page_buf = try arena.alloc(u64, PROPERTY_PAGE_SIZE);
-    var total_property_cps: usize = 0;
-    while (total_property_cps < property_values.len) : (total_property_cps += PROPERTY_PAGE_SIZE) {
-        const page_start = total_property_cps;
-        const page_end = @min(page_start + PROPERTY_PAGE_SIZE, property_values.len);
-        for (property_page_buf, 0..) |*slot, j| {
-            const idx = page_start + j;
-            slot.* = if (idx < page_end) property_values[idx] else 0;
-        }
-        var hasher = std.hash.Wyhash.init(0);
-        hasher.update(std.mem.sliceAsBytes(property_page_buf));
-        const page_hash = hasher.final();
-        var found = false;
-        var found_idx: usize = 0;
-        if (property_page_map.get(page_hash)) |idx| {
-            if (std.mem.eql(u64, unique_property_pages.items[idx], property_page_buf)) {
-                found = true;
-                found_idx = idx;
-            }
-        }
-        if (!found) {
-            const new_page = try arena.alloc(u64, PROPERTY_PAGE_SIZE);
-            @memcpy(new_page, property_page_buf);
-            found_idx = unique_property_pages.items.len;
-            try unique_property_pages.append(arena, new_page);
-            try property_page_map.put(arena, page_hash, found_idx);
-        }
-        try property_level1_items.append(arena, found_idx);
-    }
-
-    // 4. Emit generated file content
-    try writer.writeAll(
-        \\//! This file is auto-generated. Do not edit directly.
-        \\//! To regenerate run `zig build generate` in same level
-        \\//! as `build.zig` file.
-        \\
-        \\const CodePoint = @import("encoding").CodePoint;
-        \\
-        \\pub const Property = enum(u64) {
-        \\
-    );
-    for (sorted_normalized_keys, 0..) |key, idx| {
-        try writer.print("    {s} = 1 << {},\n", .{ key, idx });
-    }
-    try writer.writeAll(
-        \\};
-        \\
-        \\// zig fmt: off
-        \\const property_level1 = [_]u16 {
-    );
-
-    for (property_level1_items.items, 0..) |idx, n| {
-        if (n % 12 == 0) try writer.writeAll("\n    ");
-        try writer.print("{},", .{idx});
-        if (n + 1 != property_level1_items.items.len) {
-            try writer.writeAll(" ");
-        }
-    }
-    try writer.writeAll(
-        \\
-        \\};
-        \\// zig fmt: on
-        \\
-        \\//zig fmt: off
-        \\const property_level2 = [_][256]u64 {
-    );
-
-    for (unique_property_pages.items) |page| {
-        try writer.writeAll("    \n    .{\n        ");
-        for (page, 0..) |val, j| {
-            try writer.print("0x{X},", .{val});
-            if ((j + 1) % 12 == 0 and (j + 1) != page.len)
-                try writer.writeAll("\n        ")
-            else if (j + 1 != page.len) try writer.writeAll(" ");
-        }
-        try writer.writeAll("\n    },");
-    }
-
-    try writer.writeAll(
-        \\
-        \\};
-        \\// zig fmt: on
-        \\
-        \\pub inline fn propertyMask(code_point: CodePoint) u64 {
-        \\    if (code_point > 0x10FFFF) return 0;
-        \\    const page = property_level1[code_point >> 8];
-        \\    return property_level2[page][code_point & 0xFF];
-        \\}
-        \\
-        \\pub inline fn hasProperty(code_point: CodePoint, property: Property) bool {
-        \\    return (propertyMask(code_point) & @intFromEnum(property)) != 0;
-        \\}
-        \\
-    );
 
     // 7. Keep file flush/save logic
     try file_writer.flush();
