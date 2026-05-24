@@ -1070,18 +1070,7 @@ pub const turkic_full_table = [_]FoldEntry{
 };
 // zig fmt: off
 
-pub fn lookup(comptime mode: CaseFoldingMode, comptime locale: CaseFoldingLocale, code_point: CodePoint) ?FoldResult(mode) {
-    const table = switch (locale) {
-        .default => switch (mode) {
-            .simple => &common_simple_table,
-            .full => &common_full_table,
-        },
-        .turkic => switch (mode) {
-            .simple => &turkic_simple_table,
-            .full => &turkic_full_table,
-        },
-    };
-
+fn lookupTable(comptime mode: CaseFoldingMode, comptime table: []const FoldEntry, code_point: CodePoint) ?FoldResult(mode) {
     var left: usize = 0;
     var right: usize = table.len;
 
@@ -1101,4 +1090,20 @@ pub fn lookup(comptime mode: CaseFoldingMode, comptime locale: CaseFoldingLocale
     }
 
     return null;
+}
+
+pub fn lookup(comptime mode: CaseFoldingMode, comptime locale: CaseFoldingLocale, code_point: CodePoint) ?FoldResult(mode) {
+    if (locale == .turkic) {
+        const turkic_table = switch (mode) {
+            .simple => &turkic_simple_table,
+            .full => &turkic_full_table,
+        };
+        if (lookupTable(mode, turkic_table, code_point)) |mapped| return mapped;
+    }
+
+    const common_table = switch (mode) {
+        .simple => &common_simple_table,
+        .full => &common_full_table,
+    };
+    return lookupTable(mode, common_table, code_point);
 }

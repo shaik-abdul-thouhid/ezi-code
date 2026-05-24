@@ -1,6 +1,8 @@
 const std = @import("std");
 const utils = @import("utils/root.zig");
 
+const every = utils.every;
+
 const property_alias = @import("unicode/property_alias.zig");
 const CanonicalCombiningClass = property_alias.CanonicalCombiningClass;
 
@@ -33,6 +35,35 @@ fn extractFileNameFromPath(path: []const u8) []const u8 {
 }
 
 const RangeType = struct { start: u21, end: u21 };
+
+fn normalizeKey(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
+    var slice: std.ArrayList(u8) = .empty;
+    defer slice.deinit(allocator);
+    try slice.ensureTotalCapacity(allocator, input.len);
+
+    for (input, 0..) |c, idx| {
+        switch (c) {
+            'A'...'Z' => {
+                if (idx != 0) {
+                    const prev = switch (input[idx - 1]) {
+                        'A'...'Z' => true,
+                        else => false,
+                    };
+                    if (!prev) {
+                        try slice.append(allocator, '_');
+                    }
+                }
+                try slice.append(allocator, c + 32);
+            },
+            'a'...'z' => {
+                try slice.append(allocator, c);
+            },
+            else => {},
+        }
+    }
+
+    return slice.toOwnedSlice(allocator);
+}
 
 fn saveUCDFile(arena: std.mem.Allocator, io: std.Io, dir: *std.Io.Dir, data: []const u8, url: []const u8, buf: []u8) !void {
     const ucd_file_name: []const u8 = extractFileNameFromPath(url);
@@ -711,37 +742,6 @@ fn downloadAndGenerateDerivedCoreProperty(arena: std.mem.Allocator, io: std.Io, 
         items: std.ArrayList(RangeType) = .empty,
     }) = .empty;
 
-    const normalizeKey = struct {
-        fn normalize(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
-            var slice: std.ArrayList(u8) = .empty;
-            defer slice.deinit(allocator);
-            try slice.ensureTotalCapacity(allocator, input.len);
-
-            for (input, 0..) |c, idx| {
-                switch (c) {
-                    'A'...'Z' => {
-                        if (idx != 0) {
-                            const prev = switch (input[idx - 1]) {
-                                'A'...'Z' => true,
-                                else => false,
-                            };
-                            if (!prev) {
-                                try slice.append(allocator, '_');
-                            }
-                        }
-                        try slice.append(allocator, c + 32);
-                    },
-                    'a'...'z' => {
-                        try slice.append(allocator, c);
-                    },
-                    else => {},
-                }
-            }
-
-            return slice.toOwnedSlice(allocator);
-        }
-    }.normalize;
-
     var lines = std.mem.splitScalar(u8, data, '\n');
 
     loop: while (lines.next()) |line| {
@@ -943,7 +943,7 @@ fn downloadAndGenerateDerivedCoreProperty(arena: std.mem.Allocator, io: std.Io, 
         \\
         \\const CodePoint = @import("encoding").CodePoint;
         \\
-        \\const Property = enum(32) {
+        \\pub const Property = enum(u32) {
         \\
     );
 
@@ -1134,18 +1134,7 @@ fn downloadAndGenerateCaseFolding(arena: std.mem.Allocator, io: std.Io, data: []
     try emitTable(writer, "turkic_full_table", turkic_full.items);
 
     try writer.writeAll(
-        \\pub fn lookup(comptime mode: CaseFoldingMode, comptime locale: CaseFoldingLocale, code_point: CodePoint) ?FoldResult(mode) {
-        \\    const table = switch (locale) {
-        \\        .default => switch (mode) {
-        \\            .simple => &common_simple_table,
-        \\            .full => &common_full_table,
-        \\        },
-        \\        .turkic => switch (mode) {
-        \\            .simple => &turkic_simple_table,
-        \\            .full => &turkic_full_table,
-        \\        },
-        \\    };
-        \\
+        \\fn lookupTable(comptime mode: CaseFoldingMode, comptime table: []const FoldEntry, code_point: CodePoint) ?FoldResult(mode) {
         \\    var left: usize = 0;
         \\    var right: usize = table.len;
         \\
@@ -1165,6 +1154,22 @@ fn downloadAndGenerateCaseFolding(arena: std.mem.Allocator, io: std.Io, data: []
         \\    }
         \\
         \\    return null;
+        \\}
+        \\
+        \\pub fn lookup(comptime mode: CaseFoldingMode, comptime locale: CaseFoldingLocale, code_point: CodePoint) ?FoldResult(mode) {
+        \\    if (locale == .turkic) {
+        \\        const turkic_table = switch (mode) {
+        \\            .simple => &turkic_simple_table,
+        \\            .full => &turkic_full_table,
+        \\        };
+        \\        if (lookupTable(mode, turkic_table, code_point)) |mapped| return mapped;
+        \\    }
+        \\
+        \\    const common_table = switch (mode) {
+        \\        .simple => &common_simple_table,
+        \\        .full => &common_full_table,
+        \\    };
+        \\    return lookupTable(mode, common_table, code_point);
         \\}
         \\
     );
@@ -1187,7 +1192,314 @@ fn downloadAndGenerateSpecialCasing(arena: std.mem.Allocator, io: std.Io, data: 
     const buf = try arena.alloc(u8, 4096);
     var file_writer = file.writer(io, buf);
     const writer = &file_writer.interface;
-    _ = writer;
+
+    var split_lines = std.mem.splitScalar(u8, data, '\n');
+
+    var special_folding_map: std.AutoHashMapUnmanaged(
+        u21,
+        std.ArrayList(struct {
+            lower: ?[]u21 = null,
+            upper: ?[]u21 = null,
+            title: ?[]u21 = null,
+            locale: ?[]const u8 = null,
+            condition: ?[]const u8 = null,
+        }),
+    ) = .empty;
+
+    var unique_locale: std.StringHashMapUnmanaged(void) = .empty;
+    var unique_conditions: std.StringHashMapUnmanaged(void) = .empty;
+
+    line_loop: while (split_lines.next()) |line| {
+        if (line.len == 0 or line[0] == '#') {
+            continue :line_loop;
+        }
+
+        var split_comments = std.mem.splitScalar(u8, line, '#');
+
+        var tokens = std.mem.splitScalar(u8, split_comments.next() orelse continue :line_loop, ';');
+
+        const code_point_raw = std.mem.trim(u8, tokens.next() orelse @panic("code point not found"), " ");
+        const lower_point_raw = std.mem.trim(u8, tokens.next() orelse "", " ");
+        const title_point_raw = std.mem.trim(u8, tokens.next() orelse "", " ");
+        const upper_point_raw = std.mem.trim(u8, tokens.next() orelse "", " ");
+        const condition_raw = std.mem.trim(u8, tokens.next() orelse "", " ");
+
+        const code_point = try std.fmt.parseInt(u21, code_point_raw, 16);
+        const lower_point = if (lower_point_raw.len > 0) if_blk: {
+            var split_tokens = std.mem.splitScalar(u8, lower_point_raw, ' ');
+            var new_slice: std.ArrayList(u21) = .empty;
+
+            while (split_tokens.next()) |token| {
+                const cp = try std.fmt.parseInt(u21, token, 16);
+                try new_slice.append(arena, cp);
+            }
+
+            break :if_blk try new_slice.toOwnedSlice(arena);
+        } else null;
+
+        const title_point = if (title_point_raw.len > 0) if_blk: {
+            var split_tokens = std.mem.splitScalar(u8, title_point_raw, ' ');
+            var new_slice: std.ArrayList(u21) = .empty;
+
+            while (split_tokens.next()) |token| {
+                const cp = try std.fmt.parseInt(u21, token, 16);
+                try new_slice.append(arena, cp);
+            }
+
+            break :if_blk try new_slice.toOwnedSlice(arena);
+        } else null;
+
+        const upper_point = if (upper_point_raw.len > 0) if_blk: {
+            var split_tokens = std.mem.splitScalar(u8, upper_point_raw, ' ');
+            var new_slice: std.ArrayList(u21) = .empty;
+
+            while (split_tokens.next()) |token| {
+                const cp = try std.fmt.parseInt(u21, token, 16);
+                try new_slice.append(arena, cp);
+            }
+
+            break :if_blk try new_slice.toOwnedSlice(arena);
+        } else null;
+
+        var locale: ?[]const u8 = null;
+        var condition: ?[]const u8 = null;
+
+        var conditional_tokens = std.mem.splitScalar(u8, condition_raw, ' ');
+
+        while (conditional_tokens.next()) |token| {
+            // check if it is locale
+            // locale's are 2 character lower case labels.
+            if (token.len == 2 and every(u8, {}, token, struct {
+                fn predicate(_: void, ch: u8, _: usize) bool {
+                    return ch >= 'a' and ch <= 'z';
+                }
+            }.predicate)) {
+                locale = token;
+                try unique_locale.put(arena, token, {});
+            } else if (token.len > 1) {
+                const normalized = try normalizeKey(arena, token);
+                condition = normalized;
+
+                try unique_conditions.put(arena, normalized, {});
+            }
+        }
+
+        const entry = try special_folding_map.getOrPut(arena, code_point);
+
+        if (!entry.found_existing) {
+            entry.value_ptr.* = .empty;
+        }
+
+        try entry.value_ptr.append(arena, .{
+            .lower = lower_point,
+            .upper = upper_point,
+            .title = title_point,
+            .locale = locale,
+            .condition = condition,
+        });
+    }
+
+    try writer.writeAll(
+        \\//! This file is auto-generated. Do not edit directly.
+        \\//! To regenerate run `zig build generate` in same level
+        \\//! as `build.zig` file.
+        \\
+        \\const CodePoint = @import("encoding").CodePoint;
+        \\
+        \\pub const Mapping = struct {
+        \\    lower: []const CodePoint,
+        \\    upper: []const CodePoint,
+        \\    title: []const CodePoint,
+        \\    locale: Locale,
+        \\    condition: Condition,
+        \\};
+        \\
+        \\pub const CaseMapEntry = struct {
+        \\    code_point: CodePoint,
+        \\    mappings: []const Mapping,
+        \\};
+        \\
+        \\pub const Condition = enum(u8) {
+        \\    none,
+        \\
+    );
+
+    var unique_keys_iter = unique_conditions.keyIterator();
+
+    while (unique_keys_iter.next()) |key| {
+        try writer.print("    {s},\n", .{key.*});
+    }
+    try writer.writeAll(
+        \\
+        \\    /// panic if any other condition
+        \\    /// is used
+        \\    _,
+        \\};
+        \\
+        \\
+    );
+
+    try writer.writeAll(
+        \\pub const Locale = enum(u8) {
+        \\    none,
+        \\
+    );
+    var unique_locale_iter = unique_locale.keyIterator();
+
+    while (unique_locale_iter.next()) |key| {
+        try writer.print("    {s},\n", .{key.*});
+    }
+    try writer.writeAll(
+        \\
+        \\    /// panic if any other locale
+        \\    /// is used
+        \\    _,
+        \\};
+        \\
+        \\// zig fmt: off
+        \\pub const mappings_table = [_]CaseMapEntry{
+        \\
+    );
+
+    var sorted_code_points = std.ArrayList(u21).empty;
+    try sorted_code_points.ensureTotalCapacity(arena, special_folding_map.count());
+
+    var key_iter = special_folding_map.keyIterator();
+    while (key_iter.next()) |cp| {
+        try sorted_code_points.append(arena, cp.*);
+    }
+
+    std.mem.sort(u21, sorted_code_points.items, {}, struct {
+        fn lessThan(_: void, a: u21, b: u21) bool {
+            return a < b;
+        }
+    }.lessThan);
+
+    for (sorted_code_points.items) |code_point| {
+        const mappings = special_folding_map.get(code_point).?;
+
+        try writer.print(
+            "    .{{\n        .code_point = 0x{X},\n        .mappings = &.{{\n",
+            .{code_point},
+        );
+
+        for (mappings.items) |mapping| {
+            try writer.writeAll("            .{ ");
+
+            try writer.writeAll(".lower = ");
+            if (mapping.lower) |v| {
+                try writer.writeAll("&.{");
+                for (v) |i| {
+                    try writer.print(" 0x{X},", .{i});
+                }
+                try writer.writeAll(" }");
+            } else try writer.writeAll("&.{}");
+
+            try writer.writeAll(", .upper = ");
+            if (mapping.upper) |v| {
+                try writer.writeAll("&.{");
+                for (v) |i| {
+                    try writer.print(" 0x{X},", .{i});
+                }
+                try writer.writeAll(" }");
+            } else try writer.writeAll("&.{}");
+
+            try writer.writeAll(", .title = ");
+            if (mapping.title) |v| {
+                try writer.writeAll("&.{");
+                for (v) |i| {
+                    try writer.print(" 0x{X},", .{i});
+                }
+                try writer.writeAll(" }");
+            } else try writer.writeAll("&.{}");
+
+            try writer.writeAll(", .locale = ");
+            if (mapping.locale) |locale|
+                try writer.print(".{s}", .{locale})
+            else
+                try writer.writeAll(".none");
+
+            try writer.writeAll(", .condition = ");
+            if (mapping.condition) |condition|
+                try writer.print(".{s}", .{condition})
+            else
+                try writer.writeAll(".none");
+
+            try writer.writeAll(" },\n");
+        }
+
+        try writer.writeAll(
+            "        }\n    },\n",
+        );
+    }
+
+    try writer.writeAll(
+        \\};
+        \\// zig fmt: on
+        \\
+        \\fn findEntry(code_point: CodePoint) ?CaseMapEntry {
+        \\    var left: usize = 0;
+        \\    var right: usize = mappings_table.len;
+        \\    while (left < right) {
+        \\        const mid = left + (right - left) / 2;
+        \\        const entry = mappings_table[mid];
+        \\
+        \\        if (code_point < entry.code_point) {
+        \\            right = mid;
+        \\        } else if (code_point > entry.code_point) {
+        \\            left = mid + 1;
+        \\        } else return entry;
+        \\    }
+        \\
+        \\    return null;
+        \\}
+        \\
+        \\pub fn lookup(comptime locale: Locale, comptime condition: Condition, code_point: CodePoint) ?Mapping {
+        \\    const entry = findEntry(code_point) orelse return null;
+        \\
+        \\    for (entry.mappings) |mapping| {
+        \\        if (mapping.locale == locale and mapping.condition == condition) return mapping;
+        \\    }
+        \\
+        \\    if (comptime locale != .none and condition != .none) {
+        \\        for (entry.mappings) |mapping| {
+        \\            if (mapping.locale == locale and mapping.condition == .none) return mapping;
+        \\        }
+        \\    }
+        \\
+        \\    if (comptime condition != .none) {
+        \\        for (entry.mappings) |mapping| {
+        \\            if (mapping.locale == .none and mapping.condition == condition) return mapping;
+        \\        }
+        \\    }
+        \\
+        \\    for (entry.mappings) |mapping| {
+        \\        if (mapping.locale == .none and mapping.condition == .none) return mapping;
+        \\    }
+        \\
+        \\    return null;
+        \\}
+        \\
+        \\pub inline fn lookupDefault(code_point: CodePoint) ?Mapping {
+        \\    return lookup(.none, .none, code_point);
+        \\}
+        \\
+        \\pub inline fn lookupTurkish(code_point: CodePoint) ?Mapping {
+        \\    return lookup(.tr, .none, code_point);
+        \\}
+        \\
+        \\pub inline fn lookupAzeri(code_point: CodePoint) ?Mapping {
+        \\    return lookup(.az, .none, code_point);
+        \\}
+        \\
+        \\pub inline fn lookupLithuanian(code_point: CodePoint) ?Mapping {
+        \\    return lookup(.lt, .none, code_point);
+        \\}
+        \\
+        \\pub inline fn lookupFinalSigma(code_point: CodePoint) ?Mapping {
+        \\    return lookup(.none, .final_sigma, code_point);
+        \\}
+    );
 
     try file_writer.flush();
 

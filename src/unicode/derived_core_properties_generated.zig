@@ -4,7 +4,7 @@
 
 const CodePoint = @import("encoding").CodePoint;
 
-const Property = enum(32) {
+pub const Property = enum(u32) {
     math = 1 << 1,
     alphabetic = 1 << 2,
     lowercase = 1 << 3,
