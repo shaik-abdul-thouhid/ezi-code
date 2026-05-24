@@ -83,7 +83,7 @@ fn saveUCDFile(arena: std.mem.Allocator, io: std.Io, dir: *std.Io.Dir, data: []c
 
 const ucd_folder = "ucd";
 
-fn downloadAndGenerateUnicodeData(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
+fn generateUnicodeData(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
     var dir: std.Io.Dir = .cwd();
 
     var file = try dir.createFile(io, file_name, .{
@@ -719,7 +719,7 @@ fn downloadAndGenerateUnicodeData(arena: std.mem.Allocator, io: std.Io, data: []
     try saveUCDFile(arena, io, &dir, data, url, buf);
 }
 
-fn downloadAndGenerateDerivedCoreProperty(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
+fn generateDerivedCoreProperty(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
     var dir: std.Io.Dir = .cwd();
 
     var file = try dir.createFile(io, file_name, .{
@@ -1011,7 +1011,7 @@ fn downloadAndGenerateDerivedCoreProperty(arena: std.mem.Allocator, io: std.Io, 
     try ucd_writer.writeAll(data);
 }
 
-fn downloadAndGenerateCaseFolding(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
+fn generateCaseFolding(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
     var dir: std.Io.Dir = .cwd();
 
     var file = try dir.createFile(io, file_name, .{
@@ -1180,7 +1180,7 @@ fn downloadAndGenerateCaseFolding(arena: std.mem.Allocator, io: std.Io, data: []
     try saveUCDFile(arena, io, &dir, data, url, buf);
 }
 
-fn downloadAndGenerateSpecialCasing(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
+fn generateSpecialCasing(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
     var dir: std.Io.Dir = .cwd();
 
     var file = try dir.createFile(io, file_name, .{
@@ -1506,6 +1506,25 @@ fn downloadAndGenerateSpecialCasing(arena: std.mem.Allocator, io: std.Io, data: 
     try saveUCDFile(arena, io, &dir, data, url, buf);
 }
 
+fn generatePropList(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
+    var dir: std.Io.Dir = .cwd();
+
+    var file = try dir.createFile(io, file_name, .{
+        .truncate = true,
+        .permissions = .default_file,
+    });
+    defer file.close(io);
+
+    const buf = try arena.alloc(u8, 4096);
+    var file_writer = file.writer(io, buf);
+    const writer = &file_writer.interface;
+    _ = writer;
+
+    try file_writer.flush();
+
+    try saveUCDFile(arena, io, &dir, data, url, buf);
+}
+
 pub fn main(init: std.process.Init) !void {
     const arena = init.arena;
     const arena_allocator = arena.allocator();
@@ -1517,68 +1536,48 @@ pub fn main(init: std.process.Init) !void {
 
     var max_memory: u64 = 0;
 
-    {
-        var allocated_writer: std.Io.Writer.Allocating = .init(arena_allocator);
-        defer allocated_writer.deinit();
+    const generators = [_]struct {
+        file_name: []const u8,
+        url: []const u8,
+        generatorFn: *const fn (std.mem.Allocator, std.Io, data: []const u8, url: []const u8, file_name: []const u8) anyerror!void,
+    }{
+        .{
+            .file_name = "src/unicode/generated/unicode_data.zig",
+            .url = "https://www.unicode.org/Public/UCD/latest/ucd/UnicodeData.txt",
+            .generatorFn = generateUnicodeData,
+        },
+        .{
+            .file_name = "src/unicode/properties/generated/derived_core_properties.zig",
+            .url = "https://www.unicode.org/Public/UCD/latest/ucd/DerivedCoreProperties.txt",
+            .generatorFn = generateDerivedCoreProperty,
+        },
+        .{
+            .file_name = "src/unicode/casing/generated/case_folding.zig",
+            .url = "https://www.unicode.org/Public/UCD/latest/ucd/CaseFolding.txt",
+            .generatorFn = generateCaseFolding,
+        },
+        .{
+            .file_name = "src/unicode/casing/generated/special_casing.zig",
+            .url = "https://www.unicode.org/Public/UCD/latest/ucd/SpecialCasing.txt",
+            .generatorFn = generateSpecialCasing,
+        },
+        .{
+            .file_name = "src/unicode/properties/generated/prop_list.zig",
+            .url = "https://www.unicode.org/Public/UCD/latest/ucd/PropList.txt",
+            .generatorFn = generatePropList,
+        },
+    };
 
+    for (generators) |gen| {
+        var allocated_writer: std.Io.Writer.Allocating = .init(arena_allocator);
         try allocated_writer.ensureTotalCapacity(1024 * 1024);
 
-        const file_name = "src/unicode/generated/unicode_data.zig";
-        const unicode_data_url = "https://www.unicode.org/Public/UCD/latest/ucd/UnicodeData.txt";
-
-        try downloadFileToPath(arena_allocator, io, &allocated_writer.writer, unicode_data_url);
-        try downloadAndGenerateUnicodeData(arena_allocator, io, allocated_writer.written(), unicode_data_url, file_name);
+        try downloadFileToPath(arena_allocator, io, &allocated_writer.writer, gen.url);
+        try gen.generatorFn(arena_allocator, io, allocated_writer.written(), gen.url, gen.file_name);
 
         max_memory = @max(@as(u64, arena.queryCapacity()), max_memory);
 
         _ = arena.reset(.{ .retain_with_limit = 1024 * 1024 * 4 });
-    }
-
-    {
-        var allocated_writer: std.Io.Writer.Allocating = .init(arena_allocator);
-        defer allocated_writer.deinit();
-
-        try allocated_writer.ensureTotalCapacity(1024 * 1024);
-
-        const file_name = "src/unicode/properties/generated/derived_core_properties.zig";
-        const derived_core_properties_url = "https://www.unicode.org/Public/UCD/latest/ucd/DerivedCoreProperties.txt";
-
-        try downloadFileToPath(arena_allocator, io, &allocated_writer.writer, derived_core_properties_url);
-        try downloadAndGenerateDerivedCoreProperty(arena_allocator, io, allocated_writer.written(), derived_core_properties_url, file_name);
-
-        max_memory = @max(@as(u64, arena.queryCapacity()), max_memory);
-
-        _ = arena.reset(.{ .retain_with_limit = 1024 * 1024 * 4 });
-    }
-
-    {
-        var allocated_writer: std.Io.Writer.Allocating = .init(arena_allocator);
-        defer allocated_writer.deinit();
-
-        try allocated_writer.ensureTotalCapacity(1024 * 1024);
-
-        const file_name = "src/unicode/casing/generated/case_folding.zig";
-        const source_url = "https://www.unicode.org/Public/UCD/latest/ucd/CaseFolding.txt";
-
-        try downloadFileToPath(arena_allocator, io, &allocated_writer.writer, source_url);
-        try downloadAndGenerateCaseFolding(arena_allocator, io, allocated_writer.written(), source_url, file_name);
-
-        max_memory = @max(@as(u64, arena.queryCapacity()), max_memory);
-    }
-
-    {
-        var allocated_writer: std.Io.Writer.Allocating = .init(arena_allocator);
-        defer allocated_writer.deinit();
-
-        try allocated_writer.ensureTotalCapacity(1024 * 1024);
-
-        const file_name = "src/unicode/casing/generated/special_casing.zig";
-        const source_url = "https://www.unicode.org/Public/UCD/latest/ucd/SpecialCasing.txt";
-
-        try downloadFileToPath(arena_allocator, io, &allocated_writer.writer, source_url);
-        try downloadAndGenerateSpecialCasing(arena_allocator, io, allocated_writer.written(), source_url, file_name);
-
-        max_memory = @max(@as(u64, arena.queryCapacity()), max_memory);
     }
 
     const end = clock.now(io);
