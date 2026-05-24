@@ -1104,11 +1104,7 @@ fn downloadAndGenerateCaseFolding(arena: std.mem.Allocator, io: std.Io, data: []
 
     // 8. Add a local helper emitTable
     const emitTable = struct {
-        fn emitTable(
-            w: *std.Io.Writer,
-            table_name: []const u8,
-            entries: []const FoldEntry,
-        ) !void {
+        fn emitTable(w: *std.Io.Writer, table_name: []const u8, entries: []const FoldEntry) !void {
             try w.writeAll("// zig fmt: off\npub const ");
             try w.writeAll(table_name);
             try w.writeAll(" = [_]FoldEntry{\n");
