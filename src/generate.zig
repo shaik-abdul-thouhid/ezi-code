@@ -1569,6 +1569,8 @@ pub fn main(init: std.process.Init) !void {
     };
 
     for (generators) |gen| {
+        const local_timer_start = clock.now(io);
+
         var allocated_writer: std.Io.Writer.Allocating = .init(arena_allocator);
         try allocated_writer.ensureTotalCapacity(1024 * 1024);
 
@@ -1576,6 +1578,12 @@ pub fn main(init: std.process.Init) !void {
         try gen.generatorFn(arena_allocator, io, allocated_writer.written(), gen.url, gen.file_name);
 
         max_memory = @max(@as(u64, arena.queryCapacity()), max_memory);
+
+        const local_timer_end = clock.now(io);
+
+        const file_name = extractFileNameFromPath(gen.url);
+
+        std.debug.print("generating for file {s}, took: {}ms\n", .{ file_name, local_timer_end.toMilliseconds() - local_timer_start.toMilliseconds() });
 
         _ = arena.reset(.{ .retain_with_limit = 1024 * 1024 * 4 });
     }
