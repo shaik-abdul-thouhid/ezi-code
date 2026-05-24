@@ -1753,7 +1753,7 @@ pub fn main(init: std.process.Init) !void {
 
         const file_name = extractFileNameFromPath(gen.url);
 
-        std.debug.print("generating for file {s}, took for download: {}ms, took to generate: {}ms\n", .{
+        std.debug.print("generating file {s}, took for download: {}ms, took to generate: {}ms\n", .{
             file_name,
             download_timer_end.toMilliseconds() - local_timer_start.toMilliseconds(),
             local_timer_end.toMilliseconds() - download_timer_end.toMilliseconds(),
