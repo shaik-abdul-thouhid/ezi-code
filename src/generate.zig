@@ -1203,6 +1203,8 @@ pub fn main(init: std.process.Init) !void {
 
     const start = clock.now(io);
 
+    var max_memory: u64 = 0;
+
     {
         var allocated_writer: std.Io.Writer.Allocating = .init(arena_allocator);
         defer allocated_writer.deinit();
@@ -1213,8 +1215,9 @@ pub fn main(init: std.process.Init) !void {
         const unicode_data_url = "https://www.unicode.org/Public/UCD/latest/ucd/UnicodeData.txt";
 
         try downloadFileToPath(arena_allocator, io, &allocated_writer.writer, unicode_data_url);
-
         try downloadAndGenerateUnicodeData(arena_allocator, io, allocated_writer.written(), unicode_data_url, file_name);
+
+        max_memory = @max(@as(u64, arena.queryCapacity()), max_memory);
 
         _ = arena.reset(.{ .retain_with_limit = 1024 * 1024 * 4 });
     }
@@ -1229,10 +1232,9 @@ pub fn main(init: std.process.Init) !void {
         const derived_core_properties_url = "https://www.unicode.org/Public/UCD/latest/ucd/DerivedCoreProperties.txt";
 
         try downloadFileToPath(arena_allocator, io, &allocated_writer.writer, derived_core_properties_url);
-
         try downloadAndGenerateDerivedCoreProperty(arena_allocator, io, allocated_writer.written(), derived_core_properties_url, file_name);
 
-        allocated_writer.clearRetainingCapacity();
+        max_memory = @max(@as(u64, arena.queryCapacity()), max_memory);
 
         _ = arena.reset(.{ .retain_with_limit = 1024 * 1024 * 4 });
     }
@@ -1248,7 +1250,8 @@ pub fn main(init: std.process.Init) !void {
 
         try downloadFileToPath(arena_allocator, io, &allocated_writer.writer, source_url);
         try downloadAndGenerateCaseFolding(arena_allocator, io, allocated_writer.written(), source_url, file_name);
-        allocated_writer.clearRetainingCapacity();
+
+        max_memory = @max(@as(u64, arena.queryCapacity()), max_memory);
     }
 
     {
@@ -1262,10 +1265,11 @@ pub fn main(init: std.process.Init) !void {
 
         try downloadFileToPath(arena_allocator, io, &allocated_writer.writer, source_url);
         try downloadAndGenerateSpecialCasing(arena_allocator, io, allocated_writer.written(), source_url, file_name);
-        allocated_writer.clearRetainingCapacity();
+
+        max_memory = @max(@as(u64, arena.queryCapacity()), max_memory);
     }
 
     const end = clock.now(io);
 
-    std.debug.print("generate command took: {}ms\n", .{end.toMilliseconds() - start.toMilliseconds()});
+    std.debug.print("generate command took: {}ms, peak memory: {}MiB\n", .{ end.toMilliseconds() - start.toMilliseconds(), @as(f64, @floatFromInt(max_memory / (1024 * 1024))) });
 }
