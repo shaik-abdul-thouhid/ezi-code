@@ -2,7 +2,9 @@
 //! To regenerate run `zig build generate` in same level
 //! as `build.zig` file.
 
+const std = @import("std");
 const CodePoint = @import("encoding").CodePoint;
+const utils = @import("utils");
 
 const unicode_types = @import("../../types.zig");
 const CaseFoldingMode = unicode_types.CaseFoldingMode;
@@ -13,6 +15,10 @@ pub const FoldEntry = struct {
     from: CodePoint,
     to: []const CodePoint,
 };
+
+fn compareFoldEntry(needle: CodePoint, item: FoldEntry) std.math.Order {
+    return std.math.order(needle, item.from);
+}
 
 // zig fmt: off
 pub const common_simple_table = [_]FoldEntry{
@@ -1071,25 +1077,8 @@ pub const turkic_full_table = [_]FoldEntry{
 // zig fmt: off
 
 fn lookupTable(comptime mode: CaseFoldingMode, comptime table: []const FoldEntry, code_point: CodePoint) ?FoldResult(mode) {
-    var left: usize = 0;
-    var right: usize = table.len;
-
-    while (left < right) {
-        const mid = left + (right - left) / 2;
-        const entry = table[mid];
-
-        if (code_point < entry.from) {
-            right = mid;
-        } else if (code_point > entry.from) {
-            left = mid + 1;
-        } else {
-            return if (FoldResult(mode) == CodePoint)
-                entry.to[0]
-            else entry.to;
-        }
-    }
-
-    return null;
+    const entry = utils.binarySearchEntry(FoldEntry, table, code_point, compareFoldEntry) orelse return null;
+    return if (comptime FoldResult(mode) == CodePoint) entry.to[0] else entry.to;
 }
 
 pub fn lookup(comptime mode: CaseFoldingMode, comptime locale: CaseFoldingLocale, code_point: CodePoint) ?FoldResult(mode) {

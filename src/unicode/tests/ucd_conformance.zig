@@ -1,5 +1,6 @@
 const std = @import("std");
 const encoding = @import("encoding");
+const utils = @import("utils");
 
 const unicode_data = @import("../generated/unicode_data.zig");
 const derived = @import("../properties/generated/derived_core_properties.zig");
@@ -113,20 +114,15 @@ fn bidiFromUcd(raw: []const u8) unicode_data.BidiClass {
 }
 
 fn simpleCaseMap(table: []const unicode_data.CaseMappingRangeEntry, cp: CodePoint) CodePoint {
-    var low: usize = 0;
-    var high: usize = table.len;
-    while (low < high) {
-        const mid = low + (high - low) / 2;
-        const range = table[mid];
-        if (cp < range.start) {
-            high = mid;
-        } else if (cp > range.end) {
-            low = mid + 1;
-        } else {
-            return @intCast(@as(i32, @intCast(cp)) + range.delta);
-        }
-    }
-    return cp;
+    const range = utils.searchRange(
+        unicode_data.CaseMappingRangeEntry,
+        CodePoint,
+        "start",
+        "end",
+        table,
+        cp,
+    ) orelse return cp;
+    return @intCast(@as(i32, @intCast(cp)) + range.delta);
 }
 
 fn propertyFromDcpLabel(raw: []const u8) ?derived.Property {
@@ -278,20 +274,15 @@ test "ucd hostile: UnicodeData generated categories, bidi classes, combining cla
 }
 
 fn lookupCombiningClass(cp: CodePoint) unicode_types.CanonicalCombiningClass {
-    var low: usize = 0;
-    var high: usize = unicode_data.combining_class_table.len;
-    while (low < high) {
-        const mid = low + (high - low) / 2;
-        const range = unicode_data.combining_class_table[mid];
-        if (cp < range.range_start) {
-            high = mid;
-        } else if (cp > range.range_end) {
-            low = mid + 1;
-        } else {
-            return range.ccc;
-        }
-    }
-    return .not_reordered;
+    const entry = utils.searchRange(
+        @TypeOf(unicode_data.combining_class_table[0]),
+        CodePoint,
+        "range_start",
+        "range_end",
+        &unicode_data.combining_class_table,
+        cp,
+    ) orelse return .not_reordered;
+    return entry.ccc;
 }
 
 test "ucd hostile: DerivedCoreProperties bitset matches every scalar, not just cute samples" {
