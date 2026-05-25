@@ -6,6 +6,7 @@ pub const casing = @import("casing/root.zig");
 
 pub const unicode_data = properties.unicode_data;
 pub const derived_core_properties = properties.derived_core_properties;
+pub const prop_list = properties.prop_list;
 pub const case_folding = casing.case_folding;
 pub const special_casing = casing.special_casing;
 
@@ -21,7 +22,9 @@ pub const CaseFoldingLocale = types.CaseFoldingLocale;
 pub const SpecialCaseLocale = special_casing.Locale;
 pub const SpecialCaseCondition = special_casing.Condition;
 pub const SpecialCaseMapping = special_casing.Mapping;
-pub const max_case_mapping_len = 3;
+pub const CaseMappingResult = casing.CaseMappingResult;
+pub const caseFoldFullCap = casing.caseFoldFullCap;
+pub const fullCaseMapCap = casing.fullCaseMapCap;
 
 pub fn derivedPropertyMask(code_point: CodePoint) u32 {
     return properties.derivedPropertyMask(code_point);
@@ -91,17 +94,17 @@ pub fn caseFoldSimpleTurkic(code_point: CodePoint) CodePoint {
     return casing.caseFoldSimpleTurkic(code_point);
 }
 
-pub fn caseFoldFull(code_point: CodePoint, fallback: *[max_case_mapping_len]CodePoint) []const CodePoint {
-    return casing.caseFoldFull(code_point, fallback);
+pub fn caseFoldFull(code_point: CodePoint) CaseMappingResult(caseFoldFullCap(.default)) {
+    return casing.caseFoldFull(code_point);
 }
 
-pub fn caseFoldFullTurkic(code_point: CodePoint, fallback: *[max_case_mapping_len]CodePoint) []const CodePoint {
-    return casing.caseFoldFullTurkic(code_point, fallback);
+pub fn caseFoldFullTurkic(code_point: CodePoint) CaseMappingResult(caseFoldFullCap(.turkic)) {
+    return casing.caseFoldFullTurkic(code_point);
 }
 
 pub fn specialCaseMapping(
-    locale: SpecialCaseLocale,
-    condition: SpecialCaseCondition,
+    comptime locale: SpecialCaseLocale,
+    comptime condition: SpecialCaseCondition,
     code_point: CodePoint,
 ) ?SpecialCaseMapping {
     return casing.specialCaseMapping(locale, condition, code_point);
@@ -109,29 +112,26 @@ pub fn specialCaseMapping(
 
 pub fn toLowerCaseFull(
     code_point: CodePoint,
-    locale: SpecialCaseLocale,
-    condition: SpecialCaseCondition,
-    fallback: *[max_case_mapping_len]CodePoint,
-) []const CodePoint {
-    return casing.toLowerCaseFull(code_point, locale, condition, fallback);
+    comptime locale: SpecialCaseLocale,
+    comptime condition: SpecialCaseCondition,
+) CaseMappingResult(fullCaseMapCap(.lower, locale, condition)) {
+    return casing.toLowerCaseFull(code_point, locale, condition);
 }
 
 pub fn toUpperCaseFull(
     code_point: CodePoint,
-    locale: SpecialCaseLocale,
-    condition: SpecialCaseCondition,
-    fallback: *[max_case_mapping_len]CodePoint,
-) []const CodePoint {
-    return casing.toUpperCaseFull(code_point, locale, condition, fallback);
+    comptime locale: SpecialCaseLocale,
+    comptime condition: SpecialCaseCondition,
+) CaseMappingResult(fullCaseMapCap(.upper, locale, condition)) {
+    return casing.toUpperCaseFull(code_point, locale, condition);
 }
 
 pub fn toTitleCaseFull(
     code_point: CodePoint,
-    locale: SpecialCaseLocale,
-    condition: SpecialCaseCondition,
-    fallback: *[max_case_mapping_len]CodePoint,
-) []const CodePoint {
-    return casing.toTitleCaseFull(code_point, locale, condition, fallback);
+    comptime locale: SpecialCaseLocale,
+    comptime condition: SpecialCaseCondition,
+) CaseMappingResult(fullCaseMapCap(.title, locale, condition)) {
+    return casing.toTitleCaseFull(code_point, locale, condition);
 }
 
 /// Check if a code point is a combining mark (diacritic, accent, etc.)
@@ -178,10 +178,21 @@ pub fn isDecimalDigit(code_point: CodePoint) bool {
     return properties.isDecimalDigit(code_point);
 }
 
-/// Check if a code point is a valid hexadecimal digit (0-9, a-f, A-F).
+/// Check if a code point is a valid ASCII hexadecimal digit (0-9, a-f, A-F).
 /// Useful for parsing hex literals and other hex-based formats.
 pub fn isHexDigit(code_point: CodePoint) bool {
     return properties.isHexDigit(code_point);
+}
+
+/// Check if a code point is in the Unicode Hex_Digit property: the ASCII hex
+/// digits plus fullwidth versions (U+FF10..U+FF19, U+FF21..U+FF26, U+FF41..U+FF46).
+pub fn isHexDigitWide(code_point: CodePoint) bool {
+    return properties.isHexDigitWide(code_point);
+}
+
+/// Same as `isHexDigit`; named for symmetry with the Unicode `ASCII_Hex_Digit` property.
+pub fn isAsciiHexDigit(code_point: CodePoint) bool {
+    return properties.isAsciiHexDigit(code_point);
 }
 
 /// Check if a code point can start an identifier.
@@ -249,6 +260,150 @@ pub fn isAscii(code_point: CodePoint) bool {
 }
 
 // ============================================================================
+// PropList.txt predicates (Unicode property checks beyond DerivedCoreProperties)
+// ============================================================================
+
+pub fn isBidiControl(code_point: CodePoint) bool {
+    return properties.isBidiControl(code_point);
+}
+
+pub fn isJoinControl(code_point: CodePoint) bool {
+    return properties.isJoinControl(code_point);
+}
+
+pub fn isDash(code_point: CodePoint) bool {
+    return properties.isDash(code_point);
+}
+
+pub fn isHyphen(code_point: CodePoint) bool {
+    return properties.isHyphen(code_point);
+}
+
+pub fn isQuotationMark(code_point: CodePoint) bool {
+    return properties.isQuotationMark(code_point);
+}
+
+pub fn isTerminalPunctuation(code_point: CodePoint) bool {
+    return properties.isTerminalPunctuation(code_point);
+}
+
+pub fn isOtherMath(code_point: CodePoint) bool {
+    return properties.isOtherMath(code_point);
+}
+
+pub fn isOtherAlphabetic(code_point: CodePoint) bool {
+    return properties.isOtherAlphabetic(code_point);
+}
+
+pub fn isIdeographic(code_point: CodePoint) bool {
+    return properties.isIdeographic(code_point);
+}
+
+pub fn isDiacritic(code_point: CodePoint) bool {
+    return properties.isDiacritic(code_point);
+}
+
+pub fn isExtender(code_point: CodePoint) bool {
+    return properties.isExtender(code_point);
+}
+
+pub fn isOtherLowercase(code_point: CodePoint) bool {
+    return properties.isOtherLowercase(code_point);
+}
+
+pub fn isOtherUppercase(code_point: CodePoint) bool {
+    return properties.isOtherUppercase(code_point);
+}
+
+pub fn isNoncharacterCodePoint(code_point: CodePoint) bool {
+    return properties.isNoncharacterCodePoint(code_point);
+}
+
+pub fn isOtherGraphemeExtend(code_point: CodePoint) bool {
+    return properties.isOtherGraphemeExtend(code_point);
+}
+
+pub fn isIdsBinaryOperator(code_point: CodePoint) bool {
+    return properties.isIdsBinaryOperator(code_point);
+}
+
+pub fn isIdsTrinaryOperator(code_point: CodePoint) bool {
+    return properties.isIdsTrinaryOperator(code_point);
+}
+
+pub fn isIdsUnaryOperator(code_point: CodePoint) bool {
+    return properties.isIdsUnaryOperator(code_point);
+}
+
+pub fn isRadical(code_point: CodePoint) bool {
+    return properties.isRadical(code_point);
+}
+
+pub fn isUnifiedIdeograph(code_point: CodePoint) bool {
+    return properties.isUnifiedIdeograph(code_point);
+}
+
+pub fn isOtherDefaultIgnorableCodePoint(code_point: CodePoint) bool {
+    return properties.isOtherDefaultIgnorableCodePoint(code_point);
+}
+
+pub fn isDeprecated(code_point: CodePoint) bool {
+    return properties.isDeprecated(code_point);
+}
+
+pub fn isSoftDotted(code_point: CodePoint) bool {
+    return properties.isSoftDotted(code_point);
+}
+
+pub fn isLogicalOrderException(code_point: CodePoint) bool {
+    return properties.isLogicalOrderException(code_point);
+}
+
+pub fn isOtherIdStart(code_point: CodePoint) bool {
+    return properties.isOtherIdStart(code_point);
+}
+
+pub fn isOtherIdContinue(code_point: CodePoint) bool {
+    return properties.isOtherIdContinue(code_point);
+}
+
+pub fn isSentenceTerminal(code_point: CodePoint) bool {
+    return properties.isSentenceTerminal(code_point);
+}
+
+pub fn isVariationSelector(code_point: CodePoint) bool {
+    return properties.isVariationSelector(code_point);
+}
+
+pub fn isPatternWhiteSpace(code_point: CodePoint) bool {
+    return properties.isPatternWhiteSpace(code_point);
+}
+
+pub fn isPatternSyntax(code_point: CodePoint) bool {
+    return properties.isPatternSyntax(code_point);
+}
+
+pub fn isPrependedConcatenationMark(code_point: CodePoint) bool {
+    return properties.isPrependedConcatenationMark(code_point);
+}
+
+pub fn isRegionalIndicator(code_point: CodePoint) bool {
+    return properties.isRegionalIndicator(code_point);
+}
+
+pub fn isModifierCombiningMark(code_point: CodePoint) bool {
+    return properties.isModifierCombiningMark(code_point);
+}
+
+pub fn isIdCompatMathStart(code_point: CodePoint) bool {
+    return properties.isIdCompatMathStart(code_point);
+}
+
+pub fn isIdCompatMathContinue(code_point: CodePoint) bool {
+    return properties.isIdCompatMathContinue(code_point);
+}
+
+// ============================================================================
 // COMPREHENSIVE UNICODE TESTS
 // ============================================================================
 
@@ -273,14 +428,27 @@ test "unicode api: derived properties, case folding, and full special casing are
     try testing.expectEqual(@as(CodePoint, 0x0131), caseFoldSimpleTurkic('I'));
     try testing.expectEqual(@as(CodePoint, 'a'), caseFoldSimpleTurkic('A'));
 
-    var fold_buf: [max_case_mapping_len]CodePoint = undefined;
-    try testing.expectEqualSlices(CodePoint, &.{ 's', 's' }, caseFoldFull(0x00DF, &fold_buf));
-    try testing.expectEqualSlices(CodePoint, &.{0x10FFFF}, caseFoldFull(0x10FFFF, &fold_buf));
+    {
+        const r = caseFoldFull(0x00DF);
+        try testing.expectEqualSlices(CodePoint, &.{ 's', 's' }, r.slice());
+    }
+    {
+        const r = caseFoldFull(0x10FFFF);
+        try testing.expectEqualSlices(CodePoint, &.{0x10FFFF}, r.slice());
+    }
 
-    var case_buf: [max_case_mapping_len]CodePoint = undefined;
-    try testing.expectEqualSlices(CodePoint, &.{ 0x69, 0x307 }, toLowerCaseFull(0x0130, .none, .none, &case_buf));
-    try testing.expectEqualSlices(CodePoint, &.{0x69}, toLowerCaseFull(0x0130, .tr, .none, &case_buf));
-    try testing.expectEqualSlices(CodePoint, &.{0x03C2}, toLowerCaseFull(0x03A3, .none, .final_sigma, &case_buf));
+    {
+        const r = toLowerCaseFull(0x0130, .none, .none);
+        try testing.expectEqualSlices(CodePoint, &.{ 0x69, 0x307 }, r.slice());
+    }
+    {
+        const r = toLowerCaseFull(0x0130, .tr, .none);
+        try testing.expectEqualSlices(CodePoint, &.{0x69}, r.slice());
+    }
+    {
+        const r = toLowerCaseFull(0x03A3, .none, .final_sigma);
+        try testing.expectEqualSlices(CodePoint, &.{0x03C2}, r.slice());
+    }
 }
 
 // ============================================================================

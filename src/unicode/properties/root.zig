@@ -4,6 +4,7 @@ const types = @import("../types.zig");
 
 pub const unicode_data = @import("../generated/unicode_data.zig");
 pub const derived_core_properties = @import("derived_core_properties.zig");
+pub const prop_list = @import("prop_list.zig");
 
 pub const GeneralCategory = unicode_data.GeneralCategory;
 pub const BidiClass = unicode_data.BidiClass;
@@ -84,25 +85,7 @@ pub fn isNumeric(code_point: CodePoint) bool {
 }
 
 pub fn isWhitespace(code_point: CodePoint) bool {
-    return switch (code_point) {
-        0x0009,
-        0x000A,
-        0x000B,
-        0x000C,
-        0x000D,
-        0x0020,
-        0x0085,
-        0x00A0,
-        0x1680,
-        0x2000...0x200A,
-        0x2028,
-        0x2029,
-        0x202F,
-        0x205F,
-        0x3000,
-        => true,
-        else => false,
-    };
+    return prop_list.isWhiteSpace(code_point);
 }
 
 pub fn isPrintable(code_point: CodePoint) bool {
@@ -166,10 +149,155 @@ pub fn isDecimalDigit(code_point: CodePoint) bool {
 }
 
 pub fn isHexDigit(code_point: CodePoint) bool {
-    return switch (code_point) {
-        '0'...'9', 'a'...'f', 'A'...'F' => true,
-        else => false,
-    };
+    return prop_list.isAsciiHexDigit(code_point);
+}
+
+pub fn isHexDigitWide(code_point: CodePoint) bool {
+    return prop_list.isHexDigit(code_point);
+}
+
+pub fn isAsciiHexDigit(code_point: CodePoint) bool {
+    return prop_list.isAsciiHexDigit(code_point);
+}
+
+pub fn isBidiControl(code_point: CodePoint) bool {
+    return prop_list.isBidiControl(code_point);
+}
+
+pub fn isJoinControl(code_point: CodePoint) bool {
+    return prop_list.isJoinControl(code_point);
+}
+
+pub fn isDash(code_point: CodePoint) bool {
+    return prop_list.isDash(code_point);
+}
+
+pub fn isHyphen(code_point: CodePoint) bool {
+    return prop_list.isHyphen(code_point);
+}
+
+pub fn isQuotationMark(code_point: CodePoint) bool {
+    return prop_list.isQuotationMark(code_point);
+}
+
+pub fn isTerminalPunctuation(code_point: CodePoint) bool {
+    return prop_list.isTerminalPunctuation(code_point);
+}
+
+pub fn isOtherMath(code_point: CodePoint) bool {
+    return prop_list.isOtherMath(code_point);
+}
+
+pub fn isOtherAlphabetic(code_point: CodePoint) bool {
+    return prop_list.isOtherAlphabetic(code_point);
+}
+
+pub fn isIdeographic(code_point: CodePoint) bool {
+    return prop_list.isIdeographic(code_point);
+}
+
+pub fn isDiacritic(code_point: CodePoint) bool {
+    return prop_list.isDiacritic(code_point);
+}
+
+pub fn isExtender(code_point: CodePoint) bool {
+    return prop_list.isExtender(code_point);
+}
+
+pub fn isOtherLowercase(code_point: CodePoint) bool {
+    return prop_list.isOtherLowercase(code_point);
+}
+
+pub fn isOtherUppercase(code_point: CodePoint) bool {
+    return prop_list.isOtherUppercase(code_point);
+}
+
+pub fn isNoncharacterCodePoint(code_point: CodePoint) bool {
+    return prop_list.isNoncharacterCodePoint(code_point);
+}
+
+pub fn isOtherGraphemeExtend(code_point: CodePoint) bool {
+    return prop_list.isOtherGraphemeExtend(code_point);
+}
+
+pub fn isIdsBinaryOperator(code_point: CodePoint) bool {
+    return prop_list.isIdsBinaryOperator(code_point);
+}
+
+pub fn isIdsTrinaryOperator(code_point: CodePoint) bool {
+    return prop_list.isIdsTrinaryOperator(code_point);
+}
+
+pub fn isIdsUnaryOperator(code_point: CodePoint) bool {
+    return prop_list.isIdsUnaryOperator(code_point);
+}
+
+pub fn isRadical(code_point: CodePoint) bool {
+    return prop_list.isRadical(code_point);
+}
+
+pub fn isUnifiedIdeograph(code_point: CodePoint) bool {
+    return prop_list.isUnifiedIdeograph(code_point);
+}
+
+pub fn isOtherDefaultIgnorableCodePoint(code_point: CodePoint) bool {
+    return prop_list.isOtherDefaultIgnorableCodePoint(code_point);
+}
+
+pub fn isDeprecated(code_point: CodePoint) bool {
+    return prop_list.isDeprecated(code_point);
+}
+
+pub fn isSoftDotted(code_point: CodePoint) bool {
+    return prop_list.isSoftDotted(code_point);
+}
+
+pub fn isLogicalOrderException(code_point: CodePoint) bool {
+    return prop_list.isLogicalOrderException(code_point);
+}
+
+pub fn isOtherIdStart(code_point: CodePoint) bool {
+    return prop_list.isOtherIdStart(code_point);
+}
+
+pub fn isOtherIdContinue(code_point: CodePoint) bool {
+    return prop_list.isOtherIdContinue(code_point);
+}
+
+pub fn isSentenceTerminal(code_point: CodePoint) bool {
+    return prop_list.isSentenceTerminal(code_point);
+}
+
+pub fn isVariationSelector(code_point: CodePoint) bool {
+    return prop_list.isVariationSelector(code_point);
+}
+
+pub fn isPatternWhiteSpace(code_point: CodePoint) bool {
+    return prop_list.isPatternWhiteSpace(code_point);
+}
+
+pub fn isPatternSyntax(code_point: CodePoint) bool {
+    return prop_list.isPatternSyntax(code_point);
+}
+
+pub fn isPrependedConcatenationMark(code_point: CodePoint) bool {
+    return prop_list.isPrependedConcatenationMark(code_point);
+}
+
+pub fn isRegionalIndicator(code_point: CodePoint) bool {
+    return prop_list.isRegionalIndicator(code_point);
+}
+
+pub fn isModifierCombiningMark(code_point: CodePoint) bool {
+    return prop_list.isModifierCombiningMark(code_point);
+}
+
+pub fn isIdCompatMathStart(code_point: CodePoint) bool {
+    return prop_list.isIdCompatMathStart(code_point);
+}
+
+pub fn isIdCompatMathContinue(code_point: CodePoint) bool {
+    return prop_list.isIdCompatMathContinue(code_point);
 }
 
 pub fn isIdentifierStart(code_point: CodePoint) bool {
