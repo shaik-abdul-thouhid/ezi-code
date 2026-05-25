@@ -65,6 +65,46 @@ fn normalizeKey(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
     return slice.toOwnedSlice(allocator);
 }
 
+// convert any pattern to camelCased
+fn normalizeFnName(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
+    var slice: std.ArrayList(u8) = .empty;
+    defer slice.deinit(allocator);
+    try slice.ensureTotalCapacity(allocator, input.len);
+
+    var word_start = true;
+    var output_started = false;
+
+    for (input) |c| {
+        switch (c) {
+            'A'...'Z', 'a'...'z' => {
+                const lower: u8 = if (c >= 'A' and c <= 'Z') c + 32 else c;
+                const upper: u8 = if (c >= 'a' and c <= 'z') c - 32 else c;
+
+                if (!output_started) {
+                    try slice.append(allocator, lower);
+                    output_started = true;
+                    word_start = false;
+                } else if (word_start) {
+                    try slice.append(allocator, upper);
+                    word_start = false;
+                } else {
+                    try slice.append(allocator, lower);
+                }
+            },
+            '0'...'9' => {
+                try slice.append(allocator, c);
+                output_started = true;
+                word_start = true;
+            },
+            else => {
+                if (output_started) word_start = true;
+            },
+        }
+    }
+
+    return slice.toOwnedSlice(allocator);
+}
+
 fn saveUCDFile(arena: std.mem.Allocator, io: std.Io, dir: *std.Io.Dir, data: []const u8, url: []const u8, buf: []u8) !void {
     const ucd_file_name: []const u8 = extractFileNameFromPath(url);
 
@@ -1518,7 +1558,6 @@ fn generatePropList(arena: std.mem.Allocator, io: std.Io, data: []const u8, url:
     const buf = try arena.alloc(u8, 4096);
     var file_writer = file.writer(io, buf);
     const writer = &file_writer.interface;
-    _ = writer;
 
     var split_lines = std.mem.splitScalar(u8, data, '\n');
 
@@ -1557,10 +1596,438 @@ fn generatePropList(arena: std.mem.Allocator, io: std.Io, data: []const u8, url:
         try entry.value_ptr.ranges.append(arena, .{ .start = start, .end = end });
     }
 
+    try writer.writeAll(
+        \\//! This file is auto-generated. Do not edit directly.
+        \\//! To regenerate run `zig build generate` in same level
+        \\//! as `build.zig` file.
+        \\
+        \\const CodePoint = @import("encoding").CodePoint;
+        \\
+        \\const Range = struct { start: CodePoint, end: CodePoint };
+        \\
+        \\fn searchRange(cp: CodePoint, ranges: []const Range) bool {
+        \\    var lo: usize = 0;
+        \\    var hi: usize = ranges.len;
+        \\    while (lo < hi) {
+        \\        const mid = lo + (hi - lo) / 2;
+        \\        const r = ranges[mid];
+        \\        if (cp < r.start) {
+        \\            hi = mid;
+        \\        } else if (cp > r.end) {
+        \\            lo = mid + 1;
+        \\        } else {
+        \\            return true;
+        \\        }
+        \\    }
+        \\    return false;
+        \\}
+        \\
+        \\
+    );
+
+    var tables_iter = tables.valueIterator();
+
+    table_generator: while (tables_iter.next()) |table| {
+        // a normal binary search should suffice
+        if (table.ranges.items.len <= 256) {
+            std.mem.sort(RangeType, table.ranges.items, {}, struct {
+                fn lessThan(_: void, a: RangeType, b: RangeType) bool {
+                    return a.start < b.start;
+                }
+            }.lessThan);
+
+            try writer.print("//zig fmt: off\nconst {s}_ranges = [_]Range {{", .{table.normalized_name});
+            for (table.ranges.items, 0..) |range, n| {
+                if (n % 4 == 0) try writer.writeAll("\n    ");
+                try writer.print(".{{ .start = 0x{X}, .end = 0x{X} }},", .{ range.start, range.end });
+                if (n + 1 != table.ranges.items.len) try writer.writeAll(" ");
+            }
+            try writer.writeAll("\n};\n//zig fmt: on\n\n");
+
+            const fn_name = try normalizeFnName(arena, table.normalized_name);
+            const fn_name_pascal_head: u8 = std.ascii.toUpper(fn_name[0]);
+
+            try writer.print(
+                \\pub inline fn is{c}{s}(cp: CodePoint) bool {{
+                \\    return searchRange(cp, &{s}_ranges);
+                \\}}
+                \\
+                \\
+            , .{ fn_name_pascal_head, fn_name[1..], table.normalized_name });
+
+            continue :table_generator;
+        }
+
+        // create page based lookup table.
+        const PAGE_BITS = 8;
+        const PAGE_SIZE = 1 << PAGE_BITS;
+
+        const values = try arena.alloc(bool, 0x110000);
+        @memset(values, false);
+
+        for (table.ranges.items) |range| {
+            var cp = range.start;
+            while (cp <= range.end) : (cp += 1) {
+                values[cp] = true;
+            }
+        }
+
+        var unique_pages = std.ArrayList([]const bool).empty;
+        var level1_items = std.ArrayList(usize).empty;
+        var page_map: std.AutoHashMapUnmanaged(u64, usize) = .empty;
+
+        const page_buf = try arena.alloc(bool, PAGE_SIZE);
+
+        var total_cps: usize = 0;
+        while (total_cps < values.len) : (total_cps += PAGE_SIZE) {
+            const page_start = total_cps;
+            const page_end = @min(page_start + PAGE_SIZE, values.len);
+
+            for (page_buf, 0..) |*slot, j| {
+                const idx = page_start + j;
+                slot.* = if (idx < page_end) values[idx] else false;
+            }
+
+            var hasher = std.hash.Wyhash.init(0);
+            hasher.update(std.mem.sliceAsBytes(page_buf));
+            const page_hash = hasher.final();
+
+            var found = false;
+            var found_idx: usize = 0;
+
+            if (page_map.get(page_hash)) |idx| {
+                if (std.mem.eql(bool, unique_pages.items[idx], page_buf)) {
+                    found = true;
+                    found_idx = idx;
+                }
+            }
+
+            if (!found) {
+                const new_page = try arena.alloc(bool, PAGE_SIZE);
+                @memcpy(new_page, page_buf);
+                found_idx = unique_pages.items.len;
+                try unique_pages.append(arena, new_page);
+                try page_map.put(arena, page_hash, found_idx);
+            }
+
+            try level1_items.append(arena, found_idx);
+        }
+
+        try writer.print("//zig fmt: off\nconst {s}_level1 = [_]u16 {{", .{table.normalized_name});
+        for (level1_items.items, 0..) |idx, n| {
+            if (n % 12 == 0) try writer.writeAll("\n    ");
+            try writer.print("{},", .{idx});
+            if (n + 1 != level1_items.items.len) try writer.writeAll(" ");
+        }
+        try writer.writeAll("\n};\n//zig fmt: on\n\n");
+
+        try writer.print("//zig fmt: off\nconst {s}_level2 = [_][256]bool {{\n", .{table.normalized_name});
+        for (unique_pages.items) |page| {
+            try writer.writeAll("    .{\n        ");
+            for (page, 0..) |val, j| {
+                try writer.print("{},", .{val});
+                if ((j + 1) % 12 == 0 and (j + 1) != page.len) {
+                    try writer.writeAll("\n        ");
+                } else if (j + 1 != page.len) {
+                    try writer.writeAll(" ");
+                }
+            }
+            try writer.writeAll("\n    },\n");
+        }
+        try writer.writeAll("};\n//zig fmt: on\n\n");
+
+        const fn_name = try normalizeFnName(arena, table.normalized_name);
+        const fn_name_pascal_head: u8 = std.ascii.toUpper(fn_name[0]);
+
+        try writer.print(
+            \\pub inline fn is{c}{s}(cp: CodePoint) bool {{
+            \\    if (cp > 0x10FFFF) return false;
+            \\    const page = {s}_level1[cp >> 8];
+            \\    return {s}_level2[page][cp & 0xFF];
+            \\}}
+            \\
+            \\
+        , .{ fn_name_pascal_head, fn_name[1..], table.normalized_name, table.normalized_name });
+    }
+
     // 7. Keep file flush/save logic
     try file_writer.flush();
 
     try saveUCDFile(arena, io, &dir, data, url, buf);
+}
+
+// ============================================================================
+// Placeholders for upcoming UCD generators
+// ----------------------------------------------------------------------------
+// Each stub keeps the standard generator signature so it can be slotted into
+// the `generators` array below without further plumbing. The doc comments
+// describe the data shape, recommended output table strategy, and the public
+// API the generated file should expose. Replace the @panic body with the
+// implementation when you start work.
+// ============================================================================
+
+// ----- Tier 1: segmentation & layout ----------------------------------------
+
+/// Source: https://www.unicode.org/Public/UCD/latest/ucd/auxiliary/GraphemeBreakProperty.txt
+/// Shape: `<range> ; <Grapheme_Cluster_Break value>` lines. Default value is `Other`.
+/// Output: enum `GraphemeBreakProperty` + 2-level page table (cp → enum).
+/// API: `pub inline fn graphemeBreakProperty(cp: CodePoint) GraphemeBreakProperty`.
+/// Consumers will combine this with `emoji-data` (Extended_Pictographic) to
+/// implement the UAX #29 extended grapheme cluster algorithm.
+fn generateGraphemeBreakProperty(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
+    _ = arena;
+    _ = io;
+    _ = data;
+    _ = url;
+    _ = file_name;
+    @panic("TODO: generateGraphemeBreakProperty");
+}
+
+/// Source: https://www.unicode.org/Public/UCD/latest/ucd/emoji/emoji-data.txt
+/// Shape: `<range> ; <property>` where property is one of Emoji, Emoji_Presentation,
+/// Emoji_Modifier, Emoji_Modifier_Base, Emoji_Component, Extended_Pictographic.
+/// Output: one bool predicate per property (mirror prop_list strategy).
+/// API: `isEmoji`, `isEmojiPresentation`, `isEmojiModifier`,
+/// `isEmojiModifierBase`, `isEmojiComponent`, `isExtendedPictographic`.
+fn generateEmojiData(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
+    _ = arena;
+    _ = io;
+    _ = data;
+    _ = url;
+    _ = file_name;
+    @panic("TODO: generateEmojiData");
+}
+
+/// Source: https://www.unicode.org/Public/UCD/latest/ucd/auxiliary/WordBreakProperty.txt
+/// Shape: `<range> ; <Word_Break value>` lines. Default value is `Other`.
+/// Output: enum `WordBreakProperty` + 2-level page table.
+/// API: `pub inline fn wordBreakProperty(cp: CodePoint) WordBreakProperty`.
+fn generateWordBreakProperty(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
+    _ = arena;
+    _ = io;
+    _ = data;
+    _ = url;
+    _ = file_name;
+    @panic("TODO: generateWordBreakProperty");
+}
+
+/// Source: https://www.unicode.org/Public/UCD/latest/ucd/auxiliary/SentenceBreakProperty.txt
+/// Shape: `<range> ; <Sentence_Break value>` lines. Default value is `Other`.
+/// Output: enum `SentenceBreakProperty` + 2-level page table.
+/// API: `pub inline fn sentenceBreakProperty(cp: CodePoint) SentenceBreakProperty`.
+fn generateSentenceBreakProperty(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
+    _ = arena;
+    _ = io;
+    _ = data;
+    _ = url;
+    _ = file_name;
+    @panic("TODO: generateSentenceBreakProperty");
+}
+
+/// Source: https://www.unicode.org/Public/UCD/latest/ucd/LineBreak.txt
+/// Shape: `<range> ; <Line_Break value>` lines. Default value is `XX` (Unknown).
+/// Output: enum `LineBreak` (~45 values) + 2-level page table.
+/// API: `pub inline fn lineBreak(cp: CodePoint) LineBreak`.
+/// Note: implementing UAX #14 pair-table logic on top of this is a separate
+/// algorithm module; this generator only emits the per-codepoint property.
+fn generateLineBreak(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
+    _ = arena;
+    _ = io;
+    _ = data;
+    _ = url;
+    _ = file_name;
+    @panic("TODO: generateLineBreak");
+}
+
+/// Source: https://www.unicode.org/Public/UCD/latest/ucd/EastAsianWidth.txt
+/// Shape: `<range> ; <East_Asian_Width value>` (N, Na, A, W, F, H).
+/// Output: enum `EastAsianWidth` + 2-level page table.
+/// API: `pub inline fn eastAsianWidth(cp: CodePoint) EastAsianWidth`,
+/// plus convenience `pub fn terminalColumnWidth(cp: CodePoint) u2`
+/// (0 for zero-width, 1 for Na/N/A/H, 2 for W/F).
+fn generateEastAsianWidth(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
+    _ = arena;
+    _ = io;
+    _ = data;
+    _ = url;
+    _ = file_name;
+    @panic("TODO: generateEastAsianWidth");
+}
+
+// ----- Tier 2: normalization ------------------------------------------------
+
+/// Source: https://www.unicode.org/Public/UCD/latest/ucd/DerivedNormalizationProps.txt
+/// Shape: same `<range> ; <property> [; <value>]` style as DerivedCoreProperties,
+/// but several properties carry a tri-state value (Yes/No/Maybe) — NFC_QC,
+/// NFD_QC, NFKC_QC, NFKD_QC — not a plain bool.
+/// Output: bool predicates for binary properties (Full_Composition_Exclusion,
+/// Changes_When_NFKC_Casefolded), tri-state lookup for QC properties,
+/// plus a separate codepoint→codepoints map for NFKC_Casefold and NFKC_Simple_Casefold.
+/// API surface is big — design before implementing.
+fn generateDerivedNormalizationProps(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
+    _ = arena;
+    _ = io;
+    _ = data;
+    _ = url;
+    _ = file_name;
+    @panic("TODO: generateDerivedNormalizationProps");
+}
+
+/// Source: https://www.unicode.org/Public/UCD/latest/ucd/CompositionExclusions.txt
+/// Shape: bare codepoint per line. Single-property set (~80 entries).
+/// Output: sorted `const composition_exclusions = [_]CodePoint{...}` plus
+/// `pub fn isCompositionExclusion(cp: CodePoint) bool` (binary search).
+/// Used by the NFC composition step to skip excluded canonical compositions.
+fn generateCompositionExclusions(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
+    _ = arena;
+    _ = io;
+    _ = data;
+    _ = url;
+    _ = file_name;
+    @panic("TODO: generateCompositionExclusions");
+}
+
+/// Source: https://www.unicode.org/Public/UCD/latest/ucd/NormalizationTest.txt
+/// NOT a code generator — this is the conformance fixture for NFC/NFD/NFKC/NFKD.
+/// Save the raw text to `ucd/NormalizationTest.txt`. The actual test driver
+/// lives in `src/unicode/tests/` and parses the saved file at test time.
+fn generateNormalizationTestFixture(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
+    _ = arena;
+    _ = io;
+    _ = data;
+    _ = url;
+    _ = file_name;
+    @panic("TODO: generateNormalizationTestFixture (download + save only, no Zig output)");
+}
+
+// ----- Tier 3: script & bidi ------------------------------------------------
+
+/// Source: https://www.unicode.org/Public/UCD/latest/ucd/Scripts.txt
+/// Shape: `<range> ; <Script value>` lines. Default value is `Unknown`.
+/// Output: enum `Script` (~160 values) + 2-level page table.
+/// API: `pub inline fn script(cp: CodePoint) Script`.
+fn generateScripts(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
+    _ = arena;
+    _ = io;
+    _ = data;
+    _ = url;
+    _ = file_name;
+    @panic("TODO: generateScripts");
+}
+
+/// Source: https://www.unicode.org/Public/UCD/latest/ucd/ScriptExtensions.txt
+/// Shape: `<range> ; <space-separated Script_Extension values>`.
+/// Output: for each unique set-of-scripts pattern, emit a sorted array; map
+/// codepoint → set-index via 2-level page table. Many codepoints share the
+/// same extension set so this dedups very well.
+/// API: `pub fn scriptExtensions(cp: CodePoint) []const Script`.
+fn generateScriptExtensions(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
+    _ = arena;
+    _ = io;
+    _ = data;
+    _ = url;
+    _ = file_name;
+    @panic("TODO: generateScriptExtensions (depends on generateScripts)");
+}
+
+/// Source: https://www.unicode.org/Public/UCD/latest/ucd/BidiBrackets.txt
+/// Shape: `<cp> ; <paired cp> ; <o|c>` (open or close). ~120 entries.
+/// Output: sorted `const bracket_pairs = [_]BracketPair{...}` keyed by `cp`,
+/// plus binary-search lookup.
+/// API: `pub fn bidiBracket(cp: CodePoint) ?BidiBracket` returning the paired
+/// codepoint and direction.
+fn generateBidiBrackets(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
+    _ = arena;
+    _ = io;
+    _ = data;
+    _ = url;
+    _ = file_name;
+    @panic("TODO: generateBidiBrackets");
+}
+
+/// Source: https://www.unicode.org/Public/UCD/latest/ucd/BidiMirroring.txt
+/// Shape: `<cp> ; <mirrored cp>` lines. ~370 entries.
+/// Output: sorted `[_]MirrorEntry{ .source, .target }` + binary search.
+/// API: `pub fn bidiMirrored(cp: CodePoint) ?CodePoint`.
+fn generateBidiMirroring(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
+    _ = arena;
+    _ = io;
+    _ = data;
+    _ = url;
+    _ = file_name;
+    @panic("TODO: generateBidiMirroring");
+}
+
+// ----- Tier 4: numeric & metadata -------------------------------------------
+
+/// Source: https://www.unicode.org/Public/UCD/latest/ucd/extracted/DerivedNumericType.txt
+/// Shape: `<range> ; <Numeric_Type>` (Decimal | Digit | Numeric | None).
+/// Output: enum `NumericType` + 2-level page table.
+/// API: `pub inline fn numericType(cp: CodePoint) NumericType`.
+fn generateDerivedNumericType(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
+    _ = arena;
+    _ = io;
+    _ = data;
+    _ = url;
+    _ = file_name;
+    @panic("TODO: generateDerivedNumericType");
+}
+
+/// Source: https://www.unicode.org/Public/UCD/latest/ucd/extracted/DerivedNumericValues.txt
+/// Shape: `<range> ; <decimal value> ; ; <rational value>` (can be 1, 1/2, -1, etc.)
+/// Output: sorted `[_]NumericEntry{ .cp, .numerator, .denominator }` plus
+/// binary-search lookup. Values are exact rationals — store both parts as
+/// `i64` to handle fractions like 1/16 and large numerators like 1000000.
+/// API: `pub fn numericValue(cp: CodePoint) ?NumericValue`.
+fn generateDerivedNumericValues(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
+    _ = arena;
+    _ = io;
+    _ = data;
+    _ = url;
+    _ = file_name;
+    @panic("TODO: generateDerivedNumericValues");
+}
+
+/// Source: https://www.unicode.org/Public/UCD/latest/ucd/Blocks.txt
+/// Shape: `<range> ; <Block name>` (~330 entries, contiguous, non-overlapping).
+/// Output: sorted `[_]BlockEntry{ .start, .end, .name_index }` plus a
+/// `[]const []const u8` of unique block names.
+/// API: `pub fn block(cp: CodePoint) []const u8` (returns "No_Block" for gaps).
+fn generateBlocks(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
+    _ = arena;
+    _ = io;
+    _ = data;
+    _ = url;
+    _ = file_name;
+    @panic("TODO: generateBlocks");
+}
+
+/// Source: https://www.unicode.org/Public/UCD/latest/ucd/HangulSyllableType.txt
+/// Shape: `<range> ; <Hangul_Syllable_Type>` (L | V | T | LV | LVT | NA).
+/// Output: enum `HangulSyllableType` + 2-level page table.
+/// API: `pub inline fn hangulSyllableType(cp: CodePoint) HangulSyllableType`.
+/// Needed if you implement algorithmic Hangul L+V+T composition outside the
+/// generic NFC tables.
+fn generateHangulSyllableType(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
+    _ = arena;
+    _ = io;
+    _ = data;
+    _ = url;
+    _ = file_name;
+    @panic("TODO: generateHangulSyllableType");
+}
+
+/// Source: https://www.unicode.org/Public/UCD/latest/ucd/DerivedAge.txt
+/// Shape: `<range> ; <Unicode version>` (e.g., "1.1", "17.0").
+/// Output: sorted `[_]AgeEntry{ .start, .end, .major, .minor }` + binary search.
+/// API: `pub fn unicodeAge(cp: CodePoint) ?UnicodeVersion`.
+fn generateDerivedAge(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
+    _ = arena;
+    _ = io;
+    _ = data;
+    _ = url;
+    _ = file_name;
+    @panic("TODO: generateDerivedAge");
 }
 
 pub fn main(init: std.process.Init) !void {
@@ -1604,6 +2071,104 @@ pub fn main(init: std.process.Init) !void {
             .url = "https://www.unicode.org/Public/UCD/latest/ucd/PropList.txt",
             .generatorFn = generatePropList,
         },
+
+        // ----- Tier 1: segmentation & layout (uncomment as implementations land) -----
+        // .{
+        //     .file_name = "src/unicode/segmentation/generated/grapheme_break.zig",
+        //     .url = "https://www.unicode.org/Public/UCD/latest/ucd/auxiliary/GraphemeBreakProperty.txt",
+        //     .generatorFn = generateGraphemeBreakProperty,
+        // },
+        // .{
+        //     .file_name = "src/unicode/segmentation/generated/emoji_data.zig",
+        //     .url = "https://www.unicode.org/Public/UCD/latest/ucd/emoji/emoji-data.txt",
+        //     .generatorFn = generateEmojiData,
+        // },
+        // .{
+        //     .file_name = "src/unicode/segmentation/generated/word_break.zig",
+        //     .url = "https://www.unicode.org/Public/UCD/latest/ucd/auxiliary/WordBreakProperty.txt",
+        //     .generatorFn = generateWordBreakProperty,
+        // },
+        // .{
+        //     .file_name = "src/unicode/segmentation/generated/sentence_break.zig",
+        //     .url = "https://www.unicode.org/Public/UCD/latest/ucd/auxiliary/SentenceBreakProperty.txt",
+        //     .generatorFn = generateSentenceBreakProperty,
+        // },
+        // .{
+        //     .file_name = "src/unicode/segmentation/generated/line_break.zig",
+        //     .url = "https://www.unicode.org/Public/UCD/latest/ucd/LineBreak.txt",
+        //     .generatorFn = generateLineBreak,
+        // },
+        // .{
+        //     .file_name = "src/unicode/width/generated/east_asian_width.zig",
+        //     .url = "https://www.unicode.org/Public/UCD/latest/ucd/EastAsianWidth.txt",
+        //     .generatorFn = generateEastAsianWidth,
+        // },
+
+        // ----- Tier 2: normalization -----
+        // .{
+        //     .file_name = "src/unicode/normalization/generated/derived_normalization_props.zig",
+        //     .url = "https://www.unicode.org/Public/UCD/latest/ucd/DerivedNormalizationProps.txt",
+        //     .generatorFn = generateDerivedNormalizationProps,
+        // },
+        // .{
+        //     .file_name = "src/unicode/normalization/generated/composition_exclusions.zig",
+        //     .url = "https://www.unicode.org/Public/UCD/latest/ucd/CompositionExclusions.txt",
+        //     .generatorFn = generateCompositionExclusions,
+        // },
+        // .{
+        //     .file_name = "ucd/NormalizationTest.txt", // fixture only, not Zig output
+        //     .url = "https://www.unicode.org/Public/UCD/latest/ucd/NormalizationTest.txt",
+        //     .generatorFn = generateNormalizationTestFixture,
+        // },
+
+        // ----- Tier 3: script & bidi -----
+        // .{
+        //     .file_name = "src/unicode/scripts/generated/scripts.zig",
+        //     .url = "https://www.unicode.org/Public/UCD/latest/ucd/Scripts.txt",
+        //     .generatorFn = generateScripts,
+        // },
+        // .{
+        //     .file_name = "src/unicode/scripts/generated/script_extensions.zig",
+        //     .url = "https://www.unicode.org/Public/UCD/latest/ucd/ScriptExtensions.txt",
+        //     .generatorFn = generateScriptExtensions,
+        // },
+        // .{
+        //     .file_name = "src/unicode/bidi/generated/bidi_brackets.zig",
+        //     .url = "https://www.unicode.org/Public/UCD/latest/ucd/BidiBrackets.txt",
+        //     .generatorFn = generateBidiBrackets,
+        // },
+        // .{
+        //     .file_name = "src/unicode/bidi/generated/bidi_mirroring.zig",
+        //     .url = "https://www.unicode.org/Public/UCD/latest/ucd/BidiMirroring.txt",
+        //     .generatorFn = generateBidiMirroring,
+        // },
+
+        // ----- Tier 4: numeric & metadata -----
+        // .{
+        //     .file_name = "src/unicode/numeric/generated/numeric_type.zig",
+        //     .url = "https://www.unicode.org/Public/UCD/latest/ucd/extracted/DerivedNumericType.txt",
+        //     .generatorFn = generateDerivedNumericType,
+        // },
+        // .{
+        //     .file_name = "src/unicode/numeric/generated/numeric_values.zig",
+        //     .url = "https://www.unicode.org/Public/UCD/latest/ucd/extracted/DerivedNumericValues.txt",
+        //     .generatorFn = generateDerivedNumericValues,
+        // },
+        // .{
+        //     .file_name = "src/unicode/blocks/generated/blocks.zig",
+        //     .url = "https://www.unicode.org/Public/UCD/latest/ucd/Blocks.txt",
+        //     .generatorFn = generateBlocks,
+        // },
+        // .{
+        //     .file_name = "src/unicode/hangul/generated/hangul_syllable_type.zig",
+        //     .url = "https://www.unicode.org/Public/UCD/latest/ucd/HangulSyllableType.txt",
+        //     .generatorFn = generateHangulSyllableType,
+        // },
+        // .{
+        //     .file_name = "src/unicode/age/generated/derived_age.zig",
+        //     .url = "https://www.unicode.org/Public/UCD/latest/ucd/DerivedAge.txt",
+        //     .generatorFn = generateDerivedAge,
+        // },
     };
 
     for (generators) |gen| {

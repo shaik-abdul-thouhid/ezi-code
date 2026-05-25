@@ -3,6 +3,7 @@ const encoding = @import("encoding");
 
 const unicode_data = @import("../generated/unicode_data.zig");
 const derived = @import("../properties/generated/derived_core_properties.zig");
+const prop_list = @import("../properties/generated/prop_list.zig");
 const case_folding = @import("../casing/generated/case_folding.zig");
 const special_casing = @import("../casing/generated/special_casing.zig");
 const unicode_types = @import("../types.zig");
@@ -12,6 +13,7 @@ const testing = std.testing;
 
 const unicode_data_path = "ucd/UnicodeData.txt";
 const derived_core_properties_path = "ucd/DerivedCoreProperties.txt";
+const prop_list_path = "ucd/PropList.txt";
 const case_folding_path = "ucd/CaseFolding.txt";
 const special_casing_path = "ucd/SpecialCasing.txt";
 
@@ -415,4 +417,146 @@ test "ucd hostile: SpecialCasing generated lookup matches every unconditional an
     try expectCodePointSlices(&.{0x131}, special_casing.lookup(.tr, .not_before_dot, 'I').?.lower);
     try expectCodePointSlices(&.{ 0x69, 0x307 }, special_casing.lookup(.none, .none, 0x130).?.lower);
     try expectCodePointSlices(&.{0x69}, special_casing.lookup(.tr, .none, 0x130).?.lower);
+}
+
+const PropListPredicate = struct {
+    label: []const u8,
+    predicate: *const fn (CodePoint) bool,
+};
+
+/// Bridge `inline fn (CodePoint) bool` predicates into normal function-pointer
+/// targets so we can hold them in a table.
+fn wrap(comptime f: fn (CodePoint) callconv(.@"inline") bool) *const fn (CodePoint) bool {
+    const Wrapper = struct {
+        fn call(cp: CodePoint) bool {
+            return f(cp);
+        }
+    };
+    return &Wrapper.call;
+}
+
+const prop_list_predicates = [_]PropListPredicate{
+    .{ .label = "White_Space", .predicate = wrap(prop_list.isWhiteSpace) },
+    .{ .label = "Bidi_Control", .predicate = wrap(prop_list.isBidiControl) },
+    .{ .label = "Join_Control", .predicate = wrap(prop_list.isJoinControl) },
+    .{ .label = "Dash", .predicate = wrap(prop_list.isDash) },
+    .{ .label = "Hyphen", .predicate = wrap(prop_list.isHyphen) },
+    .{ .label = "Quotation_Mark", .predicate = wrap(prop_list.isQuotationMark) },
+    .{ .label = "Terminal_Punctuation", .predicate = wrap(prop_list.isTerminalPunctuation) },
+    .{ .label = "Other_Math", .predicate = wrap(prop_list.isOtherMath) },
+    .{ .label = "Hex_Digit", .predicate = wrap(prop_list.isHexDigit) },
+    .{ .label = "ASCII_Hex_Digit", .predicate = wrap(prop_list.isAsciiHexDigit) },
+    .{ .label = "Other_Alphabetic", .predicate = wrap(prop_list.isOtherAlphabetic) },
+    .{ .label = "Ideographic", .predicate = wrap(prop_list.isIdeographic) },
+    .{ .label = "Diacritic", .predicate = wrap(prop_list.isDiacritic) },
+    .{ .label = "Extender", .predicate = wrap(prop_list.isExtender) },
+    .{ .label = "Other_Lowercase", .predicate = wrap(prop_list.isOtherLowercase) },
+    .{ .label = "Other_Uppercase", .predicate = wrap(prop_list.isOtherUppercase) },
+    .{ .label = "Noncharacter_Code_Point", .predicate = wrap(prop_list.isNoncharacterCodePoint) },
+    .{ .label = "Other_Grapheme_Extend", .predicate = wrap(prop_list.isOtherGraphemeExtend) },
+    .{ .label = "IDS_Binary_Operator", .predicate = wrap(prop_list.isIdsBinaryOperator) },
+    .{ .label = "IDS_Trinary_Operator", .predicate = wrap(prop_list.isIdsTrinaryOperator) },
+    .{ .label = "IDS_Unary_Operator", .predicate = wrap(prop_list.isIdsUnaryOperator) },
+    .{ .label = "Radical", .predicate = wrap(prop_list.isRadical) },
+    .{ .label = "Unified_Ideograph", .predicate = wrap(prop_list.isUnifiedIdeograph) },
+    .{ .label = "Other_Default_Ignorable_Code_Point", .predicate = wrap(prop_list.isOtherDefaultIgnorableCodePoint) },
+    .{ .label = "Deprecated", .predicate = wrap(prop_list.isDeprecated) },
+    .{ .label = "Soft_Dotted", .predicate = wrap(prop_list.isSoftDotted) },
+    .{ .label = "Logical_Order_Exception", .predicate = wrap(prop_list.isLogicalOrderException) },
+    .{ .label = "Other_ID_Start", .predicate = wrap(prop_list.isOtherIdStart) },
+    .{ .label = "Other_ID_Continue", .predicate = wrap(prop_list.isOtherIdContinue) },
+    .{ .label = "Sentence_Terminal", .predicate = wrap(prop_list.isSentenceTerminal) },
+    .{ .label = "Variation_Selector", .predicate = wrap(prop_list.isVariationSelector) },
+    .{ .label = "Pattern_White_Space", .predicate = wrap(prop_list.isPatternWhiteSpace) },
+    .{ .label = "Pattern_Syntax", .predicate = wrap(prop_list.isPatternSyntax) },
+    .{ .label = "Prepended_Concatenation_Mark", .predicate = wrap(prop_list.isPrependedConcatenationMark) },
+    .{ .label = "Regional_Indicator", .predicate = wrap(prop_list.isRegionalIndicator) },
+    .{ .label = "Modifier_Combining_Mark", .predicate = wrap(prop_list.isModifierCombiningMark) },
+    .{ .label = "ID_Compat_Math_Start", .predicate = wrap(prop_list.isIdCompatMathStart) },
+    .{ .label = "ID_Compat_Math_Continue", .predicate = wrap(prop_list.isIdCompatMathContinue) },
+};
+
+fn predicateForPropListLabel(label: []const u8) ?*const fn (CodePoint) bool {
+    for (prop_list_predicates) |entry| {
+        if (std.mem.eql(u8, label, entry.label)) return entry.predicate;
+    }
+    return null;
+}
+
+test "ucd hostile: every PropList property predicate matches every codepoint" {
+    const allocator = testing.allocator;
+    const txt = try std.Io.Dir.cwd().readFileAlloc(testing.io, prop_list_path, allocator, .limited(8 * 1024 * 1024));
+    defer allocator.free(txt);
+
+    var groups: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(struct { start: CodePoint, end: CodePoint })) = .empty;
+    defer {
+        var it_free = groups.iterator();
+        while (it_free.next()) |e| {
+            e.value_ptr.deinit(allocator);
+            allocator.free(e.key_ptr.*);
+        }
+        groups.deinit(allocator);
+    }
+
+    var lines = std.mem.splitScalar(u8, txt, '\n');
+    while (lines.next()) |raw_line| {
+        const line = cleanData(raw_line);
+        if (line.len == 0) continue;
+
+        // PropList.txt is mostly "RANGE    ; LABEL" but at least one line
+        // omits the space before the semicolon — split on the scalar to be
+        // robust to either layout.
+        var parts = std.mem.splitScalar(u8, line, ';');
+        const range = try parseRange(parts.next() orelse return error.BadPropListLine);
+        const label = std.mem.trim(u8, parts.next() orelse return error.BadPropListLine, " \t\r");
+
+        const gop = try groups.getOrPut(allocator, label);
+        if (!gop.found_existing) {
+            gop.key_ptr.* = try allocator.dupe(u8, label);
+            gop.value_ptr.* = .empty;
+        }
+        try gop.value_ptr.append(allocator, .{ .start = range.start, .end = range.end });
+    }
+
+    const dense = try allocator.alloc(bool, 0x110000);
+    defer allocator.free(dense);
+
+    // Track which property labels we've actually exercised so we catch
+    // generator-side drops (label in file but no predicate emitted).
+    var seen = std.StringHashMapUnmanaged(void).empty;
+    defer seen.deinit(allocator);
+
+    var it = groups.iterator();
+    while (it.next()) |entry| {
+        const label = entry.key_ptr.*;
+        const predicate = predicateForPropListLabel(label) orelse {
+            std.debug.print("unknown PropList label: '{s}'\n", .{label});
+            return error.UnknownPropListLabel;
+        };
+
+        @memset(dense, false);
+        for (entry.value_ptr.items) |r| {
+            for (@as(usize, r.start)..@as(usize, r.end) + 1) |cp| {
+                dense[cp] = true;
+            }
+        }
+
+        for (dense, 0..) |want, cp_usize| {
+            const cp: CodePoint = @intCast(cp_usize);
+            try testing.expectEqual(want, predicate(cp));
+        }
+
+        // Above 0x10FFFF must always be false (predicate's u21 guard).
+        try testing.expectEqual(false, predicate(0x10FFFF) and !dense[0x10FFFF]);
+        try seen.put(allocator, label, {});
+    }
+
+    // Every predicate we emit must correspond to a label present in the
+    // file — guards against the table going stale relative to the data.
+    for (prop_list_predicates) |entry| {
+        if (!seen.contains(entry.label)) {
+            std.debug.print("predicate '{s}' has no rows in PropList.txt\n", .{entry.label});
+            return error.PredicateMissingFromPropList;
+        }
+    }
 }
