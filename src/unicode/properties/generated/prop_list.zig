@@ -3,25 +3,9 @@
 //! as `build.zig` file.
 
 const CodePoint = @import("encoding").CodePoint;
+const utils = @import("utils");
 
 const Range = struct { start: CodePoint, end: CodePoint };
-
-fn searchRange(cp: CodePoint, ranges: []const Range) bool {
-    var lo: usize = 0;
-    var hi: usize = ranges.len;
-    while (lo < hi) {
-        const mid = lo + (hi - lo) / 2;
-        const r = ranges[mid];
-        if (cp < r.start) {
-            hi = mid;
-        } else if (cp > r.end) {
-            lo = mid + 1;
-        } else {
-            return true;
-        }
-    }
-    return false;
-}
 
 //zig fmt: off
 const radical_ranges = [_]Range {
@@ -30,7 +14,7 @@ const radical_ranges = [_]Range {
 //zig fmt: on
 
 pub inline fn isRadical(cp: CodePoint) bool {
-    return searchRange(cp, &radical_ranges);
+    return utils.containsInRange(Range, CodePoint, "start", "end", &radical_ranges, cp);
 }
 
 //zig fmt: off
@@ -45,7 +29,7 @@ const ideographic_ranges = [_]Range {
 //zig fmt: on
 
 pub inline fn isIdeographic(cp: CodePoint) bool {
-    return searchRange(cp, &ideographic_ranges);
+    return utils.containsInRange(Range, CodePoint, "start", "end", &ideographic_ranges, cp);
 }
 
 //zig fmt: off
@@ -55,7 +39,7 @@ const ids_trinary_operator_ranges = [_]Range {
 //zig fmt: on
 
 pub inline fn isIdsTrinaryOperator(cp: CodePoint) bool {
-    return searchRange(cp, &ids_trinary_operator_ranges);
+    return utils.containsInRange(Range, CodePoint, "start", "end", &ids_trinary_operator_ranges, cp);
 }
 
 //zig fmt: off
@@ -66,7 +50,7 @@ const pattern_white_space_ranges = [_]Range {
 //zig fmt: on
 
 pub inline fn isPatternWhiteSpace(cp: CodePoint) bool {
-    return searchRange(cp, &pattern_white_space_ranges);
+    return utils.containsInRange(Range, CodePoint, "start", "end", &pattern_white_space_ranges, cp);
 }
 
 //zig fmt: off
@@ -77,7 +61,7 @@ const hex_digit_ranges = [_]Range {
 //zig fmt: on
 
 pub inline fn isHexDigit(cp: CodePoint) bool {
-    return searchRange(cp, &hex_digit_ranges);
+    return utils.containsInRange(Range, CodePoint, "start", "end", &hex_digit_ranges, cp);
 }
 
 //zig fmt: off
@@ -108,7 +92,7 @@ const sentence_terminal_ranges = [_]Range {
 //zig fmt: on
 
 pub inline fn isSentenceTerminal(cp: CodePoint) bool {
-    return searchRange(cp, &sentence_terminal_ranges);
+    return utils.containsInRange(Range, CodePoint, "start", "end", &sentence_terminal_ranges, cp);
 }
 
 //zig fmt: off
@@ -120,7 +104,7 @@ const other_default_ignorable_code_point_ranges = [_]Range {
 //zig fmt: on
 
 pub inline fn isOtherDefaultIgnorableCodePoint(cp: CodePoint) bool {
-    return searchRange(cp, &other_default_ignorable_code_point_ranges);
+    return utils.containsInRange(Range, CodePoint, "start", "end", &other_default_ignorable_code_point_ranges, cp);
 }
 
 //zig fmt: off
@@ -130,7 +114,7 @@ const other_id_start_ranges = [_]Range {
 //zig fmt: on
 
 pub inline fn isOtherIdStart(cp: CodePoint) bool {
-    return searchRange(cp, &other_id_start_ranges);
+    return utils.containsInRange(Range, CodePoint, "start", "end", &other_id_start_ranges, cp);
 }
 
 //zig fmt: off
@@ -144,7 +128,7 @@ const noncharacter_code_point_ranges = [_]Range {
 //zig fmt: on
 
 pub inline fn isNoncharacterCodePoint(cp: CodePoint) bool {
-    return searchRange(cp, &noncharacter_code_point_ranges);
+    return utils.containsInRange(Range, CodePoint, "start", "end", &noncharacter_code_point_ranges, cp);
 }
 
 //zig fmt: off
@@ -154,7 +138,7 @@ const ids_binary_operator_ranges = [_]Range {
 //zig fmt: on
 
 pub inline fn isIdsBinaryOperator(cp: CodePoint) bool {
-    return searchRange(cp, &ids_binary_operator_ranges);
+    return utils.containsInRange(Range, CodePoint, "start", "end", &ids_binary_operator_ranges, cp);
 }
 
 //zig fmt: off
@@ -174,7 +158,7 @@ const extender_ranges = [_]Range {
 //zig fmt: on
 
 pub inline fn isExtender(cp: CodePoint) bool {
-    return searchRange(cp, &extender_ranges);
+    return utils.containsInRange(Range, CodePoint, "start", "end", &extender_ranges, cp);
 }
 
 //zig fmt: off
@@ -192,7 +176,7 @@ const soft_dotted_ranges = [_]Range {
 //zig fmt: on
 
 pub inline fn isSoftDotted(cp: CodePoint) bool {
-    return searchRange(cp, &soft_dotted_ranges);
+    return utils.containsInRange(Range, CodePoint, "start", "end", &soft_dotted_ranges, cp);
 }
 
 //zig fmt: off
@@ -203,7 +187,7 @@ const other_id_continue_ranges = [_]Range {
 //zig fmt: on
 
 pub inline fn isOtherIdContinue(cp: CodePoint) bool {
-    return searchRange(cp, &other_id_continue_ranges);
+    return utils.containsInRange(Range, CodePoint, "start", "end", &other_id_continue_ranges, cp);
 }
 
 //zig fmt: off
@@ -214,7 +198,7 @@ const logical_order_exception_ranges = [_]Range {
 //zig fmt: on
 
 pub inline fn isLogicalOrderException(cp: CodePoint) bool {
-    return searchRange(cp, &logical_order_exception_ranges);
+    return utils.containsInRange(Range, CodePoint, "start", "end", &logical_order_exception_ranges, cp);
 }
 
 //zig fmt: off
@@ -225,7 +209,7 @@ const prepended_concatenation_mark_ranges = [_]Range {
 //zig fmt: on
 
 pub inline fn isPrependedConcatenationMark(cp: CodePoint) bool {
-    return searchRange(cp, &prepended_concatenation_mark_ranges);
+    return utils.containsInRange(Range, CodePoint, "start", "end", &prepended_concatenation_mark_ranges, cp);
 }
 
 //zig fmt: off
@@ -240,7 +224,7 @@ const dash_ranges = [_]Range {
 //zig fmt: on
 
 pub inline fn isDash(cp: CodePoint) bool {
-    return searchRange(cp, &dash_ranges);
+    return utils.containsInRange(Range, CodePoint, "start", "end", &dash_ranges, cp);
 }
 
 //zig fmt: off
@@ -2312,7 +2296,7 @@ const id_compat_math_start_ranges = [_]Range {
 //zig fmt: on
 
 pub inline fn isIdCompatMathStart(cp: CodePoint) bool {
-    return searchRange(cp, &id_compat_math_start_ranges);
+    return utils.containsInRange(Range, CodePoint, "start", "end", &id_compat_math_start_ranges, cp);
 }
 
 //zig fmt: off
@@ -2325,7 +2309,7 @@ const unified_ideograph_ranges = [_]Range {
 //zig fmt: on
 
 pub inline fn isUnifiedIdeograph(cp: CodePoint) bool {
-    return searchRange(cp, &unified_ideograph_ranges);
+    return utils.containsInRange(Range, CodePoint, "start", "end", &unified_ideograph_ranges, cp);
 }
 
 //zig fmt: off
@@ -2337,7 +2321,7 @@ const hyphen_ranges = [_]Range {
 //zig fmt: on
 
 pub inline fn isHyphen(cp: CodePoint) bool {
-    return searchRange(cp, &hyphen_ranges);
+    return utils.containsInRange(Range, CodePoint, "start", "end", &hyphen_ranges, cp);
 }
 
 //zig fmt: off
@@ -2353,7 +2337,7 @@ const quotation_mark_ranges = [_]Range {
 //zig fmt: on
 
 pub inline fn isQuotationMark(cp: CodePoint) bool {
-    return searchRange(cp, &quotation_mark_ranges);
+    return utils.containsInRange(Range, CodePoint, "start", "end", &quotation_mark_ranges, cp);
 }
 
 //zig fmt: off
@@ -2406,7 +2390,7 @@ const other_math_ranges = [_]Range {
 //zig fmt: on
 
 pub inline fn isOtherMath(cp: CodePoint) bool {
-    return searchRange(cp, &other_math_ranges);
+    return utils.containsInRange(Range, CodePoint, "start", "end", &other_math_ranges, cp);
 }
 
 //zig fmt: off
@@ -4139,7 +4123,7 @@ const ascii_hex_digit_ranges = [_]Range {
 //zig fmt: on
 
 pub inline fn isAsciiHexDigit(cp: CodePoint) bool {
-    return searchRange(cp, &ascii_hex_digit_ranges);
+    return utils.containsInRange(Range, CodePoint, "start", "end", &ascii_hex_digit_ranges, cp);
 }
 
 //zig fmt: off
@@ -4149,7 +4133,7 @@ const join_control_ranges = [_]Range {
 //zig fmt: on
 
 pub inline fn isJoinControl(cp: CodePoint) bool {
-    return searchRange(cp, &join_control_ranges);
+    return utils.containsInRange(Range, CodePoint, "start", "end", &join_control_ranges, cp);
 }
 
 //zig fmt: off
@@ -4161,7 +4145,7 @@ const deprecated_ranges = [_]Range {
 //zig fmt: on
 
 pub inline fn isDeprecated(cp: CodePoint) bool {
-    return searchRange(cp, &deprecated_ranges);
+    return utils.containsInRange(Range, CodePoint, "start", "end", &deprecated_ranges, cp);
 }
 
 //zig fmt: off
@@ -4176,7 +4160,7 @@ const id_compat_math_continue_ranges = [_]Range {
 //zig fmt: on
 
 pub inline fn isIdCompatMathContinue(cp: CodePoint) bool {
-    return searchRange(cp, &id_compat_math_continue_ranges);
+    return utils.containsInRange(Range, CodePoint, "start", "end", &id_compat_math_continue_ranges, cp);
 }
 
 //zig fmt: off
@@ -4186,7 +4170,7 @@ const variation_selector_ranges = [_]Range {
 //zig fmt: on
 
 pub inline fn isVariationSelector(cp: CodePoint) bool {
-    return searchRange(cp, &variation_selector_ranges);
+    return utils.containsInRange(Range, CodePoint, "start", "end", &variation_selector_ranges, cp);
 }
 
 //zig fmt: off
@@ -4196,7 +4180,7 @@ const regional_indicator_ranges = [_]Range {
 //zig fmt: on
 
 pub inline fn isRegionalIndicator(cp: CodePoint) bool {
-    return searchRange(cp, &regional_indicator_ranges);
+    return utils.containsInRange(Range, CodePoint, "start", "end", &regional_indicator_ranges, cp);
 }
 
 //zig fmt: off
@@ -4208,7 +4192,7 @@ const modifier_combining_mark_ranges = [_]Range {
 //zig fmt: on
 
 pub inline fn isModifierCombiningMark(cp: CodePoint) bool {
-    return searchRange(cp, &modifier_combining_mark_ranges);
+    return utils.containsInRange(Range, CodePoint, "start", "end", &modifier_combining_mark_ranges, cp);
 }
 
 //zig fmt: off
@@ -4218,7 +4202,7 @@ const ids_unary_operator_ranges = [_]Range {
 //zig fmt: on
 
 pub inline fn isIdsUnaryOperator(cp: CodePoint) bool {
-    return searchRange(cp, &ids_unary_operator_ranges);
+    return utils.containsInRange(Range, CodePoint, "start", "end", &ids_unary_operator_ranges, cp);
 }
 
 //zig fmt: off
@@ -4291,7 +4275,7 @@ const pattern_syntax_ranges = [_]Range {
 //zig fmt: on
 
 pub inline fn isPatternSyntax(cp: CodePoint) bool {
-    return searchRange(cp, &pattern_syntax_ranges);
+    return utils.containsInRange(Range, CodePoint, "start", "end", &pattern_syntax_ranges, cp);
 }
 
 //zig fmt: off
@@ -4303,7 +4287,7 @@ const white_space_ranges = [_]Range {
 //zig fmt: on
 
 pub inline fn isWhiteSpace(cp: CodePoint) bool {
-    return searchRange(cp, &white_space_ranges);
+    return utils.containsInRange(Range, CodePoint, "start", "end", &white_space_ranges, cp);
 }
 
 //zig fmt: off
@@ -4313,7 +4297,7 @@ const bidi_control_ranges = [_]Range {
 //zig fmt: on
 
 pub inline fn isBidiControl(cp: CodePoint) bool {
-    return searchRange(cp, &bidi_control_ranges);
+    return utils.containsInRange(Range, CodePoint, "start", "end", &bidi_control_ranges, cp);
 }
 
 //zig fmt: off
@@ -4335,7 +4319,7 @@ const other_grapheme_extend_ranges = [_]Range {
 //zig fmt: on
 
 pub inline fn isOtherGraphemeExtend(cp: CodePoint) bool {
-    return searchRange(cp, &other_grapheme_extend_ranges);
+    return utils.containsInRange(Range, CodePoint, "start", "end", &other_grapheme_extend_ranges, cp);
 }
 
 //zig fmt: off
@@ -4346,7 +4330,7 @@ const other_uppercase_ranges = [_]Range {
 //zig fmt: on
 
 pub inline fn isOtherUppercase(cp: CodePoint) bool {
-    return searchRange(cp, &other_uppercase_ranges);
+    return utils.containsInRange(Range, CodePoint, "start", "end", &other_uppercase_ranges, cp);
 }
 
 //zig fmt: off
@@ -4362,7 +4346,7 @@ const other_lowercase_ranges = [_]Range {
 //zig fmt: on
 
 pub inline fn isOtherLowercase(cp: CodePoint) bool {
-    return searchRange(cp, &other_lowercase_ranges);
+    return utils.containsInRange(Range, CodePoint, "start", "end", &other_lowercase_ranges, cp);
 }
 
 //zig fmt: off
@@ -4400,6 +4384,6 @@ const terminal_punctuation_ranges = [_]Range {
 //zig fmt: on
 
 pub inline fn isTerminalPunctuation(cp: CodePoint) bool {
-    return searchRange(cp, &terminal_punctuation_ranges);
+    return utils.containsInRange(Range, CodePoint, "start", "end", &terminal_punctuation_ranges, cp);
 }
 

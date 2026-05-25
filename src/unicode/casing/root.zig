@@ -1,5 +1,6 @@
 const std = @import("std");
 const encoding = @import("encoding");
+const utils = @import("utils");
 const types = @import("../types.zig");
 const unicode_data = @import("../generated/unicode_data.zig");
 
@@ -96,25 +97,15 @@ fn singletonResult(comptime cap: usize, code_point: CodePoint) CaseMappingResult
 }
 
 fn simpleCaseMap(table: []const unicode_data.CaseMappingRangeEntry, code_point: CodePoint) CodePoint {
-    if (table.len == 0) return code_point;
-
-    var low: usize = 0;
-    var high: usize = table.len;
-
-    while (low < high) {
-        const mid = low + (high - low) / 2;
-        const range = table[mid];
-
-        if (code_point < range.start) {
-            high = mid;
-        } else if (code_point > range.end) {
-            low = mid + 1;
-        } else {
-            return @intCast(@as(i32, @intCast(code_point)) + range.delta);
-        }
-    }
-
-    return code_point;
+    const range = utils.searchRange(
+        unicode_data.CaseMappingRangeEntry,
+        CodePoint,
+        "start",
+        "end",
+        table,
+        code_point,
+    ) orelse return code_point;
+    return @intCast(@as(i32, @intCast(code_point)) + range.delta);
 }
 
 pub fn toUpperCase(code_point: CodePoint) CodePoint {

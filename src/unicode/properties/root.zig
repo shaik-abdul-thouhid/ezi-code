@@ -1,5 +1,6 @@
 const std = @import("std");
 const encoding = @import("encoding");
+const utils = @import("utils");
 const types = @import("../types.zig");
 
 pub const unicode_data = @import("../generated/unicode_data.zig");
@@ -27,25 +28,15 @@ pub fn hasDerivedProperty(code_point: CodePoint, property: DerivedProperty) bool
 }
 
 pub fn canonicalCombiningClass(code_point: CodePoint) CanonicalCombiningClass {
-    if (combining_class_table.len == 0) return 0;
-
-    var low: usize = 0;
-    var high: usize = combining_class_table.len;
-
-    while (low < high) {
-        const mid = low + (high - low) / 2;
-        const range = combining_class_table[mid];
-
-        if (code_point < range.range_start) {
-            high = mid;
-        } else if (code_point > range.range_end) {
-            low = mid + 1;
-        } else {
-            return range.ccc;
-        }
-    }
-
-    return .not_reordered;
+    const entry = utils.searchRange(
+        @TypeOf(combining_class_table[0]),
+        CodePoint,
+        "range_start",
+        "range_end",
+        &combining_class_table,
+        code_point,
+    ) orelse return .not_reordered;
+    return entry.ccc;
 }
 
 pub fn generalCategory(code_point: CodePoint) GeneralCategory {

@@ -2,7 +2,9 @@
 //! To regenerate run `zig build generate` in same level
 //! as `build.zig` file.
 
+const std = @import("std");
 const CodePoint = @import("encoding").CodePoint;
+const utils = @import("utils");
 
 pub const Mapping = struct {
     lower: []const CodePoint,
@@ -725,21 +727,12 @@ pub const mappings_table = [_]CaseMapEntry{
 };
 // zig fmt: on
 
+fn compareEntry(needle: CodePoint, item: CaseMapEntry) std.math.Order {
+    return std.math.order(needle, item.code_point);
+}
+
 fn findEntry(code_point: CodePoint) ?CaseMapEntry {
-    var left: usize = 0;
-    var right: usize = mappings_table.len;
-    while (left < right) {
-        const mid = left + (right - left) / 2;
-        const entry = mappings_table[mid];
-
-        if (code_point < entry.code_point) {
-            right = mid;
-        } else if (code_point > entry.code_point) {
-            left = mid + 1;
-        } else return entry;
-    }
-
-    return null;
+    return utils.binarySearchEntry(CaseMapEntry, &mappings_table, code_point, compareEntry);
 }
 
 pub fn lookup(comptime locale: Locale, comptime condition: Condition, code_point: CodePoint) ?Mapping {

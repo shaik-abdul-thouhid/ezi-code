@@ -1127,7 +1127,9 @@ fn generateCaseFolding(arena: std.mem.Allocator, io: std.Io, data: []const u8, u
         \\//! To regenerate run `zig build generate` in same level
         \\//! as `build.zig` file.
         \\
+        \\const std = @import("std");
         \\const CodePoint = @import("encoding").CodePoint;
+        \\const utils = @import("utils");
         \\
         \\const unicode_types = @import("../../types.zig");
         \\const CaseFoldingMode = unicode_types.CaseFoldingMode;
@@ -1138,6 +1140,10 @@ fn generateCaseFolding(arena: std.mem.Allocator, io: std.Io, data: []const u8, u
         \\    from: CodePoint,
         \\    to: []const CodePoint,
         \\};
+        \\
+        \\fn compareFoldEntry(needle: CodePoint, item: FoldEntry) std.math.Order {
+        \\    return std.math.order(needle, item.from);
+        \\}
         \\
         \\
     );
@@ -1175,25 +1181,8 @@ fn generateCaseFolding(arena: std.mem.Allocator, io: std.Io, data: []const u8, u
 
     try writer.writeAll(
         \\fn lookupTable(comptime mode: CaseFoldingMode, comptime table: []const FoldEntry, code_point: CodePoint) ?FoldResult(mode) {
-        \\    var left: usize = 0;
-        \\    var right: usize = table.len;
-        \\
-        \\    while (left < right) {
-        \\        const mid = left + (right - left) / 2;
-        \\        const entry = table[mid];
-        \\
-        \\        if (code_point < entry.from) {
-        \\            right = mid;
-        \\        } else if (code_point > entry.from) {
-        \\            left = mid + 1;
-        \\        } else {
-        \\            return if (FoldResult(mode) == CodePoint)
-        \\                entry.to[0]
-        \\            else entry.to;
-        \\        }
-        \\    }
-        \\
-        \\    return null;
+        \\    const entry = utils.binarySearchEntry(FoldEntry, table, code_point, compareFoldEntry) orelse return null;
+        \\    return if (comptime FoldResult(mode) == CodePoint) entry.to[0] else entry.to;
         \\}
         \\
         \\pub fn lookup(comptime mode: CaseFoldingMode, comptime locale: CaseFoldingLocale, code_point: CodePoint) ?FoldResult(mode) {
@@ -1344,7 +1333,9 @@ fn generateSpecialCasing(arena: std.mem.Allocator, io: std.Io, data: []const u8,
         \\//! To regenerate run `zig build generate` in same level
         \\//! as `build.zig` file.
         \\
+        \\const std = @import("std");
         \\const CodePoint = @import("encoding").CodePoint;
+        \\const utils = @import("utils");
         \\
         \\pub const Mapping = struct {
         \\    lower: []const CodePoint,
@@ -1477,21 +1468,12 @@ fn generateSpecialCasing(arena: std.mem.Allocator, io: std.Io, data: []const u8,
         \\};
         \\// zig fmt: on
         \\
+        \\fn compareEntry(needle: CodePoint, item: CaseMapEntry) std.math.Order {
+        \\    return std.math.order(needle, item.code_point);
+        \\}
+        \\
         \\fn findEntry(code_point: CodePoint) ?CaseMapEntry {
-        \\    var left: usize = 0;
-        \\    var right: usize = mappings_table.len;
-        \\    while (left < right) {
-        \\        const mid = left + (right - left) / 2;
-        \\        const entry = mappings_table[mid];
-        \\
-        \\        if (code_point < entry.code_point) {
-        \\            right = mid;
-        \\        } else if (code_point > entry.code_point) {
-        \\            left = mid + 1;
-        \\        } else return entry;
-        \\    }
-        \\
-        \\    return null;
+        \\    return utils.binarySearchEntry(CaseMapEntry, &mappings_table, code_point, compareEntry);
         \\}
         \\
         \\pub fn lookup(comptime locale: Locale, comptime condition: Condition, code_point: CodePoint) ?Mapping {
@@ -1602,25 +1584,9 @@ fn generatePropList(arena: std.mem.Allocator, io: std.Io, data: []const u8, url:
         \\//! as `build.zig` file.
         \\
         \\const CodePoint = @import("encoding").CodePoint;
+        \\const utils = @import("utils");
         \\
         \\const Range = struct { start: CodePoint, end: CodePoint };
-        \\
-        \\fn searchRange(cp: CodePoint, ranges: []const Range) bool {
-        \\    var lo: usize = 0;
-        \\    var hi: usize = ranges.len;
-        \\    while (lo < hi) {
-        \\        const mid = lo + (hi - lo) / 2;
-        \\        const r = ranges[mid];
-        \\        if (cp < r.start) {
-        \\            hi = mid;
-        \\        } else if (cp > r.end) {
-        \\            lo = mid + 1;
-        \\        } else {
-        \\            return true;
-        \\        }
-        \\    }
-        \\    return false;
-        \\}
         \\
         \\
     );
@@ -1649,7 +1615,7 @@ fn generatePropList(arena: std.mem.Allocator, io: std.Io, data: []const u8, url:
 
             try writer.print(
                 \\pub inline fn is{c}{s}(cp: CodePoint) bool {{
-                \\    return searchRange(cp, &{s}_ranges);
+                \\    return utils.containsInRange(Range, CodePoint, "start", "end", &{s}_ranges, cp);
                 \\}}
                 \\
                 \\
