@@ -7,6 +7,13 @@ const derived = @import("../properties/generated/derived_core_properties.zig");
 const prop_list = @import("../properties/generated/prop_list.zig");
 const case_folding = @import("../casing/generated/case_folding.zig");
 const special_casing = @import("../casing/generated/special_casing.zig");
+const grapheme_break = @import("../segmentation/generated/grapheme_break.zig");
+const emoji_data = @import("../segmentation/generated/emoji_data.zig");
+const word_break = @import("../segmentation/generated/word_break.zig");
+const sentence_break = @import("../segmentation/generated/sentence_break.zig");
+const line_break = @import("../segmentation/generated/line_break.zig");
+const east_asian_width = @import("../width/generated/east_asian_width.zig");
+const segmentation = @import("../segmentation/root.zig");
 const unicode_types = @import("../types.zig");
 
 const CodePoint = encoding.CodePoint;
@@ -17,6 +24,13 @@ const derived_core_properties_path = "ucd/DerivedCoreProperties.txt";
 const prop_list_path = "ucd/PropList.txt";
 const case_folding_path = "ucd/CaseFolding.txt";
 const special_casing_path = "ucd/SpecialCasing.txt";
+const grapheme_break_property_path = "ucd/GraphemeBreakProperty.txt";
+const grapheme_break_test_path = "ucd/GraphemeBreakTest.txt";
+const word_break_property_path = "ucd/WordBreakProperty.txt";
+const sentence_break_property_path = "ucd/SentenceBreakProperty.txt";
+const line_break_path = "ucd/LineBreak.txt";
+const east_asian_width_path = "ucd/EastAsianWidth.txt";
+const emoji_data_path = "ucd/emoji-data.txt";
 
 fn cleanData(line: []const u8) []const u8 {
     var comment_split = std.mem.splitScalar(u8, line, '#');
@@ -548,6 +562,512 @@ test "ucd hostile: every PropList property predicate matches every codepoint" {
         if (!seen.contains(entry.label)) {
             std.debug.print("predicate '{s}' has no rows in PropList.txt\n", .{entry.label});
             return error.PredicateMissingFromPropList;
+        }
+    }
+}
+
+fn graphemeBreakFromUcd(raw: []const u8) ?grapheme_break.GraphemeBreakProperty {
+    const label = std.mem.trim(u8, raw, " \t\r");
+    if (std.mem.eql(u8, label, "CR")) return .cr;
+    if (std.mem.eql(u8, label, "LF")) return .lf;
+    if (std.mem.eql(u8, label, "Control")) return .control;
+    if (std.mem.eql(u8, label, "Extend")) return .extend;
+    if (std.mem.eql(u8, label, "ZWJ")) return .zwj;
+    if (std.mem.eql(u8, label, "Regional_Indicator")) return .regional_indicator;
+    if (std.mem.eql(u8, label, "Prepend")) return .prepend;
+    if (std.mem.eql(u8, label, "SpacingMark")) return .spacing_mark;
+    if (std.mem.eql(u8, label, "L")) return .l;
+    if (std.mem.eql(u8, label, "V")) return .v;
+    if (std.mem.eql(u8, label, "T")) return .t;
+    if (std.mem.eql(u8, label, "LV")) return .lv;
+    if (std.mem.eql(u8, label, "LVT")) return .lvt;
+    return null;
+}
+
+test "ucd hostile: GraphemeBreakProperty.txt assigns the same property to every codepoint as the generated table" {
+    const allocator = testing.allocator;
+    const txt = try std.Io.Dir.cwd().readFileAlloc(
+        testing.io,
+        grapheme_break_property_path,
+        allocator,
+        .limited(1024 * 1024),
+    );
+    defer allocator.free(txt);
+
+    // Default is .none ("Other" / XX) for every codepoint not explicitly listed.
+    const expected = try allocator.alloc(grapheme_break.GraphemeBreakProperty, 0x110000);
+    defer allocator.free(expected);
+    @memset(expected, .none);
+
+    var lines = std.mem.splitScalar(u8, txt, '\n');
+    while (lines.next()) |raw_line| {
+        const line = cleanData(raw_line);
+        if (line.len == 0) continue;
+
+        var parts = std.mem.splitScalar(u8, line, ';');
+        const range = try parseRange(parts.next() orelse return error.BadGraphemeBreakLine);
+        const label_raw = parts.next() orelse return error.BadGraphemeBreakLine;
+        const prop = graphemeBreakFromUcd(label_raw) orelse {
+            std.debug.print("unknown GraphemeBreakProperty label: '{s}'\n", .{std.mem.trim(u8, label_raw, " \t\r")});
+            return error.UnknownGraphemeBreakLabel;
+        };
+
+        for (@as(usize, range.start)..@as(usize, range.end) + 1) |cp_usize| {
+            expected[cp_usize] = prop;
+        }
+    }
+
+    for (expected, 0..) |want, cp| {
+        try testing.expectEqual(want, grapheme_break.graphemeBreakProperty(@intCast(cp)));
+    }
+
+    // Above 0x10FFFF the generated lookup must still return .none.
+    try testing.expectEqual(grapheme_break.GraphemeBreakProperty.none, grapheme_break.graphemeBreakProperty(0x110000));
+    try testing.expectEqual(grapheme_break.GraphemeBreakProperty.none, grapheme_break.graphemeBreakProperty(0x1FFFFF));
+}
+
+// ÷ U+00F7 — UTF-8 0xC3 0xB7 — break opportunity in GraphemeBreakTest.txt.
+const grapheme_break_marker = "\xC3\xB7";
+// × U+00D7 — UTF-8 0xC3 0x97 — no break.
+const grapheme_no_break_marker = "\xC3\x97";
+
+const ParsedGraphemeLine = struct {
+    code_points: []CodePoint,
+    boundaries: []bool,
+
+    fn deinit(self: *ParsedGraphemeLine, allocator: std.mem.Allocator) void {
+        allocator.free(self.code_points);
+        allocator.free(self.boundaries);
+    }
+};
+
+fn parseGraphemeTestLine(allocator: std.mem.Allocator, data_part: []const u8) !ParsedGraphemeLine {
+    var code_points: std.ArrayList(CodePoint) = .empty;
+    errdefer code_points.deinit(allocator);
+    var boundaries: std.ArrayList(bool) = .empty;
+    errdefer boundaries.deinit(allocator);
+
+    var tokens = std.mem.tokenizeAny(u8, data_part, " \t");
+    while (tokens.next()) |tok| {
+        if (std.mem.eql(u8, tok, grapheme_break_marker)) {
+            try boundaries.append(allocator, true);
+        } else if (std.mem.eql(u8, tok, grapheme_no_break_marker)) {
+            try boundaries.append(allocator, false);
+        } else {
+            const cp = try std.fmt.parseInt(CodePoint, tok, 16);
+            try code_points.append(allocator, cp);
+        }
+    }
+
+    return .{
+        .code_points = try code_points.toOwnedSlice(allocator),
+        .boundaries = try boundaries.toOwnedSlice(allocator),
+    };
+}
+
+fn computeGraphemeBoundaries(allocator: std.mem.Allocator, code_points: []const CodePoint) ![]bool {
+    const out = try allocator.alloc(bool, code_points.len + 1);
+    errdefer allocator.free(out);
+
+    @memset(out, true); // sot at [0] and eot at [len] are always breaks.
+    var state: segmentation.BoundaryState = .{};
+    for (code_points, 0..) |cp, i| {
+        const decision = segmentation.checkBoundary(state, cp);
+        if (i > 0) out[i] = decision.should_break;
+        state = decision.new_state;
+    }
+    return out;
+}
+
+test "ucd hostile: GraphemeBreakTest.txt full conformance (including GB11 Extended_Pictographic)" {
+    const allocator = testing.allocator;
+    const text = try std.Io.Dir.cwd().readFileAlloc(
+        testing.io,
+        grapheme_break_test_path,
+        allocator,
+        .limited(4 * 1024 * 1024),
+    );
+    defer allocator.free(text);
+
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    var line_no: usize = 0;
+    var tested: usize = 0;
+    while (lines.next()) |raw_line| {
+        line_no += 1;
+        const trimmed = std.mem.trim(u8, raw_line, " \t\r");
+        if (trimmed.len == 0 or trimmed[0] == '#') continue;
+
+        const hash_idx = std.mem.indexOfScalar(u8, trimmed, '#') orelse trimmed.len;
+        const data_part = std.mem.trim(u8, trimmed[0..hash_idx], " \t");
+        const comment = if (hash_idx < trimmed.len) trimmed[hash_idx + 1 ..] else "";
+
+        var parsed = try parseGraphemeTestLine(allocator, data_part);
+        defer parsed.deinit(allocator);
+
+        try testing.expectEqual(parsed.code_points.len + 1, parsed.boundaries.len);
+
+        const actual = try computeGraphemeBoundaries(allocator, parsed.code_points);
+        defer allocator.free(actual);
+
+        for (parsed.boundaries, actual, 0..) |want, got, i| {
+            if (want != got) {
+                std.debug.print(
+                    "GraphemeBreakTest.txt line {d}: boundary index {d} expected {} got {}\n  data: {s}\n  comment: {s}\n",
+                    .{ line_no, i, want, got, data_part, comment },
+                );
+                return error.GraphemeBreakBoundaryMismatch;
+            }
+        }
+        tested += 1;
+    }
+
+    try testing.expect(tested > 0);
+}
+
+test "ucd: parseGraphemeTestLine round-trips a representative line" {
+    const allocator = testing.allocator;
+    const data = grapheme_break_marker ++ " 000D " ++ grapheme_no_break_marker ++ " 000A " ++ grapheme_break_marker;
+    var parsed = try parseGraphemeTestLine(allocator, data);
+    defer parsed.deinit(allocator);
+    try testing.expectEqual(@as(usize, 2), parsed.code_points.len);
+    try testing.expectEqual(@as(CodePoint, 0x000D), parsed.code_points[0]);
+    try testing.expectEqual(@as(CodePoint, 0x000A), parsed.code_points[1]);
+    try testing.expectEqualSlices(bool, &.{ true, false, true }, parsed.boundaries);
+}
+
+test "ucd: computeGraphemeBoundaries on a trivial CR LF sequence" {
+    const allocator = testing.allocator;
+    const cps = [_]CodePoint{ 0x000D, 0x000A };
+    const got = try computeGraphemeBoundaries(allocator, &cps);
+    defer allocator.free(got);
+    try testing.expectEqualSlices(bool, &.{ true, false, true }, got);
+}
+
+// ============================================================================
+// Conformance for the Tier 1 generators added in this session.
+// Each one walks the UCD source file, builds an expected dense array across
+// every scalar, and verifies the generated lookup matches everywhere.
+// ============================================================================
+
+fn wordBreakFromUcd(raw: []const u8) ?word_break.WordBreakProperty {
+    const label = std.mem.trim(u8, raw, " \t\r");
+    if (std.mem.eql(u8, label, "Other")) return .other;
+    if (std.mem.eql(u8, label, "ALetter")) return .aletter;
+    if (std.mem.eql(u8, label, "CR")) return .cr;
+    if (std.mem.eql(u8, label, "Double_Quote")) return .double_quote;
+    if (std.mem.eql(u8, label, "Extend")) return .extend;
+    if (std.mem.eql(u8, label, "ExtendNumLet")) return .extend_num_let;
+    if (std.mem.eql(u8, label, "Format")) return .format;
+    if (std.mem.eql(u8, label, "Hebrew_Letter")) return .hebrew_letter;
+    if (std.mem.eql(u8, label, "Katakana")) return .katakana;
+    if (std.mem.eql(u8, label, "LF")) return .lf;
+    if (std.mem.eql(u8, label, "MidLetter")) return .mid_letter;
+    if (std.mem.eql(u8, label, "MidNum")) return .mid_num;
+    if (std.mem.eql(u8, label, "MidNumLet")) return .mid_num_let;
+    if (std.mem.eql(u8, label, "Newline")) return .newline;
+    if (std.mem.eql(u8, label, "Numeric")) return .numeric;
+    if (std.mem.eql(u8, label, "Regional_Indicator")) return .regional_indicator;
+    if (std.mem.eql(u8, label, "Single_Quote")) return .single_quote;
+    if (std.mem.eql(u8, label, "WSegSpace")) return .wseg_space;
+    if (std.mem.eql(u8, label, "ZWJ")) return .zwj;
+    return null;
+}
+
+test "ucd hostile: WordBreakProperty.txt assigns the same property to every codepoint" {
+    const allocator = testing.allocator;
+    const txt = try std.Io.Dir.cwd().readFileAlloc(testing.io, word_break_property_path, allocator, .limited(2 * 1024 * 1024));
+    defer allocator.free(txt);
+
+    const expected = try allocator.alloc(word_break.WordBreakProperty, 0x110000);
+    defer allocator.free(expected);
+    @memset(expected, .other);
+
+    var lines = std.mem.splitScalar(u8, txt, '\n');
+    while (lines.next()) |raw_line| {
+        const line = cleanData(raw_line);
+        if (line.len == 0) continue;
+        var parts = std.mem.splitScalar(u8, line, ';');
+        const range = try parseRange(parts.next() orelse return error.BadWordBreakLine);
+        const label = parts.next() orelse return error.BadWordBreakLine;
+        const prop = wordBreakFromUcd(label) orelse {
+            std.debug.print("unknown WordBreakProperty label: '{s}'\n", .{std.mem.trim(u8, label, " \t\r")});
+            return error.UnknownWordBreakLabel;
+        };
+        for (@as(usize, range.start)..@as(usize, range.end) + 1) |cp| expected[cp] = prop;
+    }
+
+    for (expected, 0..) |want, cp| {
+        try testing.expectEqual(want, word_break.wordBreakProperty(@intCast(cp)));
+    }
+    try testing.expectEqual(word_break.WordBreakProperty.other, word_break.wordBreakProperty(0x110000));
+}
+
+fn sentenceBreakFromUcd(raw: []const u8) ?sentence_break.SentenceBreakProperty {
+    const label = std.mem.trim(u8, raw, " \t\r");
+    if (std.mem.eql(u8, label, "Other")) return .other;
+    if (std.mem.eql(u8, label, "ATerm")) return .aterm;
+    if (std.mem.eql(u8, label, "Close")) return .close;
+    if (std.mem.eql(u8, label, "CR")) return .cr;
+    if (std.mem.eql(u8, label, "Extend")) return .extend;
+    if (std.mem.eql(u8, label, "Format")) return .format;
+    if (std.mem.eql(u8, label, "LF")) return .lf;
+    if (std.mem.eql(u8, label, "Lower")) return .lower;
+    if (std.mem.eql(u8, label, "Numeric")) return .numeric;
+    if (std.mem.eql(u8, label, "OLetter")) return .oletter;
+    if (std.mem.eql(u8, label, "SContinue")) return .scontinue;
+    if (std.mem.eql(u8, label, "Sep")) return .sep;
+    if (std.mem.eql(u8, label, "Sp")) return .sp;
+    if (std.mem.eql(u8, label, "STerm")) return .sterm;
+    if (std.mem.eql(u8, label, "Upper")) return .upper;
+    return null;
+}
+
+test "ucd hostile: SentenceBreakProperty.txt assigns the same property to every codepoint" {
+    const allocator = testing.allocator;
+    const txt = try std.Io.Dir.cwd().readFileAlloc(testing.io, sentence_break_property_path, allocator, .limited(2 * 1024 * 1024));
+    defer allocator.free(txt);
+
+    const expected = try allocator.alloc(sentence_break.SentenceBreakProperty, 0x110000);
+    defer allocator.free(expected);
+    @memset(expected, .other);
+
+    var lines = std.mem.splitScalar(u8, txt, '\n');
+    while (lines.next()) |raw_line| {
+        const line = cleanData(raw_line);
+        if (line.len == 0) continue;
+        var parts = std.mem.splitScalar(u8, line, ';');
+        const range = try parseRange(parts.next() orelse return error.BadSentenceBreakLine);
+        const label = parts.next() orelse return error.BadSentenceBreakLine;
+        const prop = sentenceBreakFromUcd(label) orelse {
+            std.debug.print("unknown SentenceBreakProperty label: '{s}'\n", .{std.mem.trim(u8, label, " \t\r")});
+            return error.UnknownSentenceBreakLabel;
+        };
+        for (@as(usize, range.start)..@as(usize, range.end) + 1) |cp| expected[cp] = prop;
+    }
+
+    for (expected, 0..) |want, cp| {
+        try testing.expectEqual(want, sentence_break.sentenceBreakProperty(@intCast(cp)));
+    }
+    try testing.expectEqual(sentence_break.SentenceBreakProperty.other, sentence_break.sentenceBreakProperty(0x110000));
+}
+
+fn lineBreakFromUcd(raw: []const u8) ?line_break.LineBreak {
+    const label = std.mem.trim(u8, raw, " \t\r");
+    if (std.mem.eql(u8, label, "XX")) return .xx;
+    if (std.mem.eql(u8, label, "AI")) return .ai;
+    if (std.mem.eql(u8, label, "AK")) return .ak;
+    if (std.mem.eql(u8, label, "AL")) return .al;
+    if (std.mem.eql(u8, label, "AP")) return .ap;
+    if (std.mem.eql(u8, label, "AS")) return .as;
+    if (std.mem.eql(u8, label, "B2")) return .b2;
+    if (std.mem.eql(u8, label, "BA")) return .ba;
+    if (std.mem.eql(u8, label, "BB")) return .bb;
+    if (std.mem.eql(u8, label, "BK")) return .bk;
+    if (std.mem.eql(u8, label, "CB")) return .cb;
+    if (std.mem.eql(u8, label, "CJ")) return .cj;
+    if (std.mem.eql(u8, label, "CL")) return .cl;
+    if (std.mem.eql(u8, label, "CM")) return .cm;
+    if (std.mem.eql(u8, label, "CP")) return .cp;
+    if (std.mem.eql(u8, label, "CR")) return .cr;
+    if (std.mem.eql(u8, label, "EB")) return .eb;
+    if (std.mem.eql(u8, label, "EM")) return .em;
+    if (std.mem.eql(u8, label, "EX")) return .ex;
+    if (std.mem.eql(u8, label, "GL")) return .gl;
+    if (std.mem.eql(u8, label, "H2")) return .h2;
+    if (std.mem.eql(u8, label, "H3")) return .h3;
+    if (std.mem.eql(u8, label, "HH")) return .hh;
+    if (std.mem.eql(u8, label, "HL")) return .hl;
+    if (std.mem.eql(u8, label, "HY")) return .hy;
+    if (std.mem.eql(u8, label, "ID")) return .id;
+    if (std.mem.eql(u8, label, "IN")) return .in;
+    if (std.mem.eql(u8, label, "IS")) return .is;
+    if (std.mem.eql(u8, label, "JL")) return .jl;
+    if (std.mem.eql(u8, label, "JT")) return .jt;
+    if (std.mem.eql(u8, label, "JV")) return .jv;
+    if (std.mem.eql(u8, label, "LF")) return .lf;
+    if (std.mem.eql(u8, label, "NL")) return .nl;
+    if (std.mem.eql(u8, label, "NS")) return .ns;
+    if (std.mem.eql(u8, label, "NU")) return .nu;
+    if (std.mem.eql(u8, label, "OP")) return .op;
+    if (std.mem.eql(u8, label, "PO")) return .po;
+    if (std.mem.eql(u8, label, "PR")) return .pr;
+    if (std.mem.eql(u8, label, "QU")) return .qu;
+    if (std.mem.eql(u8, label, "RI")) return .ri;
+    if (std.mem.eql(u8, label, "SA")) return .sa;
+    if (std.mem.eql(u8, label, "SG")) return .sg;
+    if (std.mem.eql(u8, label, "SP")) return .sp;
+    if (std.mem.eql(u8, label, "SY")) return .sy;
+    if (std.mem.eql(u8, label, "VF")) return .vf;
+    if (std.mem.eql(u8, label, "VI")) return .vi;
+    if (std.mem.eql(u8, label, "WJ")) return .wj;
+    if (std.mem.eql(u8, label, "ZW")) return .zw;
+    if (std.mem.eql(u8, label, "ZWJ")) return .zwj;
+    return null;
+}
+
+test "ucd hostile: LineBreak.txt assigns the same property to every codepoint" {
+    const allocator = testing.allocator;
+    const txt = try std.Io.Dir.cwd().readFileAlloc(testing.io, line_break_path, allocator, .limited(4 * 1024 * 1024));
+    defer allocator.free(txt);
+
+    const expected = try allocator.alloc(line_break.LineBreak, 0x110000);
+    defer allocator.free(expected);
+    @memset(expected, .xx);
+
+    var lines = std.mem.splitScalar(u8, txt, '\n');
+    while (lines.next()) |raw_line| {
+        const line = cleanData(raw_line);
+        if (line.len == 0) continue;
+        var parts = std.mem.splitScalar(u8, line, ';');
+        const range = try parseRange(parts.next() orelse return error.BadLineBreakLine);
+        const label = parts.next() orelse return error.BadLineBreakLine;
+        const prop = lineBreakFromUcd(label) orelse {
+            std.debug.print("unknown LineBreak label: '{s}'\n", .{std.mem.trim(u8, label, " \t\r")});
+            return error.UnknownLineBreakLabel;
+        };
+        for (@as(usize, range.start)..@as(usize, range.end) + 1) |cp| expected[cp] = prop;
+    }
+
+    for (expected, 0..) |want, cp| {
+        try testing.expectEqual(want, line_break.lineBreak(@intCast(cp)));
+    }
+    try testing.expectEqual(line_break.LineBreak.xx, line_break.lineBreak(0x110000));
+}
+
+fn eastAsianWidthFromUcd(raw: []const u8) ?east_asian_width.EastAsianWidth {
+    const label = std.mem.trim(u8, raw, " \t\r");
+    if (std.mem.eql(u8, label, "N")) return .n;
+    if (std.mem.eql(u8, label, "A")) return .a;
+    if (std.mem.eql(u8, label, "F")) return .f;
+    if (std.mem.eql(u8, label, "H")) return .h;
+    if (std.mem.eql(u8, label, "Na")) return .na;
+    if (std.mem.eql(u8, label, "W")) return .w;
+    return null;
+}
+
+test "ucd hostile: EastAsianWidth.txt assigns the same property to every codepoint" {
+    const allocator = testing.allocator;
+    const txt = try std.Io.Dir.cwd().readFileAlloc(testing.io, east_asian_width_path, allocator, .limited(2 * 1024 * 1024));
+    defer allocator.free(txt);
+
+    const expected = try allocator.alloc(east_asian_width.EastAsianWidth, 0x110000);
+    defer allocator.free(expected);
+    @memset(expected, .n);
+
+    var lines = std.mem.splitScalar(u8, txt, '\n');
+    while (lines.next()) |raw_line| {
+        const line = cleanData(raw_line);
+        if (line.len == 0) continue;
+        var parts = std.mem.splitScalar(u8, line, ';');
+        const range = try parseRange(parts.next() orelse return error.BadEastAsianWidthLine);
+        const label = parts.next() orelse return error.BadEastAsianWidthLine;
+        const prop = eastAsianWidthFromUcd(label) orelse {
+            std.debug.print("unknown EastAsianWidth label: '{s}'\n", .{std.mem.trim(u8, label, " \t\r")});
+            return error.UnknownEastAsianWidthLabel;
+        };
+        for (@as(usize, range.start)..@as(usize, range.end) + 1) |cp| expected[cp] = prop;
+    }
+
+    for (expected, 0..) |want, cp| {
+        try testing.expectEqual(want, east_asian_width.eastAsianWidth(@intCast(cp)));
+    }
+    try testing.expectEqual(east_asian_width.EastAsianWidth.n, east_asian_width.eastAsianWidth(0x110000));
+}
+
+const EmojiPredicate = struct {
+    label: []const u8,
+    predicate: *const fn (CodePoint) bool,
+};
+
+fn wrapEmoji(comptime f: fn (CodePoint) callconv(.@"inline") bool) *const fn (CodePoint) bool {
+    const Wrapper = struct {
+        fn call(cp: CodePoint) bool {
+            return f(cp);
+        }
+    };
+    return &Wrapper.call;
+}
+
+const emoji_predicates = [_]EmojiPredicate{
+    .{ .label = "Emoji", .predicate = wrapEmoji(emoji_data.isEmoji) },
+    .{ .label = "Emoji_Presentation", .predicate = wrapEmoji(emoji_data.isEmojiPresentation) },
+    .{ .label = "Emoji_Modifier", .predicate = wrapEmoji(emoji_data.isEmojiModifier) },
+    .{ .label = "Emoji_Modifier_Base", .predicate = wrapEmoji(emoji_data.isEmojiModifierBase) },
+    .{ .label = "Emoji_Component", .predicate = wrapEmoji(emoji_data.isEmojiComponent) },
+    .{ .label = "Extended_Pictographic", .predicate = wrapEmoji(emoji_data.isExtendedPictographic) },
+};
+
+fn predicateForEmojiLabel(label: []const u8) ?*const fn (CodePoint) bool {
+    for (emoji_predicates) |entry| {
+        if (std.mem.eql(u8, label, entry.label)) return entry.predicate;
+    }
+    return null;
+}
+
+test "ucd hostile: every emoji-data property predicate matches every codepoint" {
+    const allocator = testing.allocator;
+    const txt = try std.Io.Dir.cwd().readFileAlloc(testing.io, emoji_data_path, allocator, .limited(1024 * 1024));
+    defer allocator.free(txt);
+
+    var groups: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(struct { start: CodePoint, end: CodePoint })) = .empty;
+    defer {
+        var it_free = groups.iterator();
+        while (it_free.next()) |e| {
+            e.value_ptr.deinit(allocator);
+            allocator.free(e.key_ptr.*);
+        }
+        groups.deinit(allocator);
+    }
+
+    var lines = std.mem.splitScalar(u8, txt, '\n');
+    while (lines.next()) |raw_line| {
+        const line = cleanData(raw_line);
+        if (line.len == 0) continue;
+
+        var parts = std.mem.splitScalar(u8, line, ';');
+        const range = try parseRange(parts.next() orelse return error.BadEmojiDataLine);
+        const label = std.mem.trim(u8, parts.next() orelse return error.BadEmojiDataLine, " \t\r");
+
+        const gop = try groups.getOrPut(allocator, label);
+        if (!gop.found_existing) {
+            gop.key_ptr.* = try allocator.dupe(u8, label);
+            gop.value_ptr.* = .empty;
+        }
+        try gop.value_ptr.append(allocator, .{ .start = range.start, .end = range.end });
+    }
+
+    const dense = try allocator.alloc(bool, 0x110000);
+    defer allocator.free(dense);
+
+    var seen = std.StringHashMapUnmanaged(void).empty;
+    defer seen.deinit(allocator);
+
+    var it = groups.iterator();
+    while (it.next()) |entry| {
+        const label = entry.key_ptr.*;
+        const predicate = predicateForEmojiLabel(label) orelse {
+            std.debug.print("unknown emoji-data label: '{s}'\n", .{label});
+            return error.UnknownEmojiDataLabel;
+        };
+
+        @memset(dense, false);
+        for (entry.value_ptr.items) |r| {
+            for (@as(usize, r.start)..@as(usize, r.end) + 1) |cp| dense[cp] = true;
+        }
+
+        for (dense, 0..) |want, cp_usize| {
+            const cp: CodePoint = @intCast(cp_usize);
+            try testing.expectEqual(want, predicate(cp));
+        }
+
+        try seen.put(allocator, label, {});
+    }
+
+    // All six predicates we emit must correspond to a label in the file.
+    for (emoji_predicates) |entry| {
+        if (!seen.contains(entry.label)) {
+            std.debug.print("emoji predicate '{s}' has no rows in emoji-data.txt\n", .{entry.label});
+            return error.EmojiPredicateMissingFromFile;
         }
     }
 }
