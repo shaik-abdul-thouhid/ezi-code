@@ -14,7 +14,6 @@ pub const CanonicalCombiningClass = types.CanonicalCombiningClass;
 
 const CodePoint = encoding.CodePoint;
 
-pub const combining_class_table = unicode_data.combining_class_table;
 pub const lowercase_mapping_table = unicode_data.lowercase_range_mapping_table;
 pub const uppercase_mapping_table = unicode_data.uppercase_range_mapping_table;
 pub const titlecase_mapping_table = unicode_data.titlecase_range_mapping_table;
@@ -27,17 +26,7 @@ pub fn hasDerivedProperty(code_point: CodePoint, property: DerivedProperty) bool
     return derived_core_properties.codePointProperty(code_point, property);
 }
 
-pub fn canonicalCombiningClass(code_point: CodePoint) CanonicalCombiningClass {
-    const entry = utils.searchRange(
-        @TypeOf(combining_class_table[0]),
-        CodePoint,
-        "range_start",
-        "range_end",
-        &combining_class_table,
-        code_point,
-    ) orelse return .not_reordered;
-    return entry.ccc;
-}
+pub const canonicalCombiningClass = unicode_data.canonicalCombiningClass;
 
 pub fn generalCategory(code_point: CodePoint) GeneralCategory {
     return unicode_data.generalCategory(code_point);

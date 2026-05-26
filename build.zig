@@ -126,16 +126,69 @@ pub fn build(b: *std.Build) !void {
     test_step.dependOn(&run_transcoding_tests.step);
     test_step.dependOn(&run_unicode_tests.step);
 
+    // Benchmarks need optimization — Debug mode is so slow on the segmentation
+    // iterators (table-driven property lookups, per-codepoint lookahead) that
+    // a 16 KiB corpus appears to hang. Build a dedicated tree of modules at
+    // `bench_optimize` so library code is compiled with the same optimization
+    // as the benchmark driver. Honor `-Dbench-optimize=...` to override.
+    const bench_optimize = b.option(
+        std.builtin.OptimizeMode,
+        "bench-optimize",
+        "Optimization level for the bench executable (default ReleaseFast)",
+    ) orelse .ReleaseFast;
+
+    const bench_utils_module = b.createModule(.{
+        .root_source_file = b.path("src/utils/root.zig"),
+        .target = target,
+        .optimize = bench_optimize,
+    });
+    const bench_utils: std.Build.Module.Import = .{ .name = "utils", .module = bench_utils_module };
+
+    const bench_encoding_module = b.createModule(.{
+        .root_source_file = b.path("src/encoding/root.zig"),
+        .target = target,
+        .optimize = bench_optimize,
+        .imports = &.{bench_utils},
+    });
+    const bench_encoding: std.Build.Module.Import = .{ .name = "encoding", .module = bench_encoding_module };
+
+    const bench_transcoding_module = b.createModule(.{
+        .root_source_file = b.path("src/transcoding/root.zig"),
+        .target = target,
+        .optimize = bench_optimize,
+        .imports = &.{ bench_utils, bench_encoding },
+    });
+    const bench_transcoding: std.Build.Module.Import = .{ .name = "transcoding", .module = bench_transcoding_module };
+
+    const bench_unicode_module = b.createModule(.{
+        .root_source_file = b.path("src/unicode/root.zig"),
+        .target = target,
+        .optimize = bench_optimize,
+        .imports = &.{ bench_utils, bench_encoding },
+    });
+    const bench_unicode: std.Build.Module.Import = .{ .name = "unicode", .module = bench_unicode_module };
+
+    const bench_ezi_code_module = b.createModule(.{
+        .root_source_file = b.path("src/root.zig"),
+        .target = target,
+        .optimize = bench_optimize,
+        .imports = &.{ bench_utils, bench_encoding, bench_transcoding, bench_unicode },
+    });
+    const bench_root: std.Build.Module.Import = .{ .name = "ezi_code", .module = bench_ezi_code_module };
+
     const bench_exe = b.addExecutable(.{
         .name = "bench",
         .root_module = b.createModule(.{
             .root_source_file = b.path("bench/main.zig"),
             .target = target,
-            .optimize = optimize,
-            .imports = &.{root},
+            .optimize = bench_optimize,
+            .imports = &.{ bench_root, bench_utils },
         }),
     });
     const run_bench = b.addRunArtifact(bench_exe);
+    if (b.args) |args| {
+        run_bench.addArgs(args);
+    }
     const bench_step = b.step("bench", "Run Benchmarks");
     bench_step.dependOn(&run_bench.step);
 

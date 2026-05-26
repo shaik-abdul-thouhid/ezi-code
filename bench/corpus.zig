@@ -1,7 +1,18 @@
-//! Deterministic UTF-8 corpora tiled into backing buffers.
+//! Deterministic UTF-8 corpora used as benchmark inputs.
 
-/// Deterministic 4 KiB ASCII block.
-pub const ascii_stress_4k: [4096]u8 = blk: {
+const std = @import("std");
+const framework = @import("framework.zig");
+const Corpus = framework.Corpus;
+
+/// Default working-set size (per corpus). Big enough to spill L2 on most CPUs
+/// but small enough that 7 samples × 3 corpora finish in seconds.
+pub const default_size: usize = 2 * 1024 * 1024;
+
+/// Smaller corpus for cases that are O(n²) or allocator-heavy.
+pub const small_size: usize = 64 * 1024;
+
+/// Deterministic 4 KiB ASCII tile.
+pub const ascii_tile: [4096]u8 = blk: {
     @setEvalBranchQuota(20_000);
     var b: [4096]u8 = undefined;
     for (0..4096) |i| {
@@ -10,7 +21,7 @@ pub const ascii_stress_4k: [4096]u8 = blk: {
     break :blk b;
 };
 
-pub const normal_chunks = [_][]const u8{
+pub const multilingual_chunks = [_][]const u8{
     "Line0\t\r\n !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~\x7f",
     "The quick brown fox jumps over the lazy dog. Pack my box with five dozen liquor jugs.",
     "τὸ γὰρ αὐτὸ νοεῖν ἐστίν τε καὶ εἶναι· Heraclitus fragment.",
@@ -22,7 +33,8 @@ pub const normal_chunks = [_][]const u8{
     "דָּבָר מִתּוֹךְ כָּרָךְ — עברית עם ניקוד.",
     "ภาษาไทยสำหรับข้อความทั่วไปและสระต่างๆ",
     "မြန်မာဘာသာဖြင့် နေ့စဉ်သတင်းစာဖတ်ခြင်း။",
-    "Minimal emoji for realism: 🙂 Hallo 👋 thanks 🙏",
+    "Minimal emoji for realism: 🙂 Hallo 👋 thanks 🙏 The lazy dog sleeps.",
+    "Mixed sentence: She said, \"It works!\" Then they walked on. Another? Yes!",
 };
 
 pub const pathological_chunks = [_][]const u8{
@@ -46,10 +58,7 @@ pub fn fillFromChunks(buffer: []u8, chunks: []const []const u8) []const u8 {
         const chunk = chunks[i % chunks.len];
         i += 1;
         if (chunk.len > buffer.len - off) {
-            while (off < buffer.len) {
-                buffer[off] = '@';
-                off += 1;
-            }
+            while (off < buffer.len) : (off += 1) buffer[off] = '@';
             break;
         }
         @memcpy(buffer[off..][0..chunk.len], chunk);
@@ -62,9 +71,49 @@ pub fn fillAsciiOnly(buffer: []u8) []const u8 {
     var off: usize = 0;
     while (off < buffer.len) {
         const rem = buffer.len - off;
-        const n = @min(ascii_stress_4k.len, rem);
-        @memcpy(buffer[off..][0..n], ascii_stress_4k[0..n]);
+        const n = @min(ascii_tile.len, rem);
+        @memcpy(buffer[off..][0..n], ascii_tile[0..n]);
         off += n;
     }
     return buffer;
 }
+
+/// Owns three backing buffers — one per corpus. Free with `deinit`.
+pub const CorpusSet = struct {
+    allocator: std.mem.Allocator,
+    ascii_buf: []u8,
+    multilingual_buf: []u8,
+    pathological_buf: []u8,
+    corpora: [3]Corpus,
+
+    pub fn init(allocator: std.mem.Allocator, size: usize) !CorpusSet {
+        const a = try allocator.alloc(u8, size);
+        errdefer allocator.free(a);
+        const m = try allocator.alloc(u8, size);
+        errdefer allocator.free(m);
+        const p = try allocator.alloc(u8, size);
+        errdefer allocator.free(p);
+
+        const ascii = fillAsciiOnly(a);
+        const multi = fillFromChunks(m, &multilingual_chunks);
+        const patho = fillFromChunks(p, &pathological_chunks);
+
+        return .{
+            .allocator = allocator,
+            .ascii_buf = a,
+            .multilingual_buf = m,
+            .pathological_buf = p,
+            .corpora = .{
+                .{ .name = "ASCII", .bytes = ascii },
+                .{ .name = "Multilingual", .bytes = multi },
+                .{ .name = "Pathological", .bytes = patho },
+            },
+        };
+    }
+
+    pub fn deinit(self: *CorpusSet) void {
+        self.allocator.free(self.ascii_buf);
+        self.allocator.free(self.multilingual_buf);
+        self.allocator.free(self.pathological_buf);
+    }
+};

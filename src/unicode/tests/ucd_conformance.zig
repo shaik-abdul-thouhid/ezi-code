@@ -291,15 +291,7 @@ test "ucd hostile: UnicodeData generated categories, bidi classes, combining cla
 }
 
 fn lookupCombiningClass(cp: CodePoint) unicode_types.CanonicalCombiningClass {
-    const entry = utils.searchRange(
-        @TypeOf(unicode_data.combining_class_table[0]),
-        CodePoint,
-        "range_start",
-        "range_end",
-        &unicode_data.combining_class_table,
-        cp,
-    ) orelse return .not_reordered;
-    return entry.ccc;
+    return unicode_data.canonicalCombiningClass(cp);
 }
 
 test "ucd hostile: DerivedCoreProperties bitset matches every scalar, not just cute samples" {
