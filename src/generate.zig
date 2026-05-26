@@ -1,43 +1,52 @@
 const std = @import("std");
-const utils = @import("utils/root.zig");
 
+const utils = @import("utils/root.zig");
 const every = utils.every;
+const some = @import("utils/helpers.zig").some;
 
 const unicode_types = @import("unicode/types.zig");
 const CanonicalCombiningClass = unicode_types.CanonicalCombiningClass;
 
-const some = @import("utils/helpers.zig").some;
+// ============================================================================
+// HTTP / file IO
+// ============================================================================
+
+const ucd_folder = "ucd";
 
 fn downloadFileToPath(allocator: std.mem.Allocator, io: std.Io, writer: *std.Io.Writer, url: []const u8) !void {
-    var client: std.http.Client = .{
-        .allocator = allocator,
-        .io = io,
-    };
+    var client: std.http.Client = .{ .allocator = allocator, .io = io };
     defer client.deinit();
-
     const uri: std.Uri = try .parse(url);
-
     _ = try client.fetch(.{ .location = .{ .uri = uri }, .response_writer = writer });
 }
 
 fn extractFileNameFromPath(path: []const u8) struct { dir_path: []const u8, file_name: []const u8 } {
     if (path.len == 0) return .{ .dir_path = "", .file_name = "" };
-
     var split_iter = std.mem.splitScalar(u8, path, '/');
-
     var i: usize = 0;
-
     while (split_iter.next()) |path_section| {
-        if (split_iter.peek() == null) {
-            return .{ .dir_path = path[0..i], .file_name = path[i..] };
-        }
+        if (split_iter.peek() == null) return .{ .dir_path = path[0..i], .file_name = path[i..] };
         i += path_section.len + 1;
     }
-
     return .{ .dir_path = "", .file_name = "" };
 }
 
-const RangeType = struct { start: u21, end: u21 };
+fn saveUCDFile(arena: std.mem.Allocator, io: std.Io, dir: *std.Io.Dir, data: []const u8, url: []const u8, buf: []u8) !void {
+    const ucd_file_name = extractFileNameFromPath(url);
+    const ucd_file = try dir.createFile(io, try std.fmt.allocPrint(arena, "ucd/{s}", .{ucd_file_name.file_name}), .{
+        .truncate = true,
+        .permissions = .default_file,
+    });
+    defer ucd_file.close(io);
+    var ucd_file_writer = ucd_file.writer(io, buf);
+    const ucd_writer = &ucd_file_writer.interface;
+    defer ucd_writer.flush() catch {};
+    try ucd_writer.writeAll(data);
+}
+
+// ============================================================================
+// Identifier normalization
+// ============================================================================
 
 fn normalizeKey(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
     var slice: std.ArrayList(u8) = .empty;
@@ -52,21 +61,14 @@ fn normalizeKey(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
                         'A'...'Z' => true,
                         else => false,
                     };
-                    if (!prev and idx - 1 != 0) {
-                        try slice.append(allocator, '_');
-                    }
+                    if (!prev and idx - 1 != 0) try slice.append(allocator, '_');
                 }
                 try slice.append(allocator, c + 32);
             },
-            'a'...'z' => {
-                try slice.append(allocator, c);
-            },
+            'a'...'z' => try slice.append(allocator, c),
             // Preserve digits so labels like LineBreak's "H2"/"H3"/"B2"
-            // produce distinct enum variants. Stripping digits would
-            // collapse them all into the same key.
-            '0'...'9' => {
-                try slice.append(allocator, c);
-            },
+            // produce distinct enum variants.
+            '0'...'9' => try slice.append(allocator, c),
             else => {},
         }
     }
@@ -74,7 +76,6 @@ fn normalizeKey(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
     return slice.toOwnedSlice(allocator);
 }
 
-// convert any pattern to camelCased
 fn normalizeFnName(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
     var slice: std.ArrayList(u8) = .empty;
     defer slice.deinit(allocator);
@@ -105,8 +106,8 @@ fn normalizeFnName(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
                 output_started = true;
                 word_start = true;
             },
-            else => {
-                if (output_started) word_start = true;
+            else => if (output_started) {
+                word_start = true;
             },
         }
     }
@@ -114,80 +115,466 @@ fn normalizeFnName(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
     return slice.toOwnedSlice(allocator);
 }
 
-fn saveUCDFile(arena: std.mem.Allocator, io: std.Io, dir: *std.Io.Dir, data: []const u8, url: []const u8, buf: []u8) !void {
-    const ucd_file_name = extractFileNameFromPath(url);
+// ============================================================================
+// Parsed range data
+// ============================================================================
 
-    const ucd_file = try dir.createFile(io, try std.fmt.allocPrint(arena, "ucd/{s}", .{ucd_file_name.file_name}), .{
-        .truncate = true,
-        .permissions = .default_file,
-    });
-    defer ucd_file.close(io);
+const RangeType = struct { start: u21, end: u21 };
 
-    var ucd_file_writer = ucd_file.writer(io, buf);
-    const ucd_writer = &ucd_file_writer.interface;
-    defer ucd_writer.flush() catch {};
+const ParsedLabel = struct {
+    normalized_key: []const u8,
+    ranges: std.ArrayList(RangeType) = .empty,
+};
 
-    try ucd_writer.writeAll(data);
+const EnumProperty = struct { key: []const u8, ranges: []RangeType };
+
+/// Parse a UCD file shaped like `<range> ; <Label> # <comment>` into a map
+/// from raw label string to its normalized snake_case key and accumulated
+/// ranges. Used by every enum + 2-level page table generator.
+fn parseSemicolonRangeFile(arena: std.mem.Allocator, data: []const u8) !std.StringHashMapUnmanaged(ParsedLabel) {
+    var labels: std.StringHashMapUnmanaged(ParsedLabel) = .empty;
+    var lines = std.mem.splitScalar(u8, data, '\n');
+    line_loop: while (lines.next()) |line| {
+        if (line.len == 0 or line[0] == '#') continue :line_loop;
+        var split_comments = std.mem.splitScalar(u8, line, '#');
+        const tokens_raw = split_comments.next() orelse continue :line_loop;
+        var tokens_iter = std.mem.splitScalar(u8, tokens_raw, ';');
+        const cp_raw = tokens_iter.next() orelse continue :line_loop;
+        const label_raw = tokens_iter.next() orelse continue :line_loop;
+        const entry = try labels.getOrPut(arena, label_raw);
+        if (!entry.found_existing) {
+            entry.value_ptr.* = .{ .normalized_key = try normalizeKey(arena, label_raw) };
+        }
+        var cp_iter = std.mem.splitSequence(u8, std.mem.trim(u8, cp_raw, " \t"), "..");
+        const start_raw = cp_iter.next() orelse continue :line_loop;
+        const start = try std.fmt.parseInt(u21, std.mem.trim(u8, start_raw, " \t"), 16);
+        const end = if (cp_iter.next()) |end_raw|
+            try std.fmt.parseInt(u21, std.mem.trim(u8, end_raw, " \t"), 16)
+        else
+            start;
+        try entry.value_ptr.ranges.append(arena, .{ .start = start, .end = end });
+    }
+    return labels;
 }
 
-const ucd_folder = "ucd";
+fn labelMapToProperties(arena: std.mem.Allocator, labels: *std.StringHashMapUnmanaged(ParsedLabel)) ![]EnumProperty {
+    const arr = try arena.alloc(EnumProperty, labels.count());
+    var i: usize = 0;
+    var it = labels.valueIterator();
+    while (it.next()) |v| : (i += 1) {
+        arr[i] = .{ .key = v.normalized_key, .ranges = v.ranges.items };
+    }
+    return arr;
+}
+
+/// Parse a space-separated list of hex codepoints into an owned slice.
+/// Returns null when input is empty.
+fn parseCodePointSequence(arena: std.mem.Allocator, raw: []const u8) !?[]u21 {
+    if (raw.len == 0) return null;
+    var split_tokens = std.mem.splitScalar(u8, raw, ' ');
+    var new_slice: std.ArrayList(u21) = .empty;
+    while (split_tokens.next()) |token| {
+        const cp_trim = std.mem.trim(u8, token, " \t");
+        if (cp_trim.len == 0) continue;
+        try new_slice.append(arena, try std.fmt.parseInt(u21, cp_trim, 16));
+    }
+    return try new_slice.toOwnedSlice(arena);
+}
+
+// ============================================================================
+// Two-level page table builder & emission helpers
+// ============================================================================
+
+const PAGE_BITS = 8;
+const PAGE_SIZE = 1 << PAGE_BITS;
+
+fn PageTable(comptime T: type) type {
+    return struct {
+        unique_pages: []const []const T,
+        level1: []const usize,
+    };
+}
+
+/// Build a deduplicated 2-level page table over `values`. Hashes each
+/// 256-element page and reuses identical pages across the codepoint space.
+fn buildPageTable(comptime T: type, arena: std.mem.Allocator, values: []const T, default_value: T) !PageTable(T) {
+    var unique_pages = std.ArrayList([]const T).empty;
+    var level1 = std.ArrayList(usize).empty;
+    var page_map: std.AutoHashMapUnmanaged(u64, usize) = .empty;
+
+    const page_buf = try arena.alloc(T, PAGE_SIZE);
+
+    var total: usize = 0;
+    while (total < values.len) : (total += PAGE_SIZE) {
+        const page_start = total;
+        const page_end = @min(page_start + PAGE_SIZE, values.len);
+
+        for (page_buf, 0..) |*slot, j| {
+            const idx = page_start + j;
+            slot.* = if (idx < page_end) values[idx] else default_value;
+        }
+
+        var hasher = std.hash.Wyhash.init(0);
+        hasher.update(std.mem.sliceAsBytes(page_buf));
+        const page_hash = hasher.final();
+
+        var existing_idx: ?usize = null;
+        if (page_map.get(page_hash)) |idx| {
+            if (std.mem.eql(T, unique_pages.items[idx], page_buf)) existing_idx = idx;
+        }
+
+        const final_idx = existing_idx orelse blk: {
+            const new_page = try arena.alloc(T, PAGE_SIZE);
+            @memcpy(new_page, page_buf);
+            const new_idx = unique_pages.items.len;
+            try unique_pages.append(arena, new_page);
+            try page_map.put(arena, page_hash, new_idx);
+            break :blk new_idx;
+        };
+
+        try level1.append(arena, final_idx);
+    }
+
+    return .{ .unique_pages = unique_pages.items, .level1 = level1.items };
+}
+
+/// Emit `const {prefix}_level1 = [_]u16 { ... };` wrapped in zig fmt: off.
+fn emitLevel1(writer: *std.Io.Writer, prefix: []const u8, items: []const usize) !void {
+    try writer.print("//zig fmt: off\nconst {s}_level1 = [_]u16 {{", .{prefix});
+    for (items, 0..) |idx, n| {
+        if (n % 12 == 0) try writer.writeAll("\n    ");
+        try writer.print("{},", .{idx});
+        if (n + 1 != items.len) try writer.writeAll(" ");
+    }
+    try writer.writeAll("\n};\n//zig fmt: on\n\n");
+}
+
+/// Separator after the j-th page element: 12 per row, space between in-row,
+/// nothing after the last element.
+inline fn writePageItemSep(writer: *std.Io.Writer, j: usize, page_len: usize) !void {
+    if ((j + 1) % 12 == 0 and (j + 1) != page_len) {
+        try writer.writeAll("\n        ");
+    } else if (j + 1 != page_len) {
+        try writer.writeAll(" ");
+    }
+}
+
+// ============================================================================
+// Enum + page table emitter (shared by all simple `<range> ; <label>` files)
+// ============================================================================
+
+/// Emit a `pub const {enum_name} = enum(u8) { ... }` + two-level page table
+/// + lookup function. `default_variant` is declared first and gets enum
+/// value 0. If an input label normalizes to the same key as the default,
+/// it's folded into the default (no duplicate variant emitted).
+fn emitEnumPageTable(
+    arena: std.mem.Allocator,
+    writer: *std.Io.Writer,
+    properties_in: []EnumProperty,
+    enum_name: []const u8,
+    table_prefix: []const u8,
+    default_variant: []const u8,
+    lookup_fn_name: []const u8,
+) !void {
+    std.mem.sort(EnumProperty, properties_in, {}, struct {
+        fn lessThan(_: void, a: EnumProperty, b: EnumProperty) bool {
+            return std.mem.lessThan(u8, a.key, b.key);
+        }
+    }.lessThan);
+
+    var default_idx: ?usize = null;
+    for (properties_in, 0..) |prop, i| {
+        if (std.mem.eql(u8, prop.key, default_variant)) {
+            default_idx = i;
+            break;
+        }
+    }
+
+    const values = try arena.alloc(u8, 0x110000);
+    @memset(values, 0);
+
+    for (properties_in, 0..) |prop, i| {
+        const enum_val: u8 = if (default_idx != null and i == default_idx.?) 0 else @intCast(i + 1);
+        for (prop.ranges) |range| {
+            var cp = range.start;
+            while (cp <= range.end) : (cp += 1) values[cp] = enum_val;
+        }
+    }
+
+    const pt = try buildPageTable(u8, arena, values, 0);
+
+    try writer.print("pub const {s} = enum(u8) {{\n    {s},\n", .{ enum_name, default_variant });
+    for (properties_in) |prop| {
+        if (std.mem.eql(u8, prop.key, default_variant)) continue;
+        try writer.print("    {s},\n", .{prop.key});
+    }
+    try writer.writeAll("};\n\n");
+
+    try emitLevel1(writer, table_prefix, pt.level1);
+
+    try writer.print("//zig fmt: off\nconst {s}_level2 = [_][256]{s} {{\n", .{ table_prefix, enum_name });
+    for (pt.unique_pages) |page| {
+        try writer.writeAll("    .{\n        ");
+        for (page, 0..) |val, j| {
+            const name = if (val == 0) default_variant else properties_in[val - 1].key;
+            try writer.print(".{s},", .{name});
+            try writePageItemSep(writer, j, page.len);
+        }
+        try writer.writeAll("\n    },\n");
+    }
+    try writer.writeAll("};\n//zig fmt: on\n\n");
+
+    try writer.print(
+        \\pub inline fn {s}(cp: CodePoint) {s} {{
+        \\    if (cp > 0x10FFFF) return .{s};
+        \\    const page = {s}_level1[cp >> 8];
+        \\    return {s}_level2[page][cp & 0xFF];
+        \\}}
+        \\
+        \\
+    , .{ lookup_fn_name, enum_name, default_variant, table_prefix, table_prefix });
+}
+
+const generated_file_header =
+    \\//! This file is auto-generated. Do not edit directly.
+    \\//! To regenerate run `zig build generate` in same level
+    \\//! as `build.zig` file.
+    \\
+    \\const CodePoint = @import("encoding").CodePoint;
+    \\
+    \\
+;
+
+// ============================================================================
+// UnicodeData.txt helpers
+// ============================================================================
+
+/// Run-length tracker for the lowercase / uppercase / titlecase mapping
+/// tables in UnicodeData.txt. Codepoints that map by a constant delta and
+/// are contiguous get merged into a single CaseMappingRangeEntry.
+const CaseMappingTracker = struct {
+    range_start: ?u21 = null,
+    range_end: ?u21 = null,
+    current_difference: i32 = 0,
+    buffer: std.ArrayList(u8) = .empty,
+
+    fn add(self: *CaseMappingTracker, arena: std.mem.Allocator, cp: u21, mapping_str: []const u8) !void {
+        if (mapping_str.len == 0) return;
+        const cp_to = try std.fmt.parseInt(u21, mapping_str, 16);
+        const difference = @as(i32, @intCast(cp_to)) - @as(i32, @intCast(cp));
+
+        if (self.range_start == null or self.range_end == null or self.current_difference == 0) {
+            self.range_start = cp;
+            self.range_end = cp;
+            self.current_difference = difference;
+        } else if (self.current_difference == difference and cp == self.range_end.? + 1) {
+            self.range_end = cp;
+        } else {
+            try self.flushPending(arena);
+            self.range_start = cp;
+            self.range_end = cp;
+            self.current_difference = difference;
+        }
+    }
+
+    fn flushPending(self: *CaseMappingTracker, arena: std.mem.Allocator) !void {
+        const p = try std.fmt.allocPrint(
+            arena,
+            "    .{{ .start = 0x{X}, .end = 0x{X}, .delta = {} }},\n",
+            .{ self.range_start.?, self.range_end.?, self.current_difference },
+        );
+        try self.buffer.appendSlice(arena, p);
+    }
+
+    fn finalize(self: *CaseMappingTracker, arena: std.mem.Allocator) !void {
+        if (self.range_start != null) try self.flushPending(arena);
+    }
+};
+
+/// Run-length tracker for canonical combining classes. Contiguous codepoints
+/// sharing the same nonzero class merge into one CombiningClassEntry; zero
+/// classes flush whatever was pending.
+const CombiningClassTracker = struct {
+    range_start: ?u21 = null,
+    range_end: ?u21 = null,
+    current_class: ?[]const u8 = null,
+    buffer: std.ArrayList(u8) = .empty,
+
+    fn add(self: *CombiningClassTracker, arena: std.mem.Allocator, cp: u21, combining_class: []const u8) !void {
+        if (!std.mem.eql(u8, combining_class, "0")) {
+            if (self.current_class == null) {
+                self.range_start = cp;
+                self.range_end = cp;
+                self.current_class = combining_class;
+            } else if (std.mem.eql(u8, self.current_class.?, combining_class) and cp == self.range_end.? + 1) {
+                self.range_end = cp;
+            } else {
+                try self.flushPending(arena);
+                self.range_start = cp;
+                self.range_end = cp;
+                self.current_class = combining_class;
+            }
+        } else if (self.current_class != null) {
+            try self.flushPending(arena);
+            self.range_start = null;
+            self.range_end = null;
+            self.current_class = null;
+        }
+    }
+
+    fn flushPending(self: *CombiningClassTracker, arena: std.mem.Allocator) !void {
+        const ccc = try std.fmt.parseInt(u8, self.current_class.?, 10);
+        const p = try std.fmt.allocPrint(
+            arena,
+            "    .{{ .range_start = 0x{X}, .range_end = 0x{X}, .ccc = {any} }},\n",
+            .{ self.range_start.?, self.range_end.?, CanonicalCombiningClass.fromU8(ccc) },
+        );
+        try self.buffer.appendSlice(arena, p);
+    }
+
+    fn finalize(self: *CombiningClassTracker, arena: std.mem.Allocator) !void {
+        if (self.current_class != null) try self.flushPending(arena);
+    }
+};
+
+const CategoryEntry = struct { short: []const u8, name: []const u8 };
+
+/// Maps UnicodeData.txt's 2-letter general-category codes (Lu, Ll, ...) to
+/// the snake_case enum variant names. Sentinel `short = ""` at the tail is
+/// the fallback ("unassigned") returned when no short code matches.
+const general_category_table = [_]CategoryEntry{
+    .{ .short = "Lu", .name = "uppercase_letter" },
+    .{ .short = "Ll", .name = "lowercase_letter" },
+    .{ .short = "Lt", .name = "titlecase_letter" },
+    .{ .short = "Lm", .name = "modifier_letter" },
+    .{ .short = "Lo", .name = "other_letter" },
+    .{ .short = "Mn", .name = "non_spacing_mark" },
+    .{ .short = "Mc", .name = "spacing_mark" },
+    .{ .short = "Me", .name = "enclosing_mark" },
+    .{ .short = "Nd", .name = "decimal_number" },
+    .{ .short = "Nl", .name = "letter_number" },
+    .{ .short = "No", .name = "other_number" },
+    .{ .short = "Pc", .name = "connector_punctuation" },
+    .{ .short = "Pd", .name = "dash_punctuation" },
+    .{ .short = "Ps", .name = "open_punctuation" },
+    .{ .short = "Pe", .name = "close_punctuation" },
+    .{ .short = "Pi", .name = "initial_punctuation" },
+    .{ .short = "Pf", .name = "final_punctuation" },
+    .{ .short = "Po", .name = "other_punctuation" },
+    .{ .short = "Sm", .name = "math_symbol" },
+    .{ .short = "Sc", .name = "currency_symbol" },
+    .{ .short = "Sk", .name = "modifier_symbol" },
+    .{ .short = "So", .name = "other_symbol" },
+    .{ .short = "Zs", .name = "space_separator" },
+    .{ .short = "Zl", .name = "line_separator" },
+    .{ .short = "Zp", .name = "paragraph_separator" },
+    .{ .short = "Cc", .name = "control" },
+    .{ .short = "Cf", .name = "format" },
+    .{ .short = "Cs", .name = "surrogate" },
+    .{ .short = "Co", .name = "private_use" },
+    .{ .short = "", .name = "unassigned" },
+};
+const general_category_default: u8 = general_category_table.len - 1;
+
+/// `short = ""` at the tail mirrors the original generator's fallback: any
+/// unrecognized Bidi_Class string fell through to "pop_directional_isolate".
+/// Distinct from the gap-fill default (which is "left_to_right", index 0).
+const bidi_class_table = [_]CategoryEntry{
+    .{ .short = "L", .name = "left_to_right" },
+    .{ .short = "R", .name = "right_to_left" },
+    .{ .short = "AL", .name = "arabic_letter" },
+    .{ .short = "EN", .name = "european_number" },
+    .{ .short = "ES", .name = "european_separator" },
+    .{ .short = "ET", .name = "european_terminator" },
+    .{ .short = "AN", .name = "arabic_number" },
+    .{ .short = "CS", .name = "common_separator" },
+    .{ .short = "NSM", .name = "non_spacing_mark" },
+    .{ .short = "BN", .name = "boundary_neutral" },
+    .{ .short = "B", .name = "paragraph_separator" },
+    .{ .short = "S", .name = "segment_separator" },
+    .{ .short = "WS", .name = "whitespace" },
+    .{ .short = "ON", .name = "other_neutral" },
+    .{ .short = "LRE", .name = "left_to_right_embedding" },
+    .{ .short = "LRO", .name = "left_to_right_override" },
+    .{ .short = "RLE", .name = "right_to_left_embedding" },
+    .{ .short = "RLO", .name = "right_to_left_override" },
+    .{ .short = "PDF", .name = "pop_directional_format" },
+    .{ .short = "LRI", .name = "left_to_right_isolate" },
+    .{ .short = "RLI", .name = "right_to_left_isolate" },
+    .{ .short = "FSI", .name = "first_strong_isolate" },
+    .{ .short = "", .name = "pop_directional_isolate" },
+};
+const bidi_class_gap_fill: u8 = 0; // "left_to_right"
+const bidi_class_unknown: u8 = bidi_class_table.len - 1;
+
+fn lookupCategory(table: []const CategoryEntry, fallback_idx: u8, code: []const u8) u8 {
+    for (table, 0..) |entry, i| {
+        if (entry.short.len == 0) continue;
+        if (std.mem.eql(u8, code, entry.short)) return @intCast(i);
+    }
+    return fallback_idx;
+}
+
+fn emitNamedEnum(writer: *std.Io.Writer, name: []const u8, table: []const CategoryEntry) !void {
+    try writer.print("pub const {s} = enum(u8) {{\n", .{name});
+    for (table) |entry| try writer.print("    {s},\n", .{entry.name});
+    try writer.writeAll("};\n\n");
+}
+
+/// Emit a 2-level page table where each element is a named enum variant
+/// (the variant name is looked up in `table` by the page slot's index).
+fn emitNamedEnumPageTable(
+    writer: *std.Io.Writer,
+    table_prefix: []const u8,
+    level2_name_suffix: []const u8,
+    element_type: []const u8,
+    table: []const CategoryEntry,
+    pt: PageTable(u8),
+) !void {
+    try emitLevel1(writer, table_prefix, pt.level1);
+
+    try writer.print("//zig fmt: off\nconst {s}{s} = [_][256]{s} {{\n", .{ table_prefix, level2_name_suffix, element_type });
+    for (pt.unique_pages) |page| {
+        try writer.writeAll("    .{\n        ");
+        for (page, 0..) |idx, j| {
+            try writer.print(".{s},", .{table[idx].name});
+            if ((j + 1) % 12 == 0 and (j + 1) != page.len) try writer.writeAll("\n        ");
+        }
+        try writer.writeAll("\n    },\n");
+    }
+    try writer.writeAll("};\n//zig fmt: on\n\n");
+}
+
+// ============================================================================
+// Generators
+// ============================================================================
 
 fn generateUnicodeData(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
     var dir: std.Io.Dir = .cwd();
-
-    var file = try dir.createFile(io, file_name, .{
-        .truncate = true,
-        .permissions = .default_file,
-    });
+    var file = try dir.createFile(io, file_name, .{ .truncate = true, .permissions = .default_file });
     defer file.close(io);
-
     const buf = try arena.alloc(u8, 1024 * 4);
     var file_writer = file.writer(io, buf);
     const writer = &file_writer.interface;
 
-    var combining_buffer: std.ArrayList(u8) = .empty;
+    var combining = CombiningClassTracker{};
+    var lowercase = CaseMappingTracker{};
+    var uppercase = CaseMappingTracker{};
+    var titlecase = CaseMappingTracker{};
 
-    var lowercase_mapping_range: std.ArrayList(u8) = .empty;
-    var lowercase_range_start: ?u21 = null;
-    var lowercase_range_end: ?u21 = null;
-    var lowercase_current_difference: i32 = 0;
+    var category_values = std.ArrayList(u8).empty;
+    var bidi_values = std.ArrayList(u8).empty;
 
-    var uppercase_mapping_range: std.ArrayList(u8) = .empty;
-    var uppercase_range_start: ?u21 = null;
-    var uppercase_range_end: ?u21 = null;
-    var uppercase_current_difference: i32 = 0;
+    var pending_range_start: ?u21 = null;
+    var pending_range_category: u8 = general_category_default;
+    var pending_range_bidi: u8 = bidi_class_gap_fill;
 
-    var titlecase_mapping_range: std.ArrayList(u8) = .empty;
-    var titlecase_range_start: ?u21 = null;
-    var titlecase_range_end: ?u21 = null;
-    var titlecase_current_difference: i32 = 0;
-
-    var split_iter = std.mem.splitScalar(u8, data, '\n');
-
-    var i: usize = 0;
-    // For GeneralCategory two-level page table generation:
-    var category_values = std.ArrayList([]const u8).empty;
-    // For BidiClass two-level page table generation:
-    var bidi_values = std.ArrayList([]const u8).empty;
-
-    var combining_start_range: ?u21 = null;
-    var combining_end_range: ?u21 = null;
-    var current_combining_class: ?[]const u8 = null;
-
-    // For BidiClass page-table generation
+    var next_cp: u21 = 0;
     var next_bidi_cp: u21 = 0;
 
-    // Build the GeneralCategory for every codepoint (0..=0x10FFFF)
-    // We parse UnicodeData.txt, which is sparse, so fill gaps with "unassigned"
-    var pending_range_start: ?u21 = null;
-    var pending_range_category: ?[]const u8 = null;
-    var pending_range_bidi: ?[]const u8 = null;
-    var next_cp: u21 = 0;
-    split_iter.reset();
-    while (split_iter.next()) |line| : (i += 1) {
-        if (line.len == 0) {
-            continue;
-        }
+    var lines = std.mem.splitScalar(u8, data, '\n');
+    while (lines.next()) |line| {
+        if (line.len == 0) continue;
 
         var field_iter = std.mem.splitScalar(u8, line, ';');
 
@@ -197,316 +584,57 @@ fn generateUnicodeData(arena: std.mem.Allocator, io: std.Io, data: []const u8, u
         const combining_class = field_iter.next() orelse continue;
         const bidi_class = field_iter.next() orelse continue;
 
-        // UnicodeData.txt fields:
-        // 5 Decomposition_Mapping
-        // 6 Decimal_Digit_Value
-        // 7 Digit_Value
-        // 8 Numeric_Value
-        // 9 Bidi_Mirrored
-        // 10 Unicode_1_Name
-        // 11 ISO_Comment
-        _ = field_iter.next();
-        _ = field_iter.next();
-        _ = field_iter.next();
-        _ = field_iter.next();
-        _ = field_iter.next();
-        _ = field_iter.next();
-        _ = field_iter.next();
+        // skip Decomposition_Mapping, Decimal_Digit_Value, Digit_Value,
+        // Numeric_Value, Bidi_Mirrored, Unicode_1_Name, ISO_Comment.
+        inline for (0..7) |_| _ = field_iter.next();
 
         const uppercase_mapping = field_iter.next() orelse "";
         const lowercase_mapping = field_iter.next() orelse "";
         const titlecase_mapping = field_iter.next() orelse "";
+
         const cp = try std.fmt.parseInt(u21, code_point, 16);
+        const cat_idx = lookupCategory(&general_category_table, general_category_default, category);
+        const bidi_idx = lookupCategory(&bidi_class_table, bidi_class_unknown, bidi_class);
 
-        const category_name = blk: {
-            if (std.mem.eql(u8, category, "Lu")) break :blk "uppercase_letter";
-            if (std.mem.eql(u8, category, "Ll")) break :blk "lowercase_letter";
-            if (std.mem.eql(u8, category, "Lt")) break :blk "titlecase_letter";
-            if (std.mem.eql(u8, category, "Lm")) break :blk "modifier_letter";
-            if (std.mem.eql(u8, category, "Lo")) break :blk "other_letter";
-            if (std.mem.eql(u8, category, "Mn")) break :blk "non_spacing_mark";
-            if (std.mem.eql(u8, category, "Mc")) break :blk "spacing_mark";
-            if (std.mem.eql(u8, category, "Me")) break :blk "enclosing_mark";
-            if (std.mem.eql(u8, category, "Nd")) break :blk "decimal_number";
-            if (std.mem.eql(u8, category, "Nl")) break :blk "letter_number";
-            if (std.mem.eql(u8, category, "No")) break :blk "other_number";
-            if (std.mem.eql(u8, category, "Pc")) break :blk "connector_punctuation";
-            if (std.mem.eql(u8, category, "Pd")) break :blk "dash_punctuation";
-            if (std.mem.eql(u8, category, "Ps")) break :blk "open_punctuation";
-            if (std.mem.eql(u8, category, "Pe")) break :blk "close_punctuation";
-            if (std.mem.eql(u8, category, "Pi")) break :blk "initial_punctuation";
-            if (std.mem.eql(u8, category, "Pf")) break :blk "final_punctuation";
-            if (std.mem.eql(u8, category, "Po")) break :blk "other_punctuation";
-            if (std.mem.eql(u8, category, "Sm")) break :blk "math_symbol";
-            if (std.mem.eql(u8, category, "Sc")) break :blk "currency_symbol";
-            if (std.mem.eql(u8, category, "Sk")) break :blk "modifier_symbol";
-            if (std.mem.eql(u8, category, "So")) break :blk "other_symbol";
-            if (std.mem.eql(u8, category, "Zs")) break :blk "space_separator";
-            if (std.mem.eql(u8, category, "Zl")) break :blk "line_separator";
-            if (std.mem.eql(u8, category, "Zp")) break :blk "paragraph_separator";
-            if (std.mem.eql(u8, category, "Cc")) break :blk "control";
-            if (std.mem.eql(u8, category, "Cf")) break :blk "format";
-            if (std.mem.eql(u8, category, "Cs")) break :blk "surrogate";
-            if (std.mem.eql(u8, category, "Co")) break :blk "private_use";
-            break :blk "unassigned";
-        };
-
-        const bidi_name = blk: {
-            if (std.mem.eql(u8, bidi_class, "L")) break :blk "left_to_right";
-            if (std.mem.eql(u8, bidi_class, "R")) break :blk "right_to_left";
-            if (std.mem.eql(u8, bidi_class, "AL")) break :blk "arabic_letter";
-            if (std.mem.eql(u8, bidi_class, "EN")) break :blk "european_number";
-            if (std.mem.eql(u8, bidi_class, "ES")) break :blk "european_separator";
-            if (std.mem.eql(u8, bidi_class, "ET")) break :blk "european_terminator";
-            if (std.mem.eql(u8, bidi_class, "AN")) break :blk "arabic_number";
-            if (std.mem.eql(u8, bidi_class, "CS")) break :blk "common_separator";
-            if (std.mem.eql(u8, bidi_class, "NSM")) break :blk "non_spacing_mark";
-            if (std.mem.eql(u8, bidi_class, "BN")) break :blk "boundary_neutral";
-            if (std.mem.eql(u8, bidi_class, "B")) break :blk "paragraph_separator";
-            if (std.mem.eql(u8, bidi_class, "S")) break :blk "segment_separator";
-            if (std.mem.eql(u8, bidi_class, "WS")) break :blk "whitespace";
-            if (std.mem.eql(u8, bidi_class, "ON")) break :blk "other_neutral";
-            if (std.mem.eql(u8, bidi_class, "LRE")) break :blk "left_to_right_embedding";
-            if (std.mem.eql(u8, bidi_class, "LRO")) break :blk "left_to_right_override";
-            if (std.mem.eql(u8, bidi_class, "RLE")) break :blk "right_to_left_embedding";
-            if (std.mem.eql(u8, bidi_class, "RLO")) break :blk "right_to_left_override";
-            if (std.mem.eql(u8, bidi_class, "PDF")) break :blk "pop_directional_format";
-            if (std.mem.eql(u8, bidi_class, "LRI")) break :blk "left_to_right_isolate";
-            if (std.mem.eql(u8, bidi_class, "RLI")) break :blk "right_to_left_isolate";
-            if (std.mem.eql(u8, bidi_class, "FSI")) break :blk "first_strong_isolate";
-            break :blk "pop_directional_isolate";
-        };
-
-        // UnicodeData.txt <..., First> / <..., Last> range handling
         if (std.mem.endsWith(u8, range_hint, ", First>")) {
             pending_range_start = cp;
-            pending_range_category = category_name;
-            pending_range_bidi = bidi_name;
+            pending_range_category = cat_idx;
+            pending_range_bidi = bidi_idx;
             continue;
         }
 
         if (std.mem.endsWith(u8, range_hint, ", Last>")) {
-            const start_cp = pending_range_start orelse {
-                return error.InvalidUnicodeRange;
-            };
-            const range_category = pending_range_category.?;
-            const range_bidi = pending_range_bidi.?;
-
-            while (next_cp < start_cp) : (next_cp += 1) {
-                try category_values.append(arena, "unassigned");
-            }
-            while (next_bidi_cp < start_cp) : (next_bidi_cp += 1) {
-                try bidi_values.append(arena, "left_to_right");
-            }
+            const start_cp = pending_range_start orelse return error.InvalidUnicodeRange;
+            while (next_cp < start_cp) : (next_cp += 1) try category_values.append(arena, general_category_default);
+            while (next_bidi_cp < start_cp) : (next_bidi_cp += 1) try bidi_values.append(arena, bidi_class_gap_fill);
             var range_cp = start_cp;
             while (range_cp <= cp) : (range_cp += 1) {
-                try category_values.append(arena, range_category);
-                try bidi_values.append(arena, range_bidi);
+                try category_values.append(arena, pending_range_category);
+                try bidi_values.append(arena, pending_range_bidi);
             }
             next_cp = cp + 1;
             next_bidi_cp = cp + 1;
             pending_range_start = null;
-            pending_range_category = null;
-            pending_range_bidi = null;
             continue;
         }
 
-        // Fill any gaps before cp with "unassigned"
-        while (next_cp < cp) : (next_cp += 1) {
-            try category_values.append(arena, "unassigned");
-        }
-        try category_values.append(arena, category_name);
+        while (next_cp < cp) : (next_cp += 1) try category_values.append(arena, general_category_default);
+        try category_values.append(arena, cat_idx);
         next_cp = cp + 1;
 
-        // Combining class range logic
-        if (!std.mem.eql(u8, combining_class, "0")) {
-            if (current_combining_class == null) {
-                combining_start_range = cp;
-                combining_end_range = cp;
-                current_combining_class = combining_class;
-            } else if (std.mem.eql(u8, current_combining_class.?, combining_class) and cp == combining_end_range.? + 1) {
-                combining_end_range = cp;
-            } else {
-                const ccc = try std.fmt.parseInt(u8, current_combining_class.?, 10);
+        try combining.add(arena, cp, combining_class);
 
-                const p = try std.fmt.allocPrint(
-                    arena,
-                    "    .{{ .range_start = 0x{X}, .range_end = 0x{X}, .ccc = {any} }},\n",
-                    .{ combining_start_range.?, combining_end_range.?, CanonicalCombiningClass.fromU8(ccc) },
-                );
-
-                try combining_buffer.appendSlice(arena, p);
-
-                combining_start_range = cp;
-                combining_end_range = cp;
-                current_combining_class = combining_class;
-            }
-        } else if (current_combining_class != null) {
-            const ccc = try std.fmt.parseInt(u8, current_combining_class.?, 10);
-
-            const p = try std.fmt.allocPrint(
-                arena,
-                "    .{{ .range_start = 0x{X}, .range_end = 0x{X}, .ccc = {any} }},\n",
-                .{ combining_start_range.?, combining_end_range.?, CanonicalCombiningClass.fromU8(ccc) },
-            );
-
-            try combining_buffer.appendSlice(arena, p);
-
-            combining_start_range = null;
-            combining_end_range = null;
-            current_combining_class = null;
-        }
-
-        // Fill any gaps before cp with "left_to_right"
-        while (next_bidi_cp < cp) : (next_bidi_cp += 1) {
-            try bidi_values.append(arena, "left_to_right");
-        }
-        try bidi_values.append(arena, bidi_name);
+        while (next_bidi_cp < cp) : (next_bidi_cp += 1) try bidi_values.append(arena, bidi_class_gap_fill);
+        try bidi_values.append(arena, bidi_idx);
         next_bidi_cp = cp + 1;
 
-        if (uppercase_mapping.len != 0) {
-            const cp_num_from = cp;
-            const cp_num_to = try std.fmt.parseInt(u21, uppercase_mapping, 16);
-            const difference = @as(i32, @intCast(cp_num_to)) - @as(i32, @intCast(cp_num_from));
-
-            if (uppercase_range_start == null or uppercase_range_end == null or uppercase_current_difference == 0) {
-                uppercase_range_start = cp;
-                uppercase_range_end = cp;
-                uppercase_current_difference = difference;
-            } else if (uppercase_current_difference == difference and cp == uppercase_range_end.? + 1) {
-                uppercase_range_end = cp;
-            } else if (uppercase_current_difference != difference or cp != uppercase_range_end.? + 1) {
-                const p = try std.fmt.allocPrint(
-                    arena,
-                    "    .{{ .start = 0x{X}, .end = 0x{X}, .delta = {} }},\n",
-                    .{ uppercase_range_start.?, uppercase_range_end.?, uppercase_current_difference },
-                );
-
-                try uppercase_mapping_range.appendSlice(arena, p);
-
-                uppercase_range_start = cp;
-                uppercase_range_end = cp;
-                uppercase_current_difference = difference;
-            }
-        }
-        if (lowercase_mapping.len != 0) {
-            const cp_num_from = cp;
-            const cp_num_to = try std.fmt.parseInt(u21, lowercase_mapping, 16);
-            const difference = @as(i32, @intCast(cp_num_to)) - @as(i32, @intCast(cp_num_from));
-
-            if (lowercase_range_start == null or lowercase_range_end == null or lowercase_current_difference == 0) {
-                lowercase_range_start = cp;
-                lowercase_range_end = cp;
-                lowercase_current_difference = difference;
-            } else if (lowercase_current_difference == difference and cp == lowercase_range_end.? + 1) {
-                lowercase_range_end = cp;
-            } else if (lowercase_current_difference != difference or cp != lowercase_range_end.? + 1) {
-                const p = try std.fmt.allocPrint(
-                    arena,
-                    "    .{{ .start = 0x{X}, .end = 0x{X}, .delta = {} }},\n",
-                    .{ lowercase_range_start.?, lowercase_range_end.?, lowercase_current_difference },
-                );
-
-                try lowercase_mapping_range.appendSlice(arena, p);
-
-                lowercase_range_start = cp;
-                lowercase_range_end = cp;
-                lowercase_current_difference = difference;
-            }
-        }
-        if (titlecase_mapping.len != 0) {
-            const cp_num_from = cp;
-            const cp_num_to = try std.fmt.parseInt(u21, titlecase_mapping, 16);
-            const difference = @as(i32, @intCast(cp_num_to)) - @as(i32, @intCast(cp_num_from));
-
-            if (titlecase_range_start == null or titlecase_range_end == null or titlecase_current_difference == 0) {
-                titlecase_range_start = cp;
-                titlecase_range_end = cp;
-                titlecase_current_difference = difference;
-            } else if (titlecase_current_difference == difference and cp == titlecase_range_end.? + 1) {
-                titlecase_range_end = cp;
-            } else if (titlecase_current_difference != difference or cp != titlecase_range_end.? + 1) {
-                const p = try std.fmt.allocPrint(
-                    arena,
-                    "    .{{ .start = 0x{X}, .end = 0x{X}, .delta = {} }},\n",
-                    .{ titlecase_range_start.?, titlecase_range_end.?, titlecase_current_difference },
-                );
-
-                try titlecase_mapping_range.appendSlice(arena, p);
-
-                titlecase_range_start = cp;
-                titlecase_range_end = cp;
-                titlecase_current_difference = difference;
-            }
-        }
+        try uppercase.add(arena, cp, uppercase_mapping);
+        try lowercase.add(arena, cp, lowercase_mapping);
+        try titlecase.add(arena, cp, titlecase_mapping);
     }
 
-    // Fill any remaining codepoints with "unassigned"
-    while (next_cp <= 0x10FFFF) : (next_cp += 1) {
-        try category_values.append(arena, "unassigned");
-    }
-
-    // Fill any remaining codepoints with "left_to_right" for bidi
-    while (next_bidi_cp <= 0x10FFFF) : (next_bidi_cp += 1) {
-        try bidi_values.append(arena, "left_to_right");
-    }
-
-    // Build two-level page table
-    const PAGE_BITS = 8;
-    const PAGE_SIZE = 1 << PAGE_BITS;
-    // const PAGE_COUNT = (0x10FFFF + PAGE_SIZE) >> PAGE_BITS;
-
-    // Build unique pages and level1/level2 tables
-    var unique_pages = std.ArrayList([]const []const u8).empty;
-    // var unique_page_indices = std.ArrayList(usize).empty;
-    var level1 = std.ArrayList(usize).empty;
-
-    var page_map: std.AutoHashMapUnmanaged(u64, usize) = .empty;
-    const page_buf = try arena.alloc([]const u8, PAGE_SIZE);
-
-    var total_cps: usize = 0;
-    while (total_cps < category_values.items.len) : (total_cps += PAGE_SIZE) {
-        const page_start = total_cps;
-        const page_end = @min(page_start + PAGE_SIZE, category_values.items.len);
-        for (page_buf, 0..) |*slot, j| {
-            const idx = page_start + j;
-            if (idx < page_end) {
-                slot.* = category_values.items[idx];
-            } else {
-                slot.* = "unassigned";
-            }
-        }
-        // Hash the page for deduplication
-        var hasher = std.hash.Wyhash.init(0);
-        for (page_buf) |cat| {
-            hasher.update(cat);
-        }
-        const page_hash = hasher.final();
-        var found = false;
-        var found_idx: usize = 0;
-        if (page_map.get(page_hash)) |idx| {
-            var same = true;
-            for (unique_pages.items[idx], page_buf) |a, b| {
-                if (!std.mem.eql(u8, a, b)) {
-                    same = false;
-                    break;
-                }
-            }
-            if (same) {
-                found = true;
-                found_idx = idx;
-            }
-        }
-        if (!found) {
-            // Copy the page to arena and add to unique_pages
-            const new_page = try arena.alloc([]const u8, PAGE_SIZE);
-            for (page_buf, 0..) |cat, j| new_page[j] = cat;
-            found_idx = unique_pages.items.len;
-            try unique_pages.append(arena, new_page);
-            try page_map.put(arena, page_hash, found_idx);
-        }
-        try level1.append(arena, found_idx);
-    }
+    while (next_cp <= 0x10FFFF) : (next_cp += 1) try category_values.append(arena, general_category_default);
+    while (next_bidi_cp <= 0x10FFFF) : (next_bidi_cp += 1) try bidi_values.append(arena, bidi_class_gap_fill);
 
     try writer.writeAll(
         \\//! This file is auto-generated. Do not edit directly.
@@ -518,65 +646,13 @@ fn generateUnicodeData(arena: std.mem.Allocator, io: std.Io, data: []const u8, u
         \\
         \\const CanonicalCombiningClass = unicode_types.CanonicalCombiningClass;
         \\
-        \\pub const GeneralCategory = enum(u8) {
-        \\    uppercase_letter,
-        \\    lowercase_letter,
-        \\    titlecase_letter,
-        \\    modifier_letter,
-        \\    other_letter,
-        \\    non_spacing_mark,
-        \\    spacing_mark,
-        \\    enclosing_mark,
-        \\    decimal_number,
-        \\    letter_number,
-        \\    other_number,
-        \\    connector_punctuation,
-        \\    dash_punctuation,
-        \\    open_punctuation,
-        \\    close_punctuation,
-        \\    initial_punctuation,
-        \\    final_punctuation,
-        \\    other_punctuation,
-        \\    math_symbol,
-        \\    currency_symbol,
-        \\    modifier_symbol,
-        \\    other_symbol,
-        \\    space_separator,
-        \\    line_separator,
-        \\    paragraph_separator,
-        \\    control,
-        \\    format,
-        \\    surrogate,
-        \\    private_use,
-        \\    unassigned,
-        \\};
         \\
-        \\pub const BidiClass = enum(u8) {
-        \\    left_to_right,
-        \\    right_to_left,
-        \\    arabic_letter,
-        \\    european_number,
-        \\    european_separator,
-        \\    european_terminator,
-        \\    arabic_number,
-        \\    common_separator,
-        \\    non_spacing_mark,
-        \\    boundary_neutral,
-        \\    paragraph_separator,
-        \\    segment_separator,
-        \\    whitespace,
-        \\    other_neutral,
-        \\    left_to_right_embedding,
-        \\    left_to_right_override,
-        \\    right_to_left_embedding,
-        \\    right_to_left_override,
-        \\    pop_directional_format,
-        \\    left_to_right_isolate,
-        \\    right_to_left_isolate,
-        \\    first_strong_isolate,
-        \\    pop_directional_isolate,
-        \\};
-        \\
+    );
+
+    try emitNamedEnum(writer, "GeneralCategory", &general_category_table);
+    try emitNamedEnum(writer, "BidiClass", &bidi_class_table);
+
+    try writer.writeAll(
         \\pub const CombiningClassEntry = struct {
         \\    range_start: CodePoint,
         \\    range_end: CodePoint,
@@ -594,29 +670,8 @@ fn generateUnicodeData(arena: std.mem.Allocator, io: std.Io, data: []const u8, u
         \\
     );
 
-    // Emit the tables
-    try writer.writeAll("//zig fmt: off\nconst category_level1 = [_]u16 {");
-    for (level1.items, 0..) |idx, n| {
-        if (n % 12 == 0) try writer.writeAll("\n    ");
-        try writer.print("{},", .{idx});
-        if (n + 1 != level1.items.len) {
-            try writer.writeAll(" ");
-        }
-    }
-    try writer.writeAll("\n};\n//zig fmt: on\n\n");
-
-    try writer.writeAll("//zig fmt: off\nconst category_level_2 = [_][256]GeneralCategory {\n");
-    for (unique_pages.items) |page| {
-        try writer.writeAll("    .{\n        ");
-        for (page, 0..) |cat, j| {
-            try writer.writeAll(".");
-            try writer.writeAll(cat);
-            try writer.writeAll(",");
-            if ((j + 1) % 12 == 0 and (j + 1) != page.len) try writer.writeAll("\n        ");
-        }
-        try writer.writeAll("\n    },\n");
-    }
-    try writer.writeAll("};\n//zig fmt: on\n\n");
+    const cat_pt = try buildPageTable(u8, arena, category_values.items, general_category_default);
+    try emitNamedEnumPageTable(writer, "category", "_level_2", "GeneralCategory", &general_category_table, cat_pt);
 
     try writer.writeAll(
         \\pub inline fn generalCategory(cp: CodePoint) GeneralCategory {
@@ -628,93 +683,13 @@ fn generateUnicodeData(arena: std.mem.Allocator, io: std.Io, data: []const u8, u
         \\
     );
 
-    if (current_combining_class != null) {
-        const p = try std.fmt.allocPrint(
-            arena,
-            "    .{{ .range_start = 0x{X}, .range_end = 0x{X}, .ccc = {s} }},\n",
-            .{ combining_start_range.?, combining_end_range.?, current_combining_class.? },
-        );
-
-        try combining_buffer.appendSlice(arena, p);
-    }
-
+    try combining.finalize(arena);
     try writer.writeAll("pub const combining_class_table = [_]CombiningClassEntry {\n");
-    try writer.writeAll(combining_buffer.items);
+    try writer.writeAll(combining.buffer.items);
     try writer.writeAll("};\n\n");
 
-    // --- BidiClass two-level page table generation ---
-    const bidi_PAGE_BITS = 8;
-    const bidi_PAGE_SIZE = 1 << bidi_PAGE_BITS;
-    var unique_bidi_pages = std.ArrayList([]const []const u8).empty;
-    var bidi_level1_items = std.ArrayList(usize).empty;
-    var bidi_page_map: std.AutoHashMapUnmanaged(u64, usize) = .empty;
-    const bidi_page_buf = try arena.alloc([]const u8, bidi_PAGE_SIZE);
-    var total_bidi_cps: usize = 0;
-    while (total_bidi_cps < bidi_values.items.len) : (total_bidi_cps += bidi_PAGE_SIZE) {
-        const page_start = total_bidi_cps;
-        const page_end = @min(page_start + bidi_PAGE_SIZE, bidi_values.items.len);
-        for (bidi_page_buf, 0..) |*slot, j| {
-            const idx = page_start + j;
-            if (idx < page_end) {
-                slot.* = bidi_values.items[idx];
-            } else {
-                slot.* = "left_to_right";
-            }
-        }
-        // Hash the page for deduplication
-        var hasher = std.hash.Wyhash.init(0);
-        for (bidi_page_buf) |cat| {
-            hasher.update(cat);
-        }
-        const page_hash = hasher.final();
-        var found = false;
-        var found_idx: usize = 0;
-        if (bidi_page_map.get(page_hash)) |idx| {
-            var same = true;
-            for (unique_bidi_pages.items[idx], bidi_page_buf) |a, b| {
-                if (!std.mem.eql(u8, a, b)) {
-                    same = false;
-                    break;
-                }
-            }
-            if (same) {
-                found = true;
-                found_idx = idx;
-            }
-        }
-        if (!found) {
-            const new_page = try arena.alloc([]const u8, bidi_PAGE_SIZE);
-            for (bidi_page_buf, 0..) |cat, j| new_page[j] = cat;
-            found_idx = unique_bidi_pages.items.len;
-            try unique_bidi_pages.append(arena, new_page);
-            try bidi_page_map.put(arena, page_hash, found_idx);
-        }
-        try bidi_level1_items.append(arena, found_idx);
-    }
-
-    // Emit the tables
-    try writer.writeAll("//zig fmt: off\nconst bidi_level1 = [_]u16 {");
-    for (bidi_level1_items.items, 0..) |idx, n| {
-        if (n % 12 == 0) try writer.writeAll("\n    ");
-        try writer.print("{},", .{idx});
-        if (n + 1 != bidi_level1_items.items.len) {
-            try writer.writeAll(" ");
-        }
-    }
-    try writer.writeAll("\n};\n//zig fmt: on\n\n");
-
-    try writer.writeAll("//zig fmt: off\nconst bidi_level_2 = [_][256]BidiClass {\n");
-    for (unique_bidi_pages.items) |page| {
-        try writer.writeAll("    .{\n        ");
-        for (page, 0..) |cat, j| {
-            try writer.writeAll(".");
-            try writer.writeAll(cat);
-            try writer.writeAll(",");
-            if ((j + 1) % 12 == 0 and (j + 1) != page.len) try writer.writeAll("\n        ");
-        }
-        try writer.writeAll("\n    },\n");
-    }
-    try writer.writeAll("};\n//zig fmt: on\n\n");
+    const bidi_pt = try buildPageTable(u8, arena, bidi_values.items, bidi_class_gap_fill);
+    try emitNamedEnumPageTable(writer, "bidi", "_level_2", "BidiClass", &bidi_class_table, bidi_pt);
 
     try writer.writeAll(
         \\pub inline fn bidiClass(cp: CodePoint) BidiClass {
@@ -725,66 +700,31 @@ fn generateUnicodeData(arena: std.mem.Allocator, io: std.Io, data: []const u8, u
         \\
     );
 
-    if (lowercase_range_start != null) {
-        const p = try std.fmt.allocPrint(
-            arena,
-            "    .{{ .start = 0x{X}, .end = 0x{X}, .delta = {} }},\n",
-            .{ lowercase_range_start.?, lowercase_range_end.?, lowercase_current_difference },
-        );
-        try lowercase_mapping_range.appendSlice(arena, p);
-    }
-
-    if (uppercase_range_start != null) {
-        const p = try std.fmt.allocPrint(
-            arena,
-            "    .{{ .start = 0x{X}, .end = 0x{X}, .delta = {} }},\n",
-            .{ uppercase_range_start.?, uppercase_range_end.?, uppercase_current_difference },
-        );
-        try uppercase_mapping_range.appendSlice(arena, p);
-    }
-
-    if (titlecase_range_start != null) {
-        const p = try std.fmt.allocPrint(
-            arena,
-            "    .{{ .start = 0x{X}, .end = 0x{X}, .delta = {} }},\n",
-            .{ titlecase_range_start.?, titlecase_range_end.?, titlecase_current_difference },
-        );
-        try titlecase_mapping_range.appendSlice(arena, p);
-    }
+    try lowercase.finalize(arena);
+    try uppercase.finalize(arena);
+    try titlecase.finalize(arena);
 
     try writer.writeAll("pub const lowercase_range_mapping_table = [_]CaseMappingRangeEntry {\n");
-    try writer.writeAll(lowercase_mapping_range.items);
-
+    try writer.writeAll(lowercase.buffer.items);
     try writer.writeAll("};\n\npub const uppercase_range_mapping_table = [_]CaseMappingRangeEntry {\n");
-    try writer.writeAll(uppercase_mapping_range.items);
-
+    try writer.writeAll(uppercase.buffer.items);
     try writer.writeAll("};\n\npub const titlecase_range_mapping_table = [_]CaseMappingRangeEntry {\n");
-    try writer.writeAll(titlecase_mapping_range.items);
-
+    try writer.writeAll(titlecase.buffer.items);
     try writer.writeAll("};\n");
 
     try file_writer.flush();
-
     try saveUCDFile(arena, io, &dir, data, url, buf);
 }
 
 fn generateDerivedCoreProperty(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
     var dir: std.Io.Dir = .cwd();
-
-    var file = try dir.createFile(io, file_name, .{
-        .truncate = true,
-        .permissions = .default_file,
-    });
+    var file = try dir.createFile(io, file_name, .{ .truncate = true, .permissions = .default_file });
     defer file.close(io);
-
     const buf = try arena.alloc(u8, 1024 * 4);
     var file_writer = file.writer(io, buf);
     const writer = &file_writer.interface;
 
     var total_keys: u8 = 0;
-
-    // the raw labels like `Alphabetic`, `Grapheme_Extend`, `InCB; Extend`, etc
-    // will be converted to `alphabetic`, `grapheme_extend`, `in_cb_extend`
     var derived_label_hash: std.StringHashMapUnmanaged(struct {
         index: u8,
         normalized_key: []u8,
@@ -792,15 +732,10 @@ fn generateDerivedCoreProperty(arena: std.mem.Allocator, io: std.Io, data: []con
     }) = .empty;
 
     var lines = std.mem.splitScalar(u8, data, '\n');
-
     loop: while (lines.next()) |line| {
-        // skip empty and comment lines.
-        if (line.len == 0 or line[0] == '#') {
-            continue :loop;
-        }
+        if (line.len == 0 or line[0] == '#') continue :loop;
 
         var semicolon_delimited_tokens = std.mem.splitSequence(u8, line, " ; ");
-
         const code_points_raw = semicolon_delimited_tokens.next() orelse continue :loop;
         const code_points = std.mem.trim(u8, code_points_raw, " ");
 
@@ -809,7 +744,6 @@ fn generateDerivedCoreProperty(arena: std.mem.Allocator, io: std.Io, data: []con
         const label = std.mem.trim(u8, label_raw, " ");
 
         var entry = try derived_label_hash.getOrPut(arena, label);
-
         if (!entry.found_existing) {
             entry.value_ptr.* = .{
                 .index = total_keys,
@@ -820,33 +754,25 @@ fn generateDerivedCoreProperty(arena: std.mem.Allocator, io: std.Io, data: []con
         }
 
         var code_point_split_range = std.mem.splitSequence(u8, code_points, "..");
-
         const start_raw = code_point_split_range.next() orelse continue :loop;
         const start = try std.fmt.parseInt(u21, start_raw, 16);
-
         const end = if (code_point_split_range.next()) |val| try std.fmt.parseInt(u21, val, 16) else start;
 
         try entry.value_ptr.items.append(arena, .{ .start = start, .end = end });
     }
 
     const map_count = derived_label_hash.size;
-
     var sorted_normalize_keys = try arena.alloc([]const u8, map_count);
     const sorted_property_ranges = try arena.alloc([]RangeType, map_count);
     const items_indices = try arena.alloc(usize, map_count);
-
     @memset(items_indices, 0);
 
-    // print keys and normalized keys
     var iter = derived_label_hash.valueIterator();
-
     while (iter.next()) |val| {
         sorted_normalize_keys[val.index] = val.normalized_key;
         sorted_property_ranges[val.index] = val.items.items;
     }
 
-    // assert that the number of properties is less than 32.
-    // for 32 bit mask.
     std.debug.assert(map_count < 32);
 
     var final_result_table: std.ArrayList(struct { start: u21, end: u21, bitmask: u32 }) = .empty;
@@ -859,27 +785,16 @@ fn generateDerivedCoreProperty(arena: std.mem.Allocator, io: std.Io, data: []con
     }.predicate;
 
     var previous_bit_mask: u32 = 0;
-
     var min: u21 = sorted_property_ranges[0][0].start;
     var max: u21 = sorted_property_ranges[0][sorted_property_ranges[0].len - 1].end;
 
-    var i_min_max: usize = 1;
-
-    while (i_min_max < sorted_property_ranges.len) : (i_min_max += 1) {
-        if (sorted_property_ranges[i_min_max][0].start < min) {
-            min = sorted_property_ranges[i_min_max][0].start;
-        }
-
-        if (sorted_property_ranges[i_min_max][sorted_property_ranges[i_min_max].len - 1].end > max) {
-            max = sorted_property_ranges[i_min_max][sorted_property_ranges[i_min_max].len - 1].end;
-        }
+    for (sorted_property_ranges[1..]) |ranges| {
+        if (ranges[0].start < min) min = ranges[0].start;
+        if (ranges[ranges.len - 1].end > max) max = ranges[ranges.len - 1].end;
     }
 
     var code_point: u21 = min;
-
-    while (some(usize, sorted_property_ranges, items_indices, predicate) and
-        code_point <= max) : (code_point += 1)
-    {
+    while (some(usize, sorted_property_ranges, items_indices, predicate) and code_point <= max) : (code_point += 1) {
         var i: usize = 0;
         var current_mask: u32 = 0;
 
@@ -887,10 +802,7 @@ fn generateDerivedCoreProperty(arena: std.mem.Allocator, io: std.Io, data: []con
             var idx = items_indices[i];
             const ranges = sorted_property_ranges[i];
 
-            while (idx < ranges.len and code_point > ranges[idx].end) {
-                idx += 1;
-            }
-
+            while (idx < ranges.len and code_point > ranges[idx].end) idx += 1;
             items_indices[i] = idx;
 
             if (idx >= ranges.len) {
@@ -899,7 +811,6 @@ fn generateDerivedCoreProperty(arena: std.mem.Allocator, io: std.Io, data: []con
             }
 
             const range = ranges[idx];
-
             if (code_point >= range.start and code_point <= range.end) {
                 current_mask |= @as(u32, 1) << @intCast(i + 1);
             }
@@ -909,82 +820,27 @@ fn generateDerivedCoreProperty(arena: std.mem.Allocator, io: std.Io, data: []con
 
         if (final_result_table.items.len == 0) {
             if (current_mask != 0) {
-                try final_result_table.append(arena, .{
-                    .start = code_point,
-                    .end = code_point,
-                    .bitmask = current_mask,
-                });
+                try final_result_table.append(arena, .{ .start = code_point, .end = code_point, .bitmask = current_mask });
             }
         } else if (previous_bit_mask == current_mask and current_mask != 0) {
             final_result_table.items[final_result_table.items.len - 1].end = code_point;
         } else if (current_mask != 0) {
-            try final_result_table.append(arena, .{
-                .start = code_point,
-                .end = code_point,
-                .bitmask = current_mask,
-            });
+            try final_result_table.append(arena, .{ .start = code_point, .end = code_point, .bitmask = current_mask });
         }
 
         previous_bit_mask = current_mask;
     }
-
-    // Expand merged ranges into dense bitmask array and build deduplicated 2-level page table.
-    const PROPERTY_PAGE_BITS = 8;
-    const PROPERTY_PAGE_SIZE = 1 << PROPERTY_PAGE_BITS;
 
     var property_values = try arena.alloc(u32, 0x110000);
     @memset(property_values, 0);
 
     for (final_result_table.items) |entry| {
         var cp = entry.start;
-        while (cp <= entry.end) : (cp += 1) {
-            property_values[cp] = entry.bitmask;
-        }
+        while (cp <= entry.end) : (cp += 1) property_values[cp] = entry.bitmask;
     }
 
-    var unique_property_pages = std.ArrayList([]const u32).empty;
-    var property_level1_items = std.ArrayList(usize).empty;
-    var property_page_map: std.AutoHashMapUnmanaged(u64, usize) = .empty;
+    const pt = try buildPageTable(u32, arena, property_values, 0);
 
-    const property_page_buf = try arena.alloc(u32, PROPERTY_PAGE_SIZE);
-
-    var total_property_cps: usize = 0;
-    while (total_property_cps < property_values.len) : (total_property_cps += PROPERTY_PAGE_SIZE) {
-        const page_start = total_property_cps;
-        const page_end = @min(page_start + PROPERTY_PAGE_SIZE, property_values.len);
-
-        for (property_page_buf, 0..) |*slot, j| {
-            const idx = page_start + j;
-            slot.* = if (idx < page_end) property_values[idx] else 0;
-        }
-
-        var hasher = std.hash.Wyhash.init(0);
-        hasher.update(std.mem.sliceAsBytes(property_page_buf));
-        const page_hash = hasher.final();
-
-        var found = false;
-        var found_idx: usize = 0;
-
-        if (property_page_map.get(page_hash)) |idx| {
-            if (std.mem.eql(u32, unique_property_pages.items[idx], property_page_buf)) {
-                found = true;
-                found_idx = idx;
-            }
-        }
-
-        if (!found) {
-            const new_page = try arena.alloc(u32, PROPERTY_PAGE_SIZE);
-            @memcpy(new_page, property_page_buf);
-
-            found_idx = unique_property_pages.items.len;
-            try unique_property_pages.append(arena, new_page);
-            try property_page_map.put(arena, page_hash, found_idx);
-        }
-
-        try property_level1_items.append(arena, found_idx);
-    }
-
-    // Emit generated Zig file for property page table.
     try writer.writeAll(
         \\//! This file is auto-generated. Do not edit directly.
         \\//! To regenerate run `zig build generate` in same level
@@ -995,41 +851,22 @@ fn generateDerivedCoreProperty(arena: std.mem.Allocator, io: std.Io, data: []con
         \\pub const Property = enum(u32) {
         \\
     );
+    for (sorted_normalize_keys, 0..) |key, idx| try writer.print("    {s} = 1 << {},\n", .{ key, idx + 1 });
+    try writer.writeAll("};\n");
 
-    for (sorted_normalize_keys, 0..) |key, idx| {
-        try writer.print("    {s} = 1 << {},\n", .{ key, idx + 1 });
-    }
-    try writer.writeAll(
-        \\};
-        \\
-    );
+    try emitLevel1(writer, "property", pt.level1);
 
-    // Emit property_level1 table
-    try writer.writeAll("//zig fmt: off\nconst property_level1 = [_]u16 {");
-    for (property_level1_items.items, 0..) |idx, n| {
-        if (n % 12 == 0) try writer.writeAll("\n    ");
-        try writer.print("{},", .{idx});
-        if (n + 1 != property_level1_items.items.len) {
-            try writer.writeAll(" ");
-        }
-    }
-    try writer.writeAll("\n};\n//zig fmt: on\n\n");
-
-    // Emit property_level2 table
     try writer.writeAll("//zig fmt: off\nconst property_level2 = [_][256]u32 {\n");
-    for (unique_property_pages.items) |page| {
+    for (pt.unique_pages) |page| {
         try writer.writeAll("    .{\n        ");
         for (page, 0..) |val, j| {
             try writer.print("0x{X},", .{val});
-            if ((j + 1) % 12 == 0 and (j + 1) != page.len)
-                try writer.writeAll("\n        ")
-            else if (j + 1 != page.len) try writer.writeAll(" ");
+            try writePageItemSep(writer, j, page.len);
         }
         try writer.writeAll("\n    },\n");
     }
     try writer.writeAll("};\n//zig fmt: on\n\n");
 
-    // Emit propertyMask() and codePointProperty() functions
     try writer.writeAll(
         \\pub inline fn propertyMask(code_point: CodePoint) u32 {
         \\    if (code_point > 0x10FFFF) return 0;
@@ -1044,57 +881,41 @@ fn generateDerivedCoreProperty(arena: std.mem.Allocator, io: std.Io, data: []con
     );
 
     try file_writer.flush();
-
     try saveUCDFile(arena, io, &dir, data, url, buf);
 }
 
 fn generateCaseFolding(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
     var dir: std.Io.Dir = .cwd();
-
-    var file = try dir.createFile(io, file_name, .{
-        .truncate = true,
-        .permissions = .default_file,
-    });
+    var file = try dir.createFile(io, file_name, .{ .truncate = true, .permissions = .default_file });
     defer file.close(io);
-
     const buf = try arena.alloc(u8, 4096);
     var file_writer = file.writer(io, buf);
     const writer = &file_writer.interface;
 
-    // --- Begin new implementation ---
-    // 1. Define FoldEntry
     const FoldEntry = struct {
         from: u21,
         to: []const u21,
     };
 
-    // 2. Create four arrays
     var common_simple = std.ArrayList(FoldEntry).empty;
     var common_full = std.ArrayList(FoldEntry).empty;
     var turkic_simple = std.ArrayList(FoldEntry).empty;
     var turkic_full = std.ArrayList(FoldEntry).empty;
 
-    // 3. Parse every non-comment line of CaseFolding.txt.
     var split_lines = std.mem.splitScalar(u8, data, '\n');
     line_loop: while (split_lines.next()) |line| {
         const trimmed = std.mem.trim(u8, line, " \t\r\n");
         if (trimmed.len == 0 or trimmed[0] == '#') continue :line_loop;
 
-        // 4. For each record:
-        // - Parse source code point.
-        // - Parse fold status (C,S,F,T).
-        // - Parse fold sequence into a heap allocated slice.
         var semi = std.mem.splitScalar(u8, trimmed, ';');
         const src_raw = semi.next() orelse continue :line_loop;
         const status_raw = semi.next() orelse continue :line_loop;
         const mapping_raw = semi.next() orelse continue :line_loop;
-        // Ignore any comment after the mapping
 
         const from = try std.fmt.parseInt(u21, std.mem.trim(u8, src_raw, " \t"), 16);
         const status = std.mem.trim(u8, status_raw, " \t");
         const mapping_str = std.mem.trim(u8, mapping_raw, " \t");
 
-        // Parse mapping_str as 1 or more hex codepoints
         var mapping_buf = std.ArrayList(u21).empty;
         var mapping_split = std.mem.splitScalar(u8, mapping_str, ' ');
         while (mapping_split.next()) |cpstr| {
@@ -1104,21 +925,19 @@ fn generateCaseFolding(arena: std.mem.Allocator, io: std.Io, data: []const u8, u
         }
         const to = try arena.dupe(u21, mapping_buf.items);
 
-        // 5. Route entries
         if (std.mem.eql(u8, status, "C")) {
-            try common_simple.append(arena, FoldEntry{ .from = from, .to = to });
-            try common_full.append(arena, FoldEntry{ .from = from, .to = to });
+            try common_simple.append(arena, .{ .from = from, .to = to });
+            try common_full.append(arena, .{ .from = from, .to = to });
         } else if (std.mem.eql(u8, status, "S")) {
-            try common_simple.append(arena, FoldEntry{ .from = from, .to = to });
+            try common_simple.append(arena, .{ .from = from, .to = to });
         } else if (std.mem.eql(u8, status, "F")) {
-            try common_full.append(arena, FoldEntry{ .from = from, .to = to });
+            try common_full.append(arena, .{ .from = from, .to = to });
         } else if (std.mem.eql(u8, status, "T")) {
-            try turkic_simple.append(arena, FoldEntry{ .from = from, .to = to });
-            try turkic_full.append(arena, FoldEntry{ .from = from, .to = to });
+            try turkic_simple.append(arena, .{ .from = from, .to = to });
+            try turkic_full.append(arena, .{ .from = from, .to = to });
         }
     }
 
-    // 7. Write the header
     try writer.writeAll(
         \\//! This file is auto-generated. Do not edit directly.
         \\//! To regenerate run `zig build generate` in same level
@@ -1145,7 +964,6 @@ fn generateCaseFolding(arena: std.mem.Allocator, io: std.Io, data: []const u8, u
         \\
     );
 
-    // 8. Add a local helper emitTable
     const emitTable = struct {
         fn emitTable(w: *std.Io.Writer, table_name: []const u8, entries: []const FoldEntry) !void {
             try w.writeAll("// zig fmt: off\npub const ");
@@ -1170,7 +988,6 @@ fn generateCaseFolding(arena: std.mem.Allocator, io: std.Io, data: []const u8, u
         }
     }.emitTable;
 
-    // 9. Emit the four tables
     try emitTable(writer, "common_simple_table", common_simple.items);
     try emitTable(writer, "common_full_table", common_full.items);
     try emitTable(writer, "turkic_simple_table", turkic_simple.items);
@@ -1200,101 +1017,63 @@ fn generateCaseFolding(arena: std.mem.Allocator, io: std.Io, data: []const u8, u
         \\
     );
 
-    // 10. Preserve file_writer.flush
     try file_writer.flush();
-
     try saveUCDFile(arena, io, &dir, data, url, buf);
+}
+
+fn emitOptionalCpArray(writer: *std.Io.Writer, maybe_arr: ?[]const u21) !void {
+    if (maybe_arr) |v| {
+        try writer.writeAll("&.{");
+        for (v) |cp| try writer.print(" 0x{X},", .{cp});
+        try writer.writeAll(" }");
+    } else try writer.writeAll("&.{}");
 }
 
 fn generateSpecialCasing(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
     var dir: std.Io.Dir = .cwd();
-
-    var file = try dir.createFile(io, file_name, .{
-        .truncate = true,
-        .permissions = .default_file,
-    });
+    var file = try dir.createFile(io, file_name, .{ .truncate = true, .permissions = .default_file });
     defer file.close(io);
-
     const buf = try arena.alloc(u8, 4096);
     var file_writer = file.writer(io, buf);
     const writer = &file_writer.interface;
 
-    var split_lines = std.mem.splitScalar(u8, data, '\n');
+    const SpecialMapping = struct {
+        lower: ?[]u21 = null,
+        upper: ?[]u21 = null,
+        title: ?[]u21 = null,
+        locale: ?[]const u8 = null,
+        condition: ?[]const u8 = null,
+    };
 
-    var special_folding_map: std.AutoHashMapUnmanaged(
-        u21,
-        std.ArrayList(struct {
-            lower: ?[]u21 = null,
-            upper: ?[]u21 = null,
-            title: ?[]u21 = null,
-            locale: ?[]const u8 = null,
-            condition: ?[]const u8 = null,
-        }),
-    ) = .empty;
-
+    var special_folding_map: std.AutoHashMapUnmanaged(u21, std.ArrayList(SpecialMapping)) = .empty;
     var unique_locale: std.StringHashMapUnmanaged(void) = .empty;
     var unique_conditions: std.StringHashMapUnmanaged(void) = .empty;
 
+    var split_lines = std.mem.splitScalar(u8, data, '\n');
     line_loop: while (split_lines.next()) |line| {
-        if (line.len == 0 or line[0] == '#') {
-            continue :line_loop;
-        }
+        if (line.len == 0 or line[0] == '#') continue :line_loop;
 
         var split_comments = std.mem.splitScalar(u8, line, '#');
-
         var tokens = std.mem.splitScalar(u8, split_comments.next() orelse continue :line_loop, ';');
 
         const code_point_raw = std.mem.trim(u8, tokens.next() orelse @panic("code point not found"), " ");
-        const lower_point_raw = std.mem.trim(u8, tokens.next() orelse "", " ");
-        const title_point_raw = std.mem.trim(u8, tokens.next() orelse "", " ");
-        const upper_point_raw = std.mem.trim(u8, tokens.next() orelse "", " ");
+        const lower_raw = std.mem.trim(u8, tokens.next() orelse "", " ");
+        const title_raw = std.mem.trim(u8, tokens.next() orelse "", " ");
+        const upper_raw = std.mem.trim(u8, tokens.next() orelse "", " ");
         const condition_raw = std.mem.trim(u8, tokens.next() orelse "", " ");
 
         const code_point = try std.fmt.parseInt(u21, code_point_raw, 16);
-        const lower_point = if (lower_point_raw.len > 0) if_blk: {
-            var split_tokens = std.mem.splitScalar(u8, lower_point_raw, ' ');
-            var new_slice: std.ArrayList(u21) = .empty;
-
-            while (split_tokens.next()) |token| {
-                const cp = try std.fmt.parseInt(u21, token, 16);
-                try new_slice.append(arena, cp);
-            }
-
-            break :if_blk try new_slice.toOwnedSlice(arena);
-        } else null;
-
-        const title_point = if (title_point_raw.len > 0) if_blk: {
-            var split_tokens = std.mem.splitScalar(u8, title_point_raw, ' ');
-            var new_slice: std.ArrayList(u21) = .empty;
-
-            while (split_tokens.next()) |token| {
-                const cp = try std.fmt.parseInt(u21, token, 16);
-                try new_slice.append(arena, cp);
-            }
-
-            break :if_blk try new_slice.toOwnedSlice(arena);
-        } else null;
-
-        const upper_point = if (upper_point_raw.len > 0) if_blk: {
-            var split_tokens = std.mem.splitScalar(u8, upper_point_raw, ' ');
-            var new_slice: std.ArrayList(u21) = .empty;
-
-            while (split_tokens.next()) |token| {
-                const cp = try std.fmt.parseInt(u21, token, 16);
-                try new_slice.append(arena, cp);
-            }
-
-            break :if_blk try new_slice.toOwnedSlice(arena);
-        } else null;
+        const lower_point = try parseCodePointSequence(arena, lower_raw);
+        const title_point = try parseCodePointSequence(arena, title_raw);
+        const upper_point = try parseCodePointSequence(arena, upper_raw);
 
         var locale: ?[]const u8 = null;
         var condition: ?[]const u8 = null;
 
         var conditional_tokens = std.mem.splitScalar(u8, condition_raw, ' ');
-
         while (conditional_tokens.next()) |token| {
-            // check if it is locale
-            // locale's are 2 character lower case labels.
+            // 2-character lowercase tokens are locale codes; longer tokens
+            // are conditions (e.g. "Final_Sigma").
             if (token.len == 2 and every(u8, {}, token, struct {
                 fn predicate(_: void, ch: u8, _: usize) bool {
                     return ch >= 'a' and ch <= 'z';
@@ -1305,16 +1084,12 @@ fn generateSpecialCasing(arena: std.mem.Allocator, io: std.Io, data: []const u8,
             } else if (token.len > 1) {
                 const normalized = try normalizeKey(arena, token);
                 condition = normalized;
-
                 try unique_conditions.put(arena, normalized, {});
             }
         }
 
         const entry = try special_folding_map.getOrPut(arena, code_point);
-
-        if (!entry.found_existing) {
-            entry.value_ptr.* = .empty;
-        }
+        if (!entry.found_existing) entry.value_ptr.* = .empty;
 
         try entry.value_ptr.append(arena, .{
             .lower = lower_point,
@@ -1352,11 +1127,8 @@ fn generateSpecialCasing(arena: std.mem.Allocator, io: std.Io, data: []const u8,
         \\
     );
 
-    var unique_keys_iter = unique_conditions.keyIterator();
-
-    while (unique_keys_iter.next()) |key| {
-        try writer.print("    {s},\n", .{key.*});
-    }
+    var cond_iter = unique_conditions.keyIterator();
+    while (cond_iter.next()) |key| try writer.print("    {s},\n", .{key.*});
     try writer.writeAll(
         \\
         \\    /// panic if any other condition
@@ -1372,11 +1144,8 @@ fn generateSpecialCasing(arena: std.mem.Allocator, io: std.Io, data: []const u8,
         \\    none,
         \\
     );
-    var unique_locale_iter = unique_locale.keyIterator();
-
-    while (unique_locale_iter.next()) |key| {
-        try writer.print("    {s},\n", .{key.*});
-    }
+    var locale_iter = unique_locale.keyIterator();
+    while (locale_iter.next()) |key| try writer.print("    {s},\n", .{key.*});
     try writer.writeAll(
         \\
         \\    /// panic if any other locale
@@ -1391,11 +1160,8 @@ fn generateSpecialCasing(arena: std.mem.Allocator, io: std.Io, data: []const u8,
 
     var sorted_code_points = std.ArrayList(u21).empty;
     try sorted_code_points.ensureTotalCapacity(arena, special_folding_map.count());
-
     var key_iter = special_folding_map.keyIterator();
-    while (key_iter.next()) |cp| {
-        try sorted_code_points.append(arena, cp.*);
-    }
+    while (key_iter.next()) |cp| try sorted_code_points.append(arena, cp.*);
 
     std.mem.sort(u21, sorted_code_points.items, {}, struct {
         fn lessThan(_: void, a: u21, b: u21) bool {
@@ -1412,53 +1178,23 @@ fn generateSpecialCasing(arena: std.mem.Allocator, io: std.Io, data: []const u8,
         );
 
         for (mappings.items) |mapping| {
-            try writer.writeAll("            .{ ");
-
-            try writer.writeAll(".lower = ");
-            if (mapping.lower) |v| {
-                try writer.writeAll("&.{");
-                for (v) |i| {
-                    try writer.print(" 0x{X},", .{i});
-                }
-                try writer.writeAll(" }");
-            } else try writer.writeAll("&.{}");
-
+            try writer.writeAll("            .{ .lower = ");
+            try emitOptionalCpArray(writer, mapping.lower);
             try writer.writeAll(", .upper = ");
-            if (mapping.upper) |v| {
-                try writer.writeAll("&.{");
-                for (v) |i| {
-                    try writer.print(" 0x{X},", .{i});
-                }
-                try writer.writeAll(" }");
-            } else try writer.writeAll("&.{}");
-
+            try emitOptionalCpArray(writer, mapping.upper);
             try writer.writeAll(", .title = ");
-            if (mapping.title) |v| {
-                try writer.writeAll("&.{");
-                for (v) |i| {
-                    try writer.print(" 0x{X},", .{i});
-                }
-                try writer.writeAll(" }");
-            } else try writer.writeAll("&.{}");
+            try emitOptionalCpArray(writer, mapping.title);
 
             try writer.writeAll(", .locale = ");
-            if (mapping.locale) |locale|
-                try writer.print(".{s}", .{locale})
-            else
-                try writer.writeAll(".none");
+            if (mapping.locale) |l| try writer.print(".{s}", .{l}) else try writer.writeAll(".none");
 
             try writer.writeAll(", .condition = ");
-            if (mapping.condition) |condition|
-                try writer.print(".{s}", .{condition})
-            else
-                try writer.writeAll(".none");
+            if (mapping.condition) |c| try writer.print(".{s}", .{c}) else try writer.writeAll(".none");
 
             try writer.writeAll(" },\n");
         }
 
-        try writer.writeAll(
-            "        }\n    },\n",
-        );
+        try writer.writeAll("        }\n    },\n");
     }
 
     try writer.writeAll(
@@ -1521,19 +1257,39 @@ fn generateSpecialCasing(arena: std.mem.Allocator, io: std.Io, data: []const u8,
     );
 
     try file_writer.flush();
-
     try saveUCDFile(arena, io, &dir, data, url, buf);
+}
+
+fn emitRangePredicate(writer: *std.Io.Writer, arena: std.mem.Allocator, normalized_name: []const u8) !void {
+    const fn_name = try normalizeFnName(arena, normalized_name);
+    const head: u8 = std.ascii.toUpper(fn_name[0]);
+    try writer.print(
+        \\pub inline fn is{c}{s}(cp: CodePoint) bool {{
+        \\    return utils.containsInRange(Range, CodePoint, "start", "end", &{s}_ranges, cp);
+        \\}}
+        \\
+        \\
+    , .{ head, fn_name[1..], normalized_name });
+}
+
+fn emitPagePredicate(writer: *std.Io.Writer, arena: std.mem.Allocator, normalized_name: []const u8) !void {
+    const fn_name = try normalizeFnName(arena, normalized_name);
+    const head: u8 = std.ascii.toUpper(fn_name[0]);
+    try writer.print(
+        \\pub inline fn is{c}{s}(cp: CodePoint) bool {{
+        \\    if (cp > 0x10FFFF) return false;
+        \\    const page = {s}_level1[cp >> 8];
+        \\    return {s}_level2[page][cp & 0xFF];
+        \\}}
+        \\
+        \\
+    , .{ head, fn_name[1..], normalized_name, normalized_name });
 }
 
 fn generatePropList(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
     var dir: std.Io.Dir = .cwd();
-
-    var file = try dir.createFile(io, file_name, .{
-        .truncate = true,
-        .permissions = .default_file,
-    });
+    var file = try dir.createFile(io, file_name, .{ .truncate = true, .permissions = .default_file });
     defer file.close(io);
-
     const buf = try arena.alloc(u8, 4096);
     var file_writer = file.writer(io, buf);
     const writer = &file_writer.interface;
@@ -1546,12 +1302,9 @@ fn generatePropList(arena: std.mem.Allocator, io: std.Io, data: []const u8, url:
     }) = .empty;
 
     line_loop: while (split_lines.next()) |line| {
-        if (line.len == 0 or line[0] == '#') {
-            continue :line_loop;
-        }
+        if (line.len == 0 or line[0] == '#') continue :line_loop;
 
         var split_comments = std.mem.splitScalar(u8, line, '#');
-
         const tokens_raw = split_comments.next() orelse continue :line_loop;
         var tokens_iter = std.mem.splitScalar(u8, tokens_raw, ';');
 
@@ -1559,11 +1312,8 @@ fn generatePropList(arena: std.mem.Allocator, io: std.Io, data: []const u8, url:
         const property_name_raw = tokens_iter.next() orelse @panic("property name not found");
 
         const entry = try tables.getOrPut(arena, property_name_raw);
-
         if (!entry.found_existing) {
-            entry.value_ptr.* = .{
-                .normalized_name = try normalizeKey(arena, property_name_raw),
-            };
+            entry.value_ptr.* = .{ .normalized_name = try normalizeKey(arena, property_name_raw) };
         }
 
         const code_point_raw_trimmed = std.mem.trim(u8, code_points_raw, " ");
@@ -1589,9 +1339,9 @@ fn generatePropList(arena: std.mem.Allocator, io: std.Io, data: []const u8, url:
     );
 
     var tables_iter = tables.valueIterator();
-
     table_generator: while (tables_iter.next()) |table| {
-        // a normal binary search should suffice
+        // Small property: emit a sorted range list + linear/binary-search
+        // predicate. Page tables only pay off above this threshold.
         if (table.ranges.items.len <= 256) {
             std.mem.sort(RangeType, table.ranges.items, {}, struct {
                 fn lessThan(_: void, a: RangeType, b: RangeType) bool {
@@ -1607,603 +1357,115 @@ fn generatePropList(arena: std.mem.Allocator, io: std.Io, data: []const u8, url:
             }
             try writer.writeAll("\n};\n//zig fmt: on\n\n");
 
-            const fn_name = try normalizeFnName(arena, table.normalized_name);
-            const fn_name_pascal_head: u8 = std.ascii.toUpper(fn_name[0]);
-
-            try writer.print(
-                \\pub inline fn is{c}{s}(cp: CodePoint) bool {{
-                \\    return utils.containsInRange(Range, CodePoint, "start", "end", &{s}_ranges, cp);
-                \\}}
-                \\
-                \\
-            , .{ fn_name_pascal_head, fn_name[1..], table.normalized_name });
-
+            try emitRangePredicate(writer, arena, table.normalized_name);
             continue :table_generator;
         }
-
-        // create page based lookup table.
-        const PAGE_BITS = 8;
-        const PAGE_SIZE = 1 << PAGE_BITS;
 
         const values = try arena.alloc(bool, 0x110000);
         @memset(values, false);
 
         for (table.ranges.items) |range| {
             var cp = range.start;
-            while (cp <= range.end) : (cp += 1) {
-                values[cp] = true;
-            }
+            while (cp <= range.end) : (cp += 1) values[cp] = true;
         }
 
-        var unique_pages = std.ArrayList([]const bool).empty;
-        var level1_items = std.ArrayList(usize).empty;
-        var page_map: std.AutoHashMapUnmanaged(u64, usize) = .empty;
+        const pt = try buildPageTable(bool, arena, values, false);
 
-        const page_buf = try arena.alloc(bool, PAGE_SIZE);
-
-        var total_cps: usize = 0;
-        while (total_cps < values.len) : (total_cps += PAGE_SIZE) {
-            const page_start = total_cps;
-            const page_end = @min(page_start + PAGE_SIZE, values.len);
-
-            for (page_buf, 0..) |*slot, j| {
-                const idx = page_start + j;
-                slot.* = if (idx < page_end) values[idx] else false;
-            }
-
-            var hasher = std.hash.Wyhash.init(0);
-            hasher.update(std.mem.sliceAsBytes(page_buf));
-            const page_hash = hasher.final();
-
-            var found = false;
-            var found_idx: usize = 0;
-
-            if (page_map.get(page_hash)) |idx| {
-                if (std.mem.eql(bool, unique_pages.items[idx], page_buf)) {
-                    found = true;
-                    found_idx = idx;
-                }
-            }
-
-            if (!found) {
-                const new_page = try arena.alloc(bool, PAGE_SIZE);
-                @memcpy(new_page, page_buf);
-                found_idx = unique_pages.items.len;
-                try unique_pages.append(arena, new_page);
-                try page_map.put(arena, page_hash, found_idx);
-            }
-
-            try level1_items.append(arena, found_idx);
-        }
-
-        try writer.print("//zig fmt: off\nconst {s}_level1 = [_]u16 {{", .{table.normalized_name});
-        for (level1_items.items, 0..) |idx, n| {
-            if (n % 12 == 0) try writer.writeAll("\n    ");
-            try writer.print("{},", .{idx});
-            if (n + 1 != level1_items.items.len) try writer.writeAll(" ");
-        }
-        try writer.writeAll("\n};\n//zig fmt: on\n\n");
+        try emitLevel1(writer, table.normalized_name, pt.level1);
 
         try writer.print("//zig fmt: off\nconst {s}_level2 = [_][256]bool {{\n", .{table.normalized_name});
-        for (unique_pages.items) |page| {
+        for (pt.unique_pages) |page| {
             try writer.writeAll("    .{\n        ");
             for (page, 0..) |val, j| {
                 try writer.print("{},", .{val});
-                if ((j + 1) % 12 == 0 and (j + 1) != page.len) {
-                    try writer.writeAll("\n        ");
-                } else if (j + 1 != page.len) {
-                    try writer.writeAll(" ");
-                }
+                try writePageItemSep(writer, j, page.len);
             }
             try writer.writeAll("\n    },\n");
         }
         try writer.writeAll("};\n//zig fmt: on\n\n");
 
-        const fn_name = try normalizeFnName(arena, table.normalized_name);
-        const fn_name_pascal_head: u8 = std.ascii.toUpper(fn_name[0]);
-
-        try writer.print(
-            \\pub inline fn is{c}{s}(cp: CodePoint) bool {{
-            \\    if (cp > 0x10FFFF) return false;
-            \\    const page = {s}_level1[cp >> 8];
-            \\    return {s}_level2[page][cp & 0xFF];
-            \\}}
-            \\
-            \\
-        , .{ fn_name_pascal_head, fn_name[1..], table.normalized_name, table.normalized_name });
+        try emitPagePredicate(writer, arena, table.normalized_name);
     }
 
-    // 7. Keep file flush/save logic
     try file_writer.flush();
-
     try saveUCDFile(arena, io, &dir, data, url, buf);
 }
 
-// ----- Shared generator helpers ---------------------------------------------
+// ============================================================================
+// Generators that delegate entirely to emitEnumPageTable
+// ============================================================================
 
-const EnumProperty = struct { key: []const u8, ranges: []RangeType };
-
-const ParsedLabel = struct {
-    normalized_key: []const u8,
-    ranges: std.ArrayList(RangeType) = .empty,
-};
-
-/// Parse a UCD file shaped like `<range> ; <Label> # <comment>` into a map
-/// from raw label string to its normalized snake_case key and accumulated
-/// ranges. Used by every enum + 2-level page table generator.
-fn parseSemicolonRangeFile(
+/// Common scaffolding for the file-per-property generators: open the output
+/// file, parse the standard `<range> ; <label>` UCD shape, emit the file
+/// header + enum + page table, save the upstream fixture. `default_variant`
+/// is the snake_case enum variant assigned value 0 (matches each file's
+/// `@missing` line: e.g. Word_Break defaults to Other, Line_Break to XX).
+fn generateSimpleEnumProperty(
     arena: std.mem.Allocator,
+    io: std.Io,
     data: []const u8,
-) !std.StringHashMapUnmanaged(ParsedLabel) {
-    var labels: std.StringHashMapUnmanaged(ParsedLabel) = .empty;
-    var lines = std.mem.splitScalar(u8, data, '\n');
-    line_loop: while (lines.next()) |line| {
-        if (line.len == 0 or line[0] == '#') continue :line_loop;
-        var split_comments = std.mem.splitScalar(u8, line, '#');
-        const tokens_raw = split_comments.next() orelse continue :line_loop;
-        var tokens_iter = std.mem.splitScalar(u8, tokens_raw, ';');
-        const cp_raw = tokens_iter.next() orelse continue :line_loop;
-        const label_raw = tokens_iter.next() orelse continue :line_loop;
-        const entry = try labels.getOrPut(arena, label_raw);
-        if (!entry.found_existing) {
-            entry.value_ptr.* = .{ .normalized_key = try normalizeKey(arena, label_raw) };
-        }
-        var cp_iter = std.mem.splitSequence(u8, std.mem.trim(u8, cp_raw, " \t"), "..");
-        const start_raw = cp_iter.next() orelse continue :line_loop;
-        const start = try std.fmt.parseInt(u21, std.mem.trim(u8, start_raw, " \t"), 16);
-        const end = if (cp_iter.next()) |end_raw|
-            try std.fmt.parseInt(u21, std.mem.trim(u8, end_raw, " \t"), 16)
-        else
-            start;
-        try entry.value_ptr.ranges.append(arena, .{ .start = start, .end = end });
-    }
-    return labels;
-}
-
-fn labelMapToProperties(
-    arena: std.mem.Allocator,
-    labels: *std.StringHashMapUnmanaged(ParsedLabel),
-) ![]EnumProperty {
-    const arr = try arena.alloc(EnumProperty, labels.count());
-    var i: usize = 0;
-    var it = labels.valueIterator();
-    while (it.next()) |v| : (i += 1) {
-        arr[i] = .{ .key = v.normalized_key, .ranges = v.ranges.items };
-    }
-    return arr;
-}
-
-/// Emit a `pub const {enum_name} = enum(u8) { ... }` + two-level page table
-/// + lookup function. `default_variant` is declared first and gets enum
-/// value 0. If an input label normalizes to the same key as the default,
-/// it's folded into the default (no duplicate variant emitted).
-fn emitEnumPageTable(
-    arena: std.mem.Allocator,
-    writer: *std.Io.Writer,
-    properties_in: []EnumProperty,
+    url: []const u8,
+    file_name: []const u8,
     enum_name: []const u8,
     table_prefix: []const u8,
     default_variant: []const u8,
     lookup_fn_name: []const u8,
 ) !void {
-    std.mem.sort(EnumProperty, properties_in, {}, struct {
-        fn lessThan(_: void, a: EnumProperty, b: EnumProperty) bool {
-            return std.mem.lessThan(u8, a.key, b.key);
-        }
-    }.lessThan);
-
-    const values = try arena.alloc(u8, 0x110000);
-    @memset(values, 0);
-
-    // If an explicit label equals the default, fold its ranges into value 0
-    // so page dedup can collapse them with the implicit default.
-    var default_idx: ?usize = null;
-    for (properties_in, 0..) |prop, i| {
-        if (std.mem.eql(u8, prop.key, default_variant)) {
-            default_idx = i;
-            break;
-        }
-    }
-
-    for (properties_in, 0..) |prop, i| {
-        const enum_val: u8 = if (default_idx != null and i == default_idx.?) 0 else @intCast(i + 1);
-        for (prop.ranges) |range| {
-            var cp = range.start;
-            while (cp <= range.end) : (cp += 1) {
-                values[cp] = enum_val;
-            }
-        }
-    }
-
-    const PAGE_BITS = 8;
-    const PAGE_SIZE = 1 << PAGE_BITS;
-
-    var unique_pages = std.ArrayList([]const u8).empty;
-    var level1_items = std.ArrayList(usize).empty;
-    var page_map: std.AutoHashMapUnmanaged(u64, usize) = .empty;
-    const page_buf = try arena.alloc(u8, PAGE_SIZE);
-
-    var total_cps: usize = 0;
-    while (total_cps < values.len) : (total_cps += PAGE_SIZE) {
-        const page_start = total_cps;
-        const page_end = @min(page_start + PAGE_SIZE, values.len);
-        for (page_buf, 0..) |*slot, j| {
-            const v_idx = page_start + j;
-            slot.* = if (v_idx < page_end) values[v_idx] else 0;
-        }
-        var hasher = std.hash.Wyhash.init(0);
-        hasher.update(page_buf);
-        const page_hash = hasher.final();
-        var found = false;
-        var found_idx: usize = 0;
-        if (page_map.get(page_hash)) |existing| {
-            if (std.mem.eql(u8, unique_pages.items[existing], page_buf)) {
-                found = true;
-                found_idx = existing;
-            }
-        }
-        if (!found) {
-            const new_page = try arena.alloc(u8, PAGE_SIZE);
-            @memcpy(new_page, page_buf);
-            found_idx = unique_pages.items.len;
-            try unique_pages.append(arena, new_page);
-            try page_map.put(arena, page_hash, found_idx);
-        }
-        try level1_items.append(arena, found_idx);
-    }
-
-    try writer.print("pub const {s} = enum(u8) {{\n    {s},\n", .{ enum_name, default_variant });
-    for (properties_in) |prop| {
-        if (std.mem.eql(u8, prop.key, default_variant)) continue;
-        try writer.print("    {s},\n", .{prop.key});
-    }
-    try writer.writeAll("};\n\n");
-
-    try writer.print("//zig fmt: off\nconst {s}_level1 = [_]u16 {{", .{table_prefix});
-    for (level1_items.items, 0..) |idx, n| {
-        if (n % 12 == 0) try writer.writeAll("\n    ");
-        try writer.print("{},", .{idx});
-        if (n + 1 != level1_items.items.len) try writer.writeAll(" ");
-    }
-    try writer.writeAll("\n};\n//zig fmt: on\n\n");
-
-    try writer.print("//zig fmt: off\nconst {s}_level2 = [_][256]{s} {{\n", .{ table_prefix, enum_name });
-    for (unique_pages.items) |page| {
-        try writer.writeAll("    .{\n        ");
-        for (page, 0..) |val, j| {
-            if (val == 0) {
-                try writer.print(".{s},", .{default_variant});
-            } else {
-                try writer.print(".{s},", .{properties_in[val - 1].key});
-            }
-            if ((j + 1) % 12 == 0 and (j + 1) != page.len) {
-                try writer.writeAll("\n        ");
-            } else if (j + 1 != page.len) {
-                try writer.writeAll(" ");
-            }
-        }
-        try writer.writeAll("\n    },\n");
-    }
-    try writer.writeAll("};\n//zig fmt: on\n\n");
-
-    try writer.print(
-        \\pub inline fn {s}(cp: CodePoint) {s} {{
-        \\    if (cp > 0x10FFFF) return .{s};
-        \\    const page = {s}_level1[cp >> 8];
-        \\    return {s}_level2[page][cp & 0xFF];
-        \\}}
-        \\
-        \\
-    , .{ lookup_fn_name, enum_name, default_variant, table_prefix, table_prefix });
-}
-
-const generated_file_header =
-    \\//! This file is auto-generated. Do not edit directly.
-    \\//! To regenerate run `zig build generate` in same level
-    \\//! as `build.zig` file.
-    \\
-    \\const CodePoint = @import("encoding").CodePoint;
-    \\
-    \\
-;
-
-fn generateGraphemeBreakProperty(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
     var dir: std.Io.Dir = .cwd();
-
-    var file = try dir.createFile(io, file_name, .{
-        .truncate = true,
-        .permissions = .default_file,
-    });
+    var file = try dir.createFile(io, file_name, .{ .truncate = true, .permissions = .default_file });
     defer file.close(io);
-
     const buf = try arena.alloc(u8, 4096);
     var file_writer = file.writer(io, buf);
     const writer = &file_writer.interface;
 
-    var split_lines = std.mem.splitScalar(u8, data, '\n');
+    var labels = try parseSemicolonRangeFile(arena, data);
+    const properties = try labelMapToProperties(arena, &labels);
 
-    var break_ranges: std.StringHashMapUnmanaged(struct {
-        normalized_key: []const u8,
-        ranges: std.ArrayList(RangeType) = .empty,
-    }) = .empty;
-
-    line_loop: while (split_lines.next()) |line| {
-        if (line.len == 0 or line[0] == '#') {
-            continue :line_loop;
-        }
-
-        var split_comments = std.mem.splitScalar(u8, line, '#');
-
-        const tokens_raw = split_comments.next() orelse continue :line_loop;
-        var tokens_iter = std.mem.splitScalar(u8, tokens_raw, ';');
-
-        const code_points_raw = tokens_iter.next() orelse @panic("code point not found");
-        const break_type_raw = tokens_iter.next() orelse @panic("cluster break not found");
-
-        const entry = try break_ranges.getOrPut(arena, break_type_raw);
-
-        if (!entry.found_existing) {
-            entry.value_ptr.* = .{
-                .normalized_key = try normalizeKey(arena, break_type_raw),
-            };
-        }
-
-        var code_point_iter = std.mem.splitSequence(u8, std.mem.trim(u8, code_points_raw, " "), "..");
-
-        const start = try std.fmt.parseInt(u21, code_point_iter.next() orelse @panic("start code point not found"), 16);
-        const end = if (code_point_iter.next()) |end_raw|
-            try std.fmt.parseInt(u21, end_raw, 16)
-        else
-            start;
-
-        try entry.value_ptr.ranges.append(arena, .{ .start = start, .end = end });
-    }
-
-    const PAGE_BITS = 8;
-    const PAGE_SIZE = 1 << PAGE_BITS;
-
-    const Property = struct { key: []const u8, ranges: []RangeType };
-
-    const property_count = break_ranges.count();
-    const properties = try arena.alloc(Property, property_count);
-
-    var p_idx: usize = 0;
-    var props_iter = break_ranges.valueIterator();
-    while (props_iter.next()) |val| : (p_idx += 1) {
-        properties[p_idx] = .{ .key = val.normalized_key, .ranges = val.ranges.items };
-    }
-
-    std.mem.sort(Property, properties, {}, struct {
-        fn lessThan(_: void, a: Property, b: Property) bool {
-            return std.mem.lessThan(u8, a.key, b.key);
-        }
-    }.lessThan);
-
-    // 0 = none; (i + 1) = `properties[i]`.
-    const values = try arena.alloc(u8, 0x110000);
-    @memset(values, 0);
-
-    for (properties, 0..) |prop, i| {
-        const enum_val: u8 = @intCast(i + 1);
-        for (prop.ranges) |range| {
-            var cp = range.start;
-            while (cp <= range.end) : (cp += 1) {
-                values[cp] = enum_val;
-            }
-        }
-    }
-
-    var unique_pages = std.ArrayList([]const u8).empty;
-    var level1_items = std.ArrayList(usize).empty;
-    var page_map: std.AutoHashMapUnmanaged(u64, usize) = .empty;
-
-    const page_buf = try arena.alloc(u8, PAGE_SIZE);
-
-    var total_cps: usize = 0;
-    while (total_cps < values.len) : (total_cps += PAGE_SIZE) {
-        const page_start = total_cps;
-        const page_end = @min(page_start + PAGE_SIZE, values.len);
-
-        for (page_buf, 0..) |*slot, j| {
-            const v_idx = page_start + j;
-            slot.* = if (v_idx < page_end) values[v_idx] else 0;
-        }
-
-        var hasher = std.hash.Wyhash.init(0);
-        hasher.update(page_buf);
-        const page_hash = hasher.final();
-
-        var found = false;
-        var found_idx: usize = 0;
-
-        if (page_map.get(page_hash)) |existing_idx| {
-            if (std.mem.eql(u8, unique_pages.items[existing_idx], page_buf)) {
-                found = true;
-                found_idx = existing_idx;
-            }
-        }
-
-        if (!found) {
-            const new_page = try arena.alloc(u8, PAGE_SIZE);
-            @memcpy(new_page, page_buf);
-            found_idx = unique_pages.items.len;
-            try unique_pages.append(arena, new_page);
-            try page_map.put(arena, page_hash, found_idx);
-        }
-
-        try level1_items.append(arena, found_idx);
-    }
-
-    try writer.writeAll(
-        \\//! This file is auto-generated. Do not edit directly.
-        \\//! To regenerate run `zig build generate` in same level
-        \\//! as `build.zig` file.
-        \\
-        \\const CodePoint = @import("encoding").CodePoint;
-        \\
-        \\pub const GraphemeBreakProperty = enum(u8) {
-        \\    none,
-        \\
-    );
-
-    for (properties) |prop| {
-        try writer.print("    {s},\n", .{prop.key});
-    }
-
-    try writer.writeAll("};\n\n");
-
-    try writer.writeAll("//zig fmt: off\nconst grapheme_break_level1 = [_]u16 {");
-    for (level1_items.items, 0..) |level1_idx, n| {
-        if (n % 12 == 0) try writer.writeAll("\n    ");
-        try writer.print("{},", .{level1_idx});
-        if (n + 1 != level1_items.items.len) try writer.writeAll(" ");
-    }
-    try writer.writeAll("\n};\n//zig fmt: on\n\n");
-
-    try writer.writeAll("//zig fmt: off\nconst grapheme_break_level2 = [_][256]GraphemeBreakProperty {\n");
-    for (unique_pages.items) |page| {
-        try writer.writeAll("    .{\n        ");
-        for (page, 0..) |val, j| {
-            if (val == 0) {
-                try writer.writeAll(".none,");
-            } else {
-                try writer.print(".{s},", .{properties[val - 1].key});
-            }
-            if ((j + 1) % 12 == 0 and (j + 1) != page.len) {
-                try writer.writeAll("\n        ");
-            } else if (j + 1 != page.len) {
-                try writer.writeAll(" ");
-            }
-        }
-        try writer.writeAll("\n    },\n");
-    }
-    try writer.writeAll("};\n//zig fmt: on\n\n");
-
-    try writer.writeAll(
-        \\pub inline fn graphemeBreakProperty(cp: CodePoint) GraphemeBreakProperty {
-        \\    if (cp > 0x10FFFF) return .none;
-        \\    const page = grapheme_break_level1[cp >> 8];
-        \\    return grapheme_break_level2[page][cp & 0xFF];
-        \\}
-        \\
-    );
+    try writer.writeAll(generated_file_header);
+    try emitEnumPageTable(arena, writer, properties, enum_name, table_prefix, default_variant, lookup_fn_name);
 
     try file_writer.flush();
-
     try saveUCDFile(arena, io, &dir, data, url, buf);
 }
 
+fn generateGraphemeBreakProperty(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
+    return generateSimpleEnumProperty(arena, io, data, url, file_name, "GraphemeBreakProperty", "grapheme_break", "none", "graphemeBreakProperty");
+}
+
 /// Source: https://www.unicode.org/Public/UCD/latest/ucd/emoji/emoji-data.txt
-/// Shape: `<range> ; <property>` where property is one of Emoji, Emoji_Presentation,
-/// Emoji_Modifier, Emoji_Modifier_Base, Emoji_Component, Extended_Pictographic.
-/// Output: one bool predicate per property (mirror prop_list strategy).
-/// API: `isEmoji`, `isEmojiPresentation`, `isEmojiModifier`,
-/// `isEmojiModifierBase`, `isEmojiComponent`, `isExtendedPictographic`.
-///
-/// The file format is identical to PropList.txt — `<range> ; <Label> # comment`
-/// — so we delegate to the prop_list generator. It already emits one
-/// `is{PascalCase}` predicate per unique label, picking range-list vs
-/// 2-level page table by range count.
+/// Shape: `<range> ; <property>` where property is one of Emoji,
+/// Emoji_Presentation, Emoji_Modifier, Emoji_Modifier_Base, Emoji_Component,
+/// Extended_Pictographic. The format is identical to PropList.txt — `<range> ;
+/// <Label> # comment` — so we delegate to the prop_list generator. It already
+/// emits one `is{PascalCase}` predicate per unique label, picking range-list
+/// vs 2-level page table by range count.
 fn generateEmojiData(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
     return generatePropList(arena, io, data, url, file_name);
 }
 
 /// Source: https://www.unicode.org/Public/UCD/latest/ucd/auxiliary/WordBreakProperty.txt
-/// Shape: `<range> ; <Word_Break value>` lines. Default value is `Other`.
-/// Output: enum `WordBreakProperty` + 2-level page table.
-/// API: `pub inline fn wordBreakProperty(cp: CodePoint) WordBreakProperty`.
 fn generateWordBreakProperty(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
-    var dir: std.Io.Dir = .cwd();
-    var file = try dir.createFile(io, file_name, .{ .truncate = true, .permissions = .default_file });
-    defer file.close(io);
-
-    const buf = try arena.alloc(u8, 4096);
-    var file_writer = file.writer(io, buf);
-    const writer = &file_writer.interface;
-
-    var labels = try parseSemicolonRangeFile(arena, data);
-    const properties = try labelMapToProperties(arena, &labels);
-
-    try writer.writeAll(generated_file_header);
-    try emitEnumPageTable(arena, writer, properties, "WordBreakProperty", "word_break", "other", "wordBreakProperty");
-
-    try file_writer.flush();
-    try saveUCDFile(arena, io, &dir, data, url, buf);
+    return generateSimpleEnumProperty(arena, io, data, url, file_name, "WordBreakProperty", "word_break", "other", "wordBreakProperty");
 }
 
 /// Source: https://www.unicode.org/Public/UCD/latest/ucd/auxiliary/SentenceBreakProperty.txt
-/// Shape: `<range> ; <Sentence_Break value>` lines. Default value is `Other`.
-/// Output: enum `SentenceBreakProperty` + 2-level page table.
-/// API: `pub inline fn sentenceBreakProperty(cp: CodePoint) SentenceBreakProperty`.
 fn generateSentenceBreakProperty(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
-    var dir: std.Io.Dir = .cwd();
-    var file = try dir.createFile(io, file_name, .{ .truncate = true, .permissions = .default_file });
-    defer file.close(io);
-
-    const buf = try arena.alloc(u8, 4096);
-    var file_writer = file.writer(io, buf);
-    const writer = &file_writer.interface;
-
-    var labels = try parseSemicolonRangeFile(arena, data);
-    const properties = try labelMapToProperties(arena, &labels);
-
-    try writer.writeAll(generated_file_header);
-    try emitEnumPageTable(arena, writer, properties, "SentenceBreakProperty", "sentence_break", "other", "sentenceBreakProperty");
-
-    try file_writer.flush();
-    try saveUCDFile(arena, io, &dir, data, url, buf);
+    return generateSimpleEnumProperty(arena, io, data, url, file_name, "SentenceBreakProperty", "sentence_break", "other", "sentenceBreakProperty");
 }
 
 /// Source: https://www.unicode.org/Public/UCD/latest/ucd/LineBreak.txt
-/// Shape: `<range> ; <Line_Break value>` lines. Default value is `XX` (Unknown).
-/// Output: enum `LineBreak` (~45 values) + 2-level page table.
-/// API: `pub inline fn lineBreak(cp: CodePoint) LineBreak`.
-/// Note: implementing UAX #14 pair-table logic on top of this is a separate
-/// algorithm module; this generator only emits the per-codepoint property.
+/// Default `xx` matches the file's @missing line (Unknown). UAX #14
+/// pair-table logic on top of this is a separate algorithm module; this
+/// generator only emits the per-codepoint property.
 fn generateLineBreak(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
-    var dir: std.Io.Dir = .cwd();
-    var file = try dir.createFile(io, file_name, .{ .truncate = true, .permissions = .default_file });
-    defer file.close(io);
-
-    const buf = try arena.alloc(u8, 4096);
-    var file_writer = file.writer(io, buf);
-    const writer = &file_writer.interface;
-
-    var labels = try parseSemicolonRangeFile(arena, data);
-    const properties = try labelMapToProperties(arena, &labels);
-
-    try writer.writeAll(generated_file_header);
-    // `xx` is the default value (matches the file's @missing: ... ; XX line).
-    try emitEnumPageTable(arena, writer, properties, "LineBreak", "line_break", "xx", "lineBreak");
-
-    try file_writer.flush();
-    try saveUCDFile(arena, io, &dir, data, url, buf);
+    return generateSimpleEnumProperty(arena, io, data, url, file_name, "LineBreak", "line_break", "xx", "lineBreak");
 }
 
 /// Source: https://www.unicode.org/Public/UCD/latest/ucd/EastAsianWidth.txt
-/// Shape: `<range> ; <East_Asian_Width value>` (N, Na, A, W, F, H).
-/// Output: enum `EastAsianWidth` + 2-level page table.
-/// API: `pub inline fn eastAsianWidth(cp: CodePoint) EastAsianWidth`. The
-/// `terminalColumnWidth` convenience lives in the consumer module because
-/// it needs `general_category` to recognize non-spacing marks / controls.
+/// Default `n` (Neutral) matches the file's @missing line. `terminalColumnWidth`
+/// lives in the consumer module because it needs `general_category`.
 fn generateEastAsianWidth(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
-    var dir: std.Io.Dir = .cwd();
-    var file = try dir.createFile(io, file_name, .{ .truncate = true, .permissions = .default_file });
-    defer file.close(io);
-
-    const buf = try arena.alloc(u8, 4096);
-    var file_writer = file.writer(io, buf);
-    const writer = &file_writer.interface;
-
-    var labels = try parseSemicolonRangeFile(arena, data);
-    const properties = try labelMapToProperties(arena, &labels);
-
-    try writer.writeAll(generated_file_header);
-    // `n` (Neutral) is the default, matching the file's @missing: ... ; N line.
-    try emitEnumPageTable(arena, writer, properties, "EastAsianWidth", "east_asian_width", "n", "eastAsianWidth");
-
-    try file_writer.flush();
-    try saveUCDFile(arena, io, &dir, data, url, buf);
+    return generateSimpleEnumProperty(arena, io, data, url, file_name, "EastAsianWidth", "east_asian_width", "n", "eastAsianWidth");
 }
 
 // ----- Tier 2: normalization ------------------------------------------------
@@ -2212,10 +1474,6 @@ fn generateEastAsianWidth(arena: std.mem.Allocator, io: std.Io, data: []const u8
 /// Shape: same `<range> ; <property> [; <value>]` style as DerivedCoreProperties,
 /// but several properties carry a tri-state value (Yes/No/Maybe) — NFC_QC,
 /// NFD_QC, NFKC_QC, NFKD_QC — not a plain bool.
-/// Output: bool predicates for binary properties (Full_Composition_Exclusion,
-/// Changes_When_NFKC_Casefolded), tri-state lookup for QC properties,
-/// plus a separate codepoint→codepoints map for NFKC_Casefold and NFKC_Simple_Casefold.
-/// API surface is big — design before implementing.
 fn generateDerivedNormalizationProps(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
     _ = arena;
     _ = io;
@@ -2226,10 +1484,6 @@ fn generateDerivedNormalizationProps(arena: std.mem.Allocator, io: std.Io, data:
 }
 
 /// Source: https://www.unicode.org/Public/UCD/latest/ucd/CompositionExclusions.txt
-/// Shape: bare codepoint per line. Single-property set (~80 entries).
-/// Output: sorted `const composition_exclusions = [_]CodePoint{...}` plus
-/// `pub fn isCompositionExclusion(cp: CodePoint) bool` (binary search).
-/// Used by the NFC composition step to skip excluded canonical compositions.
 fn generateCompositionExclusions(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
     _ = arena;
     _ = io;
@@ -2241,8 +1495,6 @@ fn generateCompositionExclusions(arena: std.mem.Allocator, io: std.Io, data: []c
 
 /// Source: https://www.unicode.org/Public/UCD/latest/ucd/NormalizationTest.txt
 /// NOT a code generator — this is the conformance fixture for NFC/NFD/NFKC/NFKD.
-/// Save the raw text to `ucd/NormalizationTest.txt`. The actual test driver
-/// lives in `src/unicode/tests/` and parses the saved file at test time.
 fn generateNormalizationTestFixture(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
     _ = arena;
     _ = io;
@@ -2252,12 +1504,19 @@ fn generateNormalizationTestFixture(arena: std.mem.Allocator, io: std.Io, data: 
     @panic("TODO: generateNormalizationTestFixture (download + save only, no Zig output)");
 }
 
+/// Generic "download-only" generator: just persist the upstream UCD file
+/// into `ucd/` for use as a test fixture. No Zig source is emitted. Used
+/// for the UAX #14 / UAX #29 segmentation conformance fixtures.
+fn saveUCDFixtureOnly(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
+    _ = file_name;
+    var dir: std.Io.Dir = .cwd();
+    var buf: [4096]u8 = undefined;
+    try saveUCDFile(arena, io, &dir, data, url, &buf);
+}
+
 // ----- Tier 3: script & bidi ------------------------------------------------
 
 /// Source: https://www.unicode.org/Public/UCD/latest/ucd/Scripts.txt
-/// Shape: `<range> ; <Script value>` lines. Default value is `Unknown`.
-/// Output: enum `Script` (~160 values) + 2-level page table.
-/// API: `pub inline fn script(cp: CodePoint) Script`.
 fn generateScripts(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
     _ = arena;
     _ = io;
@@ -2268,11 +1527,6 @@ fn generateScripts(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: 
 }
 
 /// Source: https://www.unicode.org/Public/UCD/latest/ucd/ScriptExtensions.txt
-/// Shape: `<range> ; <space-separated Script_Extension values>`.
-/// Output: for each unique set-of-scripts pattern, emit a sorted array; map
-/// codepoint → set-index via 2-level page table. Many codepoints share the
-/// same extension set so this dedups very well.
-/// API: `pub fn scriptExtensions(cp: CodePoint) []const Script`.
 fn generateScriptExtensions(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
     _ = arena;
     _ = io;
@@ -2283,11 +1537,6 @@ fn generateScriptExtensions(arena: std.mem.Allocator, io: std.Io, data: []const 
 }
 
 /// Source: https://www.unicode.org/Public/UCD/latest/ucd/BidiBrackets.txt
-/// Shape: `<cp> ; <paired cp> ; <o|c>` (open or close). ~120 entries.
-/// Output: sorted `const bracket_pairs = [_]BracketPair{...}` keyed by `cp`,
-/// plus binary-search lookup.
-/// API: `pub fn bidiBracket(cp: CodePoint) ?BidiBracket` returning the paired
-/// codepoint and direction.
 fn generateBidiBrackets(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
     _ = arena;
     _ = io;
@@ -2298,9 +1547,6 @@ fn generateBidiBrackets(arena: std.mem.Allocator, io: std.Io, data: []const u8, 
 }
 
 /// Source: https://www.unicode.org/Public/UCD/latest/ucd/BidiMirroring.txt
-/// Shape: `<cp> ; <mirrored cp>` lines. ~370 entries.
-/// Output: sorted `[_]MirrorEntry{ .source, .target }` + binary search.
-/// API: `pub fn bidiMirrored(cp: CodePoint) ?CodePoint`.
 fn generateBidiMirroring(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
     _ = arena;
     _ = io;
@@ -2313,9 +1559,6 @@ fn generateBidiMirroring(arena: std.mem.Allocator, io: std.Io, data: []const u8,
 // ----- Tier 4: numeric & metadata -------------------------------------------
 
 /// Source: https://www.unicode.org/Public/UCD/latest/ucd/extracted/DerivedNumericType.txt
-/// Shape: `<range> ; <Numeric_Type>` (Decimal | Digit | Numeric | None).
-/// Output: enum `NumericType` + 2-level page table.
-/// API: `pub inline fn numericType(cp: CodePoint) NumericType`.
 fn generateDerivedNumericType(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
     _ = arena;
     _ = io;
@@ -2326,11 +1569,6 @@ fn generateDerivedNumericType(arena: std.mem.Allocator, io: std.Io, data: []cons
 }
 
 /// Source: https://www.unicode.org/Public/UCD/latest/ucd/extracted/DerivedNumericValues.txt
-/// Shape: `<range> ; <decimal value> ; ; <rational value>` (can be 1, 1/2, -1, etc.)
-/// Output: sorted `[_]NumericEntry{ .cp, .numerator, .denominator }` plus
-/// binary-search lookup. Values are exact rationals — store both parts as
-/// `i64` to handle fractions like 1/16 and large numerators like 1000000.
-/// API: `pub fn numericValue(cp: CodePoint) ?NumericValue`.
 fn generateDerivedNumericValues(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
     _ = arena;
     _ = io;
@@ -2341,10 +1579,6 @@ fn generateDerivedNumericValues(arena: std.mem.Allocator, io: std.Io, data: []co
 }
 
 /// Source: https://www.unicode.org/Public/UCD/latest/ucd/Blocks.txt
-/// Shape: `<range> ; <Block name>` (~330 entries, contiguous, non-overlapping).
-/// Output: sorted `[_]BlockEntry{ .start, .end, .name_index }` plus a
-/// `[]const []const u8` of unique block names.
-/// API: `pub fn block(cp: CodePoint) []const u8` (returns "No_Block" for gaps).
 fn generateBlocks(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
     _ = arena;
     _ = io;
@@ -2355,11 +1589,6 @@ fn generateBlocks(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: [
 }
 
 /// Source: https://www.unicode.org/Public/UCD/latest/ucd/HangulSyllableType.txt
-/// Shape: `<range> ; <Hangul_Syllable_Type>` (L | V | T | LV | LVT | NA).
-/// Output: enum `HangulSyllableType` + 2-level page table.
-/// API: `pub inline fn hangulSyllableType(cp: CodePoint) HangulSyllableType`.
-/// Needed if you implement algorithmic Hangul L+V+T composition outside the
-/// generic NFC tables.
 fn generateHangulSyllableType(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
     _ = arena;
     _ = io;
@@ -2370,9 +1599,6 @@ fn generateHangulSyllableType(arena: std.mem.Allocator, io: std.Io, data: []cons
 }
 
 /// Source: https://www.unicode.org/Public/UCD/latest/ucd/DerivedAge.txt
-/// Shape: `<range> ; <Unicode version>` (e.g., "1.1", "17.0").
-/// Output: sorted `[_]AgeEntry{ .start, .end, .major, .minor }` + binary search.
-/// API: `pub fn unicodeAge(cp: CodePoint) ?UnicodeVersion`.
 fn generateDerivedAge(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
     _ = arena;
     _ = io;
@@ -2388,7 +1614,6 @@ pub fn main(init: std.process.Init) !void {
     const io = init.io;
 
     const clock: std.Io.Clock = .real;
-
     const start = clock.now(io);
 
     var max_memory: u64 = 0;
@@ -2452,6 +1677,32 @@ pub fn main(init: std.process.Init) !void {
             .file_name = "src/unicode/width/generated/east_asian_width.zig",
             .url = "https://www.unicode.org/Public/UCD/latest/ucd/EastAsianWidth.txt",
             .generatorFn = generateEastAsianWidth,
+        },
+
+        // ----- Test fixtures (download-only; no Zig source emitted) -----
+        // These are parsed at test time by `src/unicode/tests/ucd_conformance.zig`
+        // to validate the segmentation/line-break algorithms against the
+        // upstream Unicode reference data. The `file_name` field is unused
+        // for these — the saved location is always `ucd/<basename-of-url>`.
+        .{
+            .file_name = "ucd/GraphemeBreakTest.txt",
+            .url = "https://www.unicode.org/Public/UCD/latest/ucd/auxiliary/GraphemeBreakTest.txt",
+            .generatorFn = saveUCDFixtureOnly,
+        },
+        .{
+            .file_name = "ucd/WordBreakTest.txt",
+            .url = "https://www.unicode.org/Public/UCD/latest/ucd/auxiliary/WordBreakTest.txt",
+            .generatorFn = saveUCDFixtureOnly,
+        },
+        .{
+            .file_name = "ucd/SentenceBreakTest.txt",
+            .url = "https://www.unicode.org/Public/UCD/latest/ucd/auxiliary/SentenceBreakTest.txt",
+            .generatorFn = saveUCDFixtureOnly,
+        },
+        .{
+            .file_name = "ucd/LineBreakTest.txt",
+            .url = "https://www.unicode.org/Public/UCD/latest/ucd/auxiliary/LineBreakTest.txt",
+            .generatorFn = saveUCDFixtureOnly,
         },
 
         // ----- Tier 2: normalization -----

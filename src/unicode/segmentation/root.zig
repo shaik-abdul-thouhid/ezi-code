@@ -13,6 +13,9 @@ pub const word_break = @import("generated/word_break.zig");
 pub const sentence_break = @import("generated/sentence_break.zig");
 pub const line_break = @import("generated/line_break.zig");
 
+const east_asian_width = @import("../width/generated/east_asian_width.zig");
+const unicode_data = @import("../generated/unicode_data.zig");
+
 pub const WordBreakProperty = word_break.WordBreakProperty;
 pub const wordBreakProperty = word_break.wordBreakProperty;
 pub const SentenceBreakProperty = sentence_break.SentenceBreakProperty;
@@ -240,6 +243,1901 @@ pub fn countGraphemes(bytes: []const u8) usize {
 
 pub fn countGraphemesFromCodePoints(code_points: []const CodePoint) usize {
     var it = codePointIterator(code_points);
+    var count: usize = 0;
+    while (it.next() != null) count += 1;
+    return count;
+}
+
+// ============================================================================
+// UAX #29 Word boundary
+// ============================================================================
+
+const WordProp = WordBreakProperty;
+
+inline fn isAHLetter(p: WordProp) bool {
+    return p == .aletter or p == .hebrew_letter;
+}
+
+inline fn isMidNumLetQ(p: WordProp) bool {
+    return p == .mid_num_let or p == .single_quote;
+}
+
+inline fn isWordIgnorable(p: WordProp) bool {
+    // WB4: Extend, Format, ZWJ are "invisible" for rules WB5..WB999.
+    return p == .extend or p == .format or p == .zwj;
+}
+
+inline fn isWordHardSep(p: WordProp) bool {
+    return p == .newline or p == .cr or p == .lf;
+}
+
+/// Per-position state required to evaluate UAX #29 word boundary rules
+/// incrementally. Construct via `WordStepState.init(code_points[0])` and feed
+/// successive positions through `wordStep`.
+pub const WordStepState = struct {
+    /// Effective (post-WB4) property of the most recent non-ignorable codepoint.
+    eff_prev: WordProp,
+    /// Effective property of the codepoint before that, or null at start of text.
+    eff_prev_prev: ?WordProp,
+    /// Number of consecutive Regional_Indicator codepoints ending at the most
+    /// recent non-ignorable position.
+    ri_count: usize,
+    /// Raw (literal, NOT WB4-skipped) property of the immediately previous
+    /// codepoint. WB3/WB3a/WB3b/WB3c need the literal, not the effective.
+    prev_lit: WordProp,
+
+    pub fn init(first_code_point: CodePoint) WordStepState {
+        const p = wordBreakProperty(first_code_point);
+        return .{
+            .eff_prev = p,
+            .eff_prev_prev = null,
+            .ri_count = if (p == .regional_indicator) 1 else 0,
+            .prev_lit = p,
+        };
+    }
+};
+
+pub const WordStepDecision = struct {
+    is_break: bool,
+    new_state: WordStepState,
+};
+
+/// Walk forward from `start` over `code_points`, returning the property of
+/// the first codepoint whose word break property is not Extend/Format/ZWJ,
+/// or null if no such codepoint exists. Used for the bounded lookahead in
+/// WB6, WB7b, and WB12.
+fn nextEffectiveWordProp(code_points: []const CodePoint, start: usize) ?WordProp {
+    var j = start;
+    while (j < code_points.len) : (j += 1) {
+        const p = wordBreakProperty(code_points[j]);
+        if (!isWordIgnorable(p)) return p;
+    }
+    return null;
+}
+
+/// Decide whether there is a word boundary BEFORE `code_points[i]`, given
+/// the algorithm state derived from positions 0..i-1. Returns the boundary
+/// decision and the new state to use after consuming position `i`. The
+/// caller must have invoked `WordStepState.init(code_points[0])` before
+/// calling this for i == 1.
+pub fn wordStep(state: WordStepState, code_points: []const CodePoint, i: usize) WordStepDecision {
+    const curr = wordBreakProperty(code_points[i]);
+    const prev_lit = state.prev_lit;
+
+    // WB3: CR × LF — no break, eff state slides one over.
+    if (prev_lit == .cr and curr == .lf) {
+        return .{
+            .is_break = false,
+            .new_state = .{
+                .eff_prev = curr,
+                .eff_prev_prev = state.eff_prev,
+                .ri_count = 0,
+                .prev_lit = curr,
+            },
+        };
+    }
+    // WB3a: (Newline | CR | LF) ÷ — break, reset eff_prev_prev.
+    if (isWordHardSep(prev_lit)) {
+        return .{
+            .is_break = true,
+            .new_state = .{
+                .eff_prev = curr,
+                .eff_prev_prev = null,
+                .ri_count = if (curr == .regional_indicator) 1 else 0,
+                .prev_lit = curr,
+            },
+        };
+    }
+    // WB3b: ÷ (Newline | CR | LF) — break before a hard separator.
+    if (isWordHardSep(curr)) {
+        return .{
+            .is_break = true,
+            .new_state = .{
+                .eff_prev = curr,
+                .eff_prev_prev = null,
+                .ri_count = 0,
+                .prev_lit = curr,
+            },
+        };
+    }
+    // WB3c: ZWJ × Extended_Pictographic (literal previous; not WB4-skipped).
+    if (prev_lit == .zwj and isExtendedPictographic(code_points[i])) {
+        return .{
+            .is_break = false,
+            .new_state = .{
+                .eff_prev = curr,
+                .eff_prev_prev = state.eff_prev,
+                .ri_count = if (curr == .regional_indicator) 1 else 0,
+                .prev_lit = curr,
+            },
+        };
+    }
+    // WB3d: WSegSpace × WSegSpace.
+    if (prev_lit == .wseg_space and curr == .wseg_space) {
+        return .{
+            .is_break = false,
+            .new_state = .{
+                .eff_prev = curr,
+                .eff_prev_prev = state.eff_prev,
+                .ri_count = 0,
+                .prev_lit = curr,
+            },
+        };
+    }
+    // WB4: Any × (Extend | Format | ZWJ). The ignorable extends the cluster;
+    // effective state is unchanged but prev_lit advances.
+    if (isWordIgnorable(curr)) {
+        return .{
+            .is_break = false,
+            .new_state = .{
+                .eff_prev = state.eff_prev,
+                .eff_prev_prev = state.eff_prev_prev,
+                .ri_count = state.ri_count,
+                .prev_lit = curr,
+            },
+        };
+    }
+
+    // Beyond this point curr is a "visible" non-hardsep character.
+    const prev = state.eff_prev;
+    const prev_prev = state.eff_prev_prev;
+    var no_break = false;
+
+    // WB5
+    if (isAHLetter(prev) and isAHLetter(curr)) no_break = true;
+    // WB6: AHLetter × (MidLetter | MidNumLetQ) AHLetter.
+    if (!no_break and isAHLetter(prev) and (curr == .mid_letter or isMidNumLetQ(curr))) {
+        if (nextEffectiveWordProp(code_points, i + 1)) |after| {
+            if (isAHLetter(after)) no_break = true;
+        }
+    }
+    // WB7: AHLetter (MidLetter | MidNumLetQ) × AHLetter.
+    if (!no_break and (prev == .mid_letter or isMidNumLetQ(prev)) and isAHLetter(curr)) {
+        if (prev_prev) |pp| {
+            if (isAHLetter(pp)) no_break = true;
+        }
+    }
+    // WB7a
+    if (!no_break and prev == .hebrew_letter and curr == .single_quote) no_break = true;
+    // WB7b: Hebrew_Letter × Double_Quote Hebrew_Letter.
+    if (!no_break and prev == .hebrew_letter and curr == .double_quote) {
+        if (nextEffectiveWordProp(code_points, i + 1)) |after| {
+            if (after == .hebrew_letter) no_break = true;
+        }
+    }
+    // WB7c: Hebrew_Letter Double_Quote × Hebrew_Letter.
+    if (!no_break and prev == .double_quote and curr == .hebrew_letter) {
+        if (prev_prev) |pp| {
+            if (pp == .hebrew_letter) no_break = true;
+        }
+    }
+    // WB8
+    if (!no_break and prev == .numeric and curr == .numeric) no_break = true;
+    // WB9
+    if (!no_break and isAHLetter(prev) and curr == .numeric) no_break = true;
+    // WB10
+    if (!no_break and prev == .numeric and isAHLetter(curr)) no_break = true;
+    // WB11: Numeric (MidNum | MidNumLetQ) × Numeric.
+    if (!no_break and (prev == .mid_num or isMidNumLetQ(prev)) and curr == .numeric) {
+        if (prev_prev) |pp| {
+            if (pp == .numeric) no_break = true;
+        }
+    }
+    // WB12: Numeric × (MidNum | MidNumLetQ) Numeric.
+    if (!no_break and prev == .numeric and (curr == .mid_num or isMidNumLetQ(curr))) {
+        if (nextEffectiveWordProp(code_points, i + 1)) |after| {
+            if (after == .numeric) no_break = true;
+        }
+    }
+    // WB13
+    if (!no_break and prev == .katakana and curr == .katakana) no_break = true;
+    // WB13a
+    if (!no_break and (isAHLetter(prev) or prev == .numeric or prev == .katakana or prev == .extend_num_let) and curr == .extend_num_let) no_break = true;
+    // WB13b
+    if (!no_break and prev == .extend_num_let and (isAHLetter(curr) or curr == .numeric or curr == .katakana)) no_break = true;
+    // WB15/WB16: RI × RI when the count of unbroken RIs ending at prev is odd.
+    if (!no_break and prev == .regional_indicator and curr == .regional_indicator) {
+        if (state.ri_count % 2 == 1) no_break = true;
+    }
+
+    const next_ri_count: usize = if (curr == .regional_indicator)
+        (if (no_break) state.ri_count + 1 else 1)
+    else
+        0;
+
+    return .{
+        .is_break = !no_break,
+        .new_state = .{
+            .eff_prev = curr,
+            .eff_prev_prev = state.eff_prev,
+            .ri_count = next_ri_count,
+            .prev_lit = curr,
+        },
+    };
+}
+
+/// Compute word-boundary opportunities for a sequence of code points,
+/// implementing the full UAX #29 word boundary algorithm (WB1..WB999).
+/// `out[i]` is true iff there is a word boundary immediately BEFORE
+/// `code_points[i]`. `out[0]` is sot, `out[n]` is eot; both are always true
+/// per WB1/WB2 (and `out[0]` is true even when `n == 0` to represent the
+/// degenerate empty input).
+pub fn computeWordBoundaries(allocator: std.mem.Allocator, code_points: []const CodePoint) ![]bool {
+    const n = code_points.len;
+    const out = try allocator.alloc(bool, n + 1);
+    errdefer allocator.free(out);
+    out[0] = true; // WB1
+    if (n == 0) return out;
+    out[n] = true; // WB2
+    if (n == 1) return out;
+
+    var state = WordStepState.init(code_points[0]);
+    var i: usize = 1;
+    while (i < n) : (i += 1) {
+        const decision = wordStep(state, code_points, i);
+        out[i] = decision.is_break;
+        state = decision.new_state;
+    }
+    return out;
+}
+
+/// Iterator over an explicit `[]const CodePoint` that yields slices of
+/// codepoints belonging to the same word. Allocation-free.
+pub const CodePointWordIterator = struct {
+    code_points: []const CodePoint,
+    pos: usize = 0,
+    state: WordStepState = undefined,
+    primed: bool = false,
+
+    pub fn next(self: *CodePointWordIterator) ?[]const CodePoint {
+        const n = self.code_points.len;
+        if (self.pos >= n) return null;
+        const start = self.pos;
+        if (!self.primed) {
+            self.state = WordStepState.init(self.code_points[0]);
+            self.primed = true;
+        }
+        var i = self.pos + 1;
+        while (i < n) : (i += 1) {
+            const decision = wordStep(self.state, self.code_points, i);
+            self.state = decision.new_state;
+            if (decision.is_break) {
+                self.pos = i;
+                return self.code_points[start..i];
+            }
+        }
+        self.pos = n;
+        return self.code_points[start..n];
+    }
+
+    pub fn reset(self: *CodePointWordIterator) void {
+        self.pos = 0;
+        self.primed = false;
+    }
+};
+
+pub fn codePointWordIterator(code_points: []const CodePoint) CodePointWordIterator {
+    return .{ .code_points = code_points };
+}
+
+/// Iterator over UTF-8 input that yields successive words as `[]const u8`
+/// slices. Invalid UTF-8 is decoded lossily as U+FFFD. Allocation-free.
+pub const WordIterator = struct {
+    bytes: []const u8,
+    pos: usize = 0,
+    state: WordStepState = undefined,
+    primed: bool = false,
+
+    pub fn next(self: *WordIterator) ?[]const u8 {
+        const n = self.bytes.len;
+        if (self.pos >= n) return null;
+        const start = self.pos;
+        if (!self.primed) {
+            const first = utf8.validateAndDecodeCodePointBytesLossy(self.bytes, self.pos) catch unreachable;
+            self.state = WordStepState.init(first.code_point);
+            self.pos += first.len;
+            self.primed = true;
+        }
+        while (self.pos < n) {
+            const decision = wordStepBytes(self.state, self.bytes, self.pos);
+            self.state = decision.new_state;
+            if (decision.is_break) {
+                return self.bytes[start..self.pos];
+            }
+            self.pos += decision.consumed;
+        }
+        return self.bytes[start..n];
+    }
+
+    pub fn reset(self: *WordIterator) void {
+        self.pos = 0;
+        self.primed = false;
+    }
+};
+
+pub fn wordIterator(bytes: []const u8) WordIterator {
+    return .{ .bytes = bytes };
+}
+
+/// Byte-stream variant of `wordStep`. Decodes the codepoint at `byte_pos`
+/// (lossy on invalid UTF-8) and returns the boundary decision plus the byte
+/// length consumed by that codepoint.
+const WordByteDecision = struct {
+    is_break: bool,
+    new_state: WordStepState,
+    consumed: usize,
+};
+
+fn wordStepBytes(state: WordStepState, bytes: []const u8, byte_pos: usize) WordByteDecision {
+    const decoded = utf8.validateAndDecodeCodePointBytesLossy(bytes, byte_pos) catch unreachable;
+    const curr_cp = decoded.code_point;
+    const curr = wordBreakProperty(curr_cp);
+    const prev_lit = state.prev_lit;
+
+    // WB3..WB3d / WB4 — same as wordStep but without slice lookahead.
+    if (prev_lit == .cr and curr == .lf) {
+        return .{
+            .is_break = false,
+            .new_state = .{
+                .eff_prev = curr,
+                .eff_prev_prev = state.eff_prev,
+                .ri_count = 0,
+                .prev_lit = curr,
+            },
+            .consumed = decoded.len,
+        };
+    }
+    if (isWordHardSep(prev_lit)) {
+        return .{
+            .is_break = true,
+            .new_state = .{
+                .eff_prev = curr,
+                .eff_prev_prev = null,
+                .ri_count = if (curr == .regional_indicator) 1 else 0,
+                .prev_lit = curr,
+            },
+            .consumed = decoded.len,
+        };
+    }
+    if (isWordHardSep(curr)) {
+        return .{
+            .is_break = true,
+            .new_state = .{
+                .eff_prev = curr,
+                .eff_prev_prev = null,
+                .ri_count = 0,
+                .prev_lit = curr,
+            },
+            .consumed = decoded.len,
+        };
+    }
+    if (prev_lit == .zwj and isExtendedPictographic(curr_cp)) {
+        return .{
+            .is_break = false,
+            .new_state = .{
+                .eff_prev = curr,
+                .eff_prev_prev = state.eff_prev,
+                .ri_count = if (curr == .regional_indicator) 1 else 0,
+                .prev_lit = curr,
+            },
+            .consumed = decoded.len,
+        };
+    }
+    if (prev_lit == .wseg_space and curr == .wseg_space) {
+        return .{
+            .is_break = false,
+            .new_state = .{
+                .eff_prev = curr,
+                .eff_prev_prev = state.eff_prev,
+                .ri_count = 0,
+                .prev_lit = curr,
+            },
+            .consumed = decoded.len,
+        };
+    }
+    if (isWordIgnorable(curr)) {
+        return .{
+            .is_break = false,
+            .new_state = .{
+                .eff_prev = state.eff_prev,
+                .eff_prev_prev = state.eff_prev_prev,
+                .ri_count = state.ri_count,
+                .prev_lit = curr,
+            },
+            .consumed = decoded.len,
+        };
+    }
+
+    const prev = state.eff_prev;
+    const prev_prev = state.eff_prev_prev;
+    var no_break = false;
+
+    if (isAHLetter(prev) and isAHLetter(curr)) no_break = true;
+    if (!no_break and isAHLetter(prev) and (curr == .mid_letter or isMidNumLetQ(curr))) {
+        if (nextEffectiveWordPropBytes(bytes, byte_pos + decoded.len)) |after| {
+            if (isAHLetter(after)) no_break = true;
+        }
+    }
+    if (!no_break and (prev == .mid_letter or isMidNumLetQ(prev)) and isAHLetter(curr)) {
+        if (prev_prev) |pp| {
+            if (isAHLetter(pp)) no_break = true;
+        }
+    }
+    if (!no_break and prev == .hebrew_letter and curr == .single_quote) no_break = true;
+    if (!no_break and prev == .hebrew_letter and curr == .double_quote) {
+        if (nextEffectiveWordPropBytes(bytes, byte_pos + decoded.len)) |after| {
+            if (after == .hebrew_letter) no_break = true;
+        }
+    }
+    if (!no_break and prev == .double_quote and curr == .hebrew_letter) {
+        if (prev_prev) |pp| {
+            if (pp == .hebrew_letter) no_break = true;
+        }
+    }
+    if (!no_break and prev == .numeric and curr == .numeric) no_break = true;
+    if (!no_break and isAHLetter(prev) and curr == .numeric) no_break = true;
+    if (!no_break and prev == .numeric and isAHLetter(curr)) no_break = true;
+    if (!no_break and (prev == .mid_num or isMidNumLetQ(prev)) and curr == .numeric) {
+        if (prev_prev) |pp| {
+            if (pp == .numeric) no_break = true;
+        }
+    }
+    if (!no_break and prev == .numeric and (curr == .mid_num or isMidNumLetQ(curr))) {
+        if (nextEffectiveWordPropBytes(bytes, byte_pos + decoded.len)) |after| {
+            if (after == .numeric) no_break = true;
+        }
+    }
+    if (!no_break and prev == .katakana and curr == .katakana) no_break = true;
+    if (!no_break and (isAHLetter(prev) or prev == .numeric or prev == .katakana or prev == .extend_num_let) and curr == .extend_num_let) no_break = true;
+    if (!no_break and prev == .extend_num_let and (isAHLetter(curr) or curr == .numeric or curr == .katakana)) no_break = true;
+    if (!no_break and prev == .regional_indicator and curr == .regional_indicator) {
+        if (state.ri_count % 2 == 1) no_break = true;
+    }
+
+    const next_ri_count: usize = if (curr == .regional_indicator)
+        (if (no_break) state.ri_count + 1 else 1)
+    else
+        0;
+
+    return .{
+        .is_break = !no_break,
+        .new_state = .{
+            .eff_prev = curr,
+            .eff_prev_prev = state.eff_prev,
+            .ri_count = next_ri_count,
+            .prev_lit = curr,
+        },
+        .consumed = decoded.len,
+    };
+}
+
+fn nextEffectiveWordPropBytes(bytes: []const u8, start_byte: usize) ?WordProp {
+    var j = start_byte;
+    while (j < bytes.len) {
+        const decoded = utf8.validateAndDecodeCodePointBytesLossy(bytes, j) catch unreachable;
+        const p = wordBreakProperty(decoded.code_point);
+        if (!isWordIgnorable(p)) return p;
+        j += decoded.len;
+    }
+    return null;
+}
+
+pub fn countWords(bytes: []const u8) usize {
+    var it = wordIterator(bytes);
+    var count: usize = 0;
+    while (it.next() != null) count += 1;
+    return count;
+}
+
+pub fn countWordsFromCodePoints(code_points: []const CodePoint) usize {
+    var it = codePointWordIterator(code_points);
+    var count: usize = 0;
+    while (it.next() != null) count += 1;
+    return count;
+}
+
+// ============================================================================
+// UAX #29 Sentence boundary
+// ============================================================================
+
+const SBProp = SentenceBreakProperty;
+
+inline fn isSATerm(p: SBProp) bool {
+    return p == .sterm or p == .aterm;
+}
+
+inline fn isSBParaSep(p: SBProp) bool {
+    return p == .sep or p == .cr or p == .lf;
+}
+
+inline fn isSBIgnorable(p: SBProp) bool {
+    // SB5: Extend and Format are invisible to rules SB6..SB999.
+    return p == .extend or p == .format;
+}
+
+/// Tracks whether we are sitting inside the `SATerm Close* Sp*` window that
+/// SB8/SB8a/SB9/SB10/SB11 are sensitive to.
+const SBContext = enum {
+    none,
+    /// SATerm was just seen, no Close/Sp yet.
+    saterm,
+    /// SATerm followed by one or more Close (no Sp yet).
+    saterm_close,
+    /// SATerm followed by Close* then one or more Sp.
+    saterm_close_sp,
+    /// SATerm Close* Sp* ParaSep (single ParaSep — SB11 still keeps the run
+    /// open across the ParaSep before forcing a break after it).
+    saterm_close_sp_parasep,
+};
+
+/// Per-position state for incremental UAX #29 sentence boundary evaluation.
+pub const SentenceStepState = struct {
+    eff_prev: SBProp,
+    eff_prev_prev: ?SBProp,
+    ctx: SBContext,
+    ctx_is_aterm: bool,
+    /// SB7 needs to remember whether the ATerm currently anchoring `ctx` was
+    /// itself preceded by an Upper/Lower. Stored at the moment we open the
+    /// ATerm context, so subsequent steps can consult it.
+    aterm_after_ul: bool,
+    /// Raw (literal) property of the previous codepoint, used by SB3/SB4.
+    prev_lit: SBProp,
+
+    pub fn init(first_code_point: CodePoint) SentenceStepState {
+        const p = sentenceBreakProperty(first_code_point);
+        var ctx: SBContext = .none;
+        var ctx_is_aterm = false;
+        switch (p) {
+            .aterm => {
+                ctx = .saterm;
+                ctx_is_aterm = true;
+            },
+            .sterm => {
+                ctx = .saterm;
+            },
+            else => {},
+        }
+        return .{
+            .eff_prev = p,
+            .eff_prev_prev = null,
+            .ctx = ctx,
+            .ctx_is_aterm = ctx_is_aterm,
+            .aterm_after_ul = false,
+            .prev_lit = p,
+        };
+    }
+};
+
+pub const SentenceStepDecision = struct {
+    is_break: bool,
+    new_state: SentenceStepState,
+};
+
+/// SB8 lookahead over a code point slice. Starting at `start`, skip any
+/// SB5-ignorable codepoint or codepoint whose property is NOT in
+/// {OLetter, Upper, Lower, ParaSep, SATerm}, and return the first qualifying
+/// property. Returns null at end-of-text.
+fn sb8LookaheadCodePoints(code_points: []const CodePoint, start: usize) ?SBProp {
+    var j = start;
+    while (j < code_points.len) : (j += 1) {
+        const p = sentenceBreakProperty(code_points[j]);
+        if (isSBIgnorable(p)) continue;
+        switch (p) {
+            .oletter, .upper, .lower, .sep, .cr, .lf, .sterm, .aterm => return p,
+            else => continue,
+        }
+    }
+    return null;
+}
+
+/// SB8 lookahead over a byte stream — same as `sb8LookaheadCodePoints` but
+/// decodes UTF-8 on the fly (lossy for invalid bytes).
+fn sb8LookaheadBytes(bytes: []const u8, start_byte: usize) ?SBProp {
+    var j = start_byte;
+    while (j < bytes.len) {
+        const decoded = utf8.validateAndDecodeCodePointBytesLossy(bytes, j) catch unreachable;
+        const p = sentenceBreakProperty(decoded.code_point);
+        j += decoded.len;
+        if (isSBIgnorable(p)) continue;
+        switch (p) {
+            .oletter, .upper, .lower, .sep, .cr, .lf, .sterm, .aterm => return p,
+            else => continue,
+        }
+    }
+    return null;
+}
+
+/// Shared rule body for sentence stepping. The `lookahead` closure-equivalent
+/// is passed as a `?SBProp` already resolved by the caller (codepoint-slice
+/// and byte iterators differ only in how they look ahead).
+fn sentenceStepInner(state: SentenceStepState, curr: SBProp, lookahead_for_sb8: ?SBProp) SentenceStepDecision {
+    const prev_lit = state.prev_lit;
+
+    // SB3: CR × LF — LF stays part of the ParaSep run, slide effective state.
+    if (prev_lit == .cr and curr == .lf) {
+        return .{
+            .is_break = false,
+            .new_state = .{
+                .eff_prev = curr,
+                .eff_prev_prev = state.eff_prev,
+                .ctx = state.ctx,
+                .ctx_is_aterm = state.ctx_is_aterm,
+                .aterm_after_ul = state.aterm_after_ul,
+                .prev_lit = curr,
+            },
+        };
+    }
+    // SB4: (Sep | CR | LF) ÷ — break AFTER a ParaSep, reset everything.
+    if (isSBParaSep(prev_lit)) {
+        var new_ctx: SBContext = .none;
+        var new_ctx_is_aterm = false;
+        switch (curr) {
+            .aterm => {
+                new_ctx = .saterm;
+                new_ctx_is_aterm = true;
+            },
+            .sterm => {
+                new_ctx = .saterm;
+            },
+            else => {},
+        }
+        return .{
+            .is_break = true,
+            .new_state = .{
+                .eff_prev = curr,
+                .eff_prev_prev = null,
+                .ctx = new_ctx,
+                .ctx_is_aterm = new_ctx_is_aterm,
+                .aterm_after_ul = false,
+                .prev_lit = curr,
+            },
+        };
+    }
+    // SB5: Any × (Extend | Format) — invisible to ctx, eff_prev, eff_prev_prev.
+    if (isSBIgnorable(curr)) {
+        return .{
+            .is_break = false,
+            .new_state = .{
+                .eff_prev = state.eff_prev,
+                .eff_prev_prev = state.eff_prev_prev,
+                .ctx = state.ctx,
+                .ctx_is_aterm = state.ctx_is_aterm,
+                .aterm_after_ul = state.aterm_after_ul,
+                .prev_lit = curr,
+            },
+        };
+    }
+
+    var no_break = false;
+
+    if (state.ctx_is_aterm and (state.ctx == .saterm or state.ctx == .saterm_close or state.ctx == .saterm_close_sp)) {
+        if (state.ctx == .saterm and curr == .numeric) no_break = true;
+        if (state.ctx == .saterm and curr == .upper and state.aterm_after_ul) no_break = true;
+        if (!no_break) {
+            if (lookahead_for_sb8) |term| {
+                if (term == .lower) no_break = true;
+            }
+        }
+    }
+
+    if (!no_break and (state.ctx == .saterm or state.ctx == .saterm_close or state.ctx == .saterm_close_sp)) {
+        if (curr == .scontinue or isSATerm(curr)) no_break = true;
+    }
+
+    if (!no_break and (state.ctx == .saterm or state.ctx == .saterm_close)) {
+        if (curr == .close or curr == .sp or isSBParaSep(curr)) no_break = true;
+    }
+
+    if (!no_break and (state.ctx == .saterm or state.ctx == .saterm_close or state.ctx == .saterm_close_sp)) {
+        if (curr == .sp or isSBParaSep(curr)) no_break = true;
+    }
+
+    const in_saterm_ctx = state.ctx == .saterm or state.ctx == .saterm_close or state.ctx == .saterm_close_sp or state.ctx == .saterm_close_sp_parasep;
+    const is_break = !no_break and in_saterm_ctx;
+
+    // ctx / aterm_after_ul transition based on the (prev_ctx, curr) pair.
+    var new_ctx = state.ctx;
+    var new_ctx_is_aterm = state.ctx_is_aterm;
+    var new_aterm_after_ul = state.aterm_after_ul;
+
+    switch (state.ctx) {
+        .none => {
+            switch (curr) {
+                .aterm => {
+                    new_ctx = .saterm;
+                    new_ctx_is_aterm = true;
+                    new_aterm_after_ul = (state.eff_prev == .upper or state.eff_prev == .lower);
+                },
+                .sterm => {
+                    new_ctx = .saterm;
+                    new_ctx_is_aterm = false;
+                },
+                else => {},
+            }
+        },
+        .saterm => {
+            switch (curr) {
+                .close => new_ctx = .saterm_close,
+                .sp => new_ctx = .saterm_close_sp,
+                .sep, .cr, .lf => new_ctx = .saterm_close_sp_parasep,
+                .scontinue, .aterm, .sterm => {
+                    if (curr == .aterm) {
+                        new_ctx_is_aterm = true;
+                        new_aterm_after_ul = (state.eff_prev == .upper or state.eff_prev == .lower);
+                    } else if (curr == .sterm) {
+                        new_ctx_is_aterm = false;
+                    }
+                    new_ctx = .saterm;
+                },
+                .numeric, .upper => new_ctx = .none,
+                else => new_ctx = .none,
+            }
+        },
+        .saterm_close => {
+            switch (curr) {
+                .close => {},
+                .sp => new_ctx = .saterm_close_sp,
+                .sep, .cr, .lf => new_ctx = .saterm_close_sp_parasep,
+                .scontinue, .aterm, .sterm => {
+                    if (curr == .aterm) {
+                        new_ctx_is_aterm = true;
+                        new_aterm_after_ul = false;
+                    } else if (curr == .sterm) {
+                        new_ctx_is_aterm = false;
+                    }
+                    new_ctx = .saterm;
+                },
+                else => new_ctx = .none,
+            }
+        },
+        .saterm_close_sp => {
+            switch (curr) {
+                .sp => {},
+                .sep, .cr, .lf => new_ctx = .saterm_close_sp_parasep,
+                .scontinue, .aterm, .sterm => {
+                    if (curr == .aterm) {
+                        new_ctx_is_aterm = true;
+                        new_aterm_after_ul = false;
+                    } else if (curr == .sterm) {
+                        new_ctx_is_aterm = false;
+                    }
+                    new_ctx = .saterm;
+                },
+                else => new_ctx = .none,
+            }
+        },
+        .saterm_close_sp_parasep => {
+            new_ctx = switch (curr) {
+                .aterm => blk: {
+                    new_ctx_is_aterm = true;
+                    new_aterm_after_ul = false;
+                    break :blk .saterm;
+                },
+                .sterm => blk: {
+                    new_ctx_is_aterm = false;
+                    break :blk .saterm;
+                },
+                else => .none,
+            };
+        },
+    }
+
+    return .{
+        .is_break = is_break,
+        .new_state = .{
+            .eff_prev = curr,
+            .eff_prev_prev = state.eff_prev,
+            .ctx = new_ctx,
+            .ctx_is_aterm = new_ctx_is_aterm,
+            .aterm_after_ul = new_aterm_after_ul,
+            .prev_lit = curr,
+        },
+    };
+}
+
+/// Decide whether there is a sentence boundary BEFORE `code_points[i]`,
+/// given the algorithm state derived from positions 0..i-1.
+pub fn sentenceStep(state: SentenceStepState, code_points: []const CodePoint, i: usize) SentenceStepDecision {
+    const curr = sentenceBreakProperty(code_points[i]);
+    // SB8's lookahead is only needed when we sit inside an ATerm window. We
+    // conservatively resolve it always — it is O(distance) but the distance
+    // is bounded by the rule itself.
+    const lookahead = if (state.ctx_is_aterm and (state.ctx == .saterm or state.ctx == .saterm_close or state.ctx == .saterm_close_sp))
+        sb8LookaheadCodePoints(code_points, i)
+    else
+        null;
+    return sentenceStepInner(state, curr, lookahead);
+}
+
+/// Compute sentence-boundary opportunities for a sequence of code points,
+/// implementing the full UAX #29 sentence boundary algorithm
+/// (SB1..SB11 plus SB998/SB999). `out[i]` is true iff there is a sentence
+/// boundary immediately BEFORE `code_points[i]`.
+pub fn computeSentenceBoundaries(allocator: std.mem.Allocator, code_points: []const CodePoint) ![]bool {
+    const n = code_points.len;
+    const out = try allocator.alloc(bool, n + 1);
+    errdefer allocator.free(out);
+    out[0] = true; // SB1
+    if (n == 0) return out;
+    out[n] = true; // SB2
+    if (n == 1) return out;
+
+    var state = SentenceStepState.init(code_points[0]);
+    var i: usize = 1;
+    while (i < n) : (i += 1) {
+        const decision = sentenceStep(state, code_points, i);
+        out[i] = decision.is_break;
+        state = decision.new_state;
+    }
+    return out;
+}
+
+/// Iterator over an explicit `[]const CodePoint` that yields successive
+/// sentences as slices of codepoints. Allocation-free.
+pub const CodePointSentenceIterator = struct {
+    code_points: []const CodePoint,
+    pos: usize = 0,
+    state: SentenceStepState = undefined,
+    primed: bool = false,
+
+    pub fn next(self: *CodePointSentenceIterator) ?[]const CodePoint {
+        const n = self.code_points.len;
+        if (self.pos >= n) return null;
+        const start = self.pos;
+        if (!self.primed) {
+            self.state = SentenceStepState.init(self.code_points[0]);
+            self.primed = true;
+        }
+        var i = self.pos + 1;
+        while (i < n) : (i += 1) {
+            const decision = sentenceStep(self.state, self.code_points, i);
+            self.state = decision.new_state;
+            if (decision.is_break) {
+                self.pos = i;
+                return self.code_points[start..i];
+            }
+        }
+        self.pos = n;
+        return self.code_points[start..n];
+    }
+
+    pub fn reset(self: *CodePointSentenceIterator) void {
+        self.pos = 0;
+        self.primed = false;
+    }
+};
+
+pub fn codePointSentenceIterator(code_points: []const CodePoint) CodePointSentenceIterator {
+    return .{ .code_points = code_points };
+}
+
+/// Iterator over UTF-8 input that yields successive sentences as
+/// `[]const u8` slices. Invalid UTF-8 is decoded lossily as U+FFFD.
+/// Allocation-free.
+pub const SentenceIterator = struct {
+    bytes: []const u8,
+    pos: usize = 0,
+    state: SentenceStepState = undefined,
+    primed: bool = false,
+
+    pub fn next(self: *SentenceIterator) ?[]const u8 {
+        const n = self.bytes.len;
+        if (self.pos >= n) return null;
+        const start = self.pos;
+        if (!self.primed) {
+            const first = utf8.validateAndDecodeCodePointBytesLossy(self.bytes, self.pos) catch unreachable;
+            self.state = SentenceStepState.init(first.code_point);
+            self.pos += first.len;
+            self.primed = true;
+        }
+        while (self.pos < n) {
+            const decoded = utf8.validateAndDecodeCodePointBytesLossy(self.bytes, self.pos) catch unreachable;
+            const curr = sentenceBreakProperty(decoded.code_point);
+            const lookahead = if (self.state.ctx_is_aterm and
+                (self.state.ctx == .saterm or self.state.ctx == .saterm_close or self.state.ctx == .saterm_close_sp))
+                sb8LookaheadBytes(self.bytes, self.pos)
+            else
+                null;
+            const decision = sentenceStepInner(self.state, curr, lookahead);
+            self.state = decision.new_state;
+            if (decision.is_break) {
+                return self.bytes[start..self.pos];
+            }
+            self.pos += decoded.len;
+        }
+        return self.bytes[start..n];
+    }
+
+    pub fn reset(self: *SentenceIterator) void {
+        self.pos = 0;
+        self.primed = false;
+    }
+};
+
+pub fn sentenceIterator(bytes: []const u8) SentenceIterator {
+    return .{ .bytes = bytes };
+}
+
+pub fn countSentences(bytes: []const u8) usize {
+    var it = sentenceIterator(bytes);
+    var count: usize = 0;
+    while (it.next() != null) count += 1;
+    return count;
+}
+
+pub fn countSentencesFromCodePoints(code_points: []const CodePoint) usize {
+    var it = codePointSentenceIterator(code_points);
+    var count: usize = 0;
+    while (it.next() != null) count += 1;
+    return count;
+}
+
+// ============================================================================
+// UAX #14 Line break
+// ============================================================================
+
+const LBProp = LineBreak;
+
+/// Three-way classification of every position returned by
+/// `computeLineBoundaries`.
+///
+/// UAX #14 distinguishes three outcomes at each potential break, but the
+/// boundary-test file in the UCD only marks ÷ vs ×, collapsing two of them.
+/// Real consumers (text wrapping to a width, paragraph layout) must know which
+/// "÷" was a forced newline from the source vs. a place the engine is allowed
+/// to wrap, so we surface the distinction here instead of returning a bool.
+pub const LineBreakKind = enum {
+    /// No break is permitted before this position (UAX #14 "×").
+    prohibited,
+    /// A break is permitted before this position; the engine may take it to
+    /// fit a line but is not required to (UAX #14 "÷" / "direct break").
+    /// The vast majority of in-text break opportunities are this kind.
+    opportunity,
+    /// A break MUST occur before this position (UAX #14 "!"). Generated by
+    /// LB4 (after BK), LB5 (after CR not followed by LF, after LF, after NL),
+    /// and LB3 (at end of text). Layout engines must always honor these.
+    mandatory,
+};
+
+/// Resolve UAX #14's "tailoring" requirement before the rule-pair scan: some
+/// raw Line_Break property values must be mapped to a "fixed" value before
+/// applying the rules (LB1). AI / SG / XX → AL ; CJ → NS ; SA → CM if the
+/// codepoint's General_Category is Mn or Mc, else AL.
+fn resolveLineBreakProp(p: LBProp, cp: CodePoint) LBProp {
+    return switch (p) {
+        .ai, .sg, .xx => .al,
+        .sa => blk: {
+            const gc = unicode_data.generalCategory(cp);
+            break :blk if (gc == .non_spacing_mark or gc == .spacing_mark) .cm else .al;
+        },
+        .cj => .ns,
+        else => p,
+    };
+}
+
+/// True if the property is a space character per UAX #14: SP / ZW.
+inline fn lbIsSpaceOrZW(p: LBProp) bool {
+    return p == .sp or p == .zw;
+}
+
+/// U+25CC DOTTED CIRCLE — referenced verbatim by LB28a as a singleton
+/// "AK-base" alongside the AK and AS line-break classes. Its own LB property
+/// is AL, so the rule has to consult the raw codepoint.
+const DOTTED_CIRCLE: CodePoint = 0x25CC;
+
+/// One entry in the "effective tape" — the sequence of code points that
+/// remain after LB9 absorption (CM/ZWJ attached to a base disappear from
+/// this view). Both the original code-point index and the post-LB1/LB10
+/// line break class are kept so multi-step rules can look back across
+/// arbitrary attached marks without extra bookkeeping.
+const LBTapeEntry = struct {
+    class: LBProp,
+    code_point_index: usize,
+};
+
+inline fn isAKBase(class: LBProp, code_point: CodePoint) bool {
+    return class == .ak or class == .as or code_point == DOTTED_CIRCLE;
+}
+
+inline fn isHangulSyllableClass(class: LBProp) bool {
+    return switch (class) {
+        .jl, .jv, .jt, .h2, .h3 => true,
+        else => false,
+    };
+}
+
+inline fn isHardLineBreaker(class: LBProp) bool {
+    // The five classes that LB9 refuses to absorb a following CM/ZWJ into
+    // (forcing LB10's "treat remaining CM/ZWJ as AL" instead). Augmented
+    // with SP/ZW per LB9's wording: "X is not BK, CR, LF, NL, SP, or ZW".
+    return switch (class) {
+        .bk, .cr, .lf, .nl, .sp, .zw => true,
+        else => false,
+    };
+}
+
+/// Compute line-break classification for a sequence of code points,
+/// implementing the full UAX #14 line-break algorithm (Unicode 17.0, rev 55).
+///
+/// `out[i]` describes the boundary immediately BEFORE `code_points[i]`:
+/// `.prohibited` (× rules), `.opportunity` (÷ rules), or `.mandatory`
+/// (LB4/LB5 forced breaks, and LB3 at end-of-text). Conformance follows the
+/// UAX #14 convention:
+///   - `out[0]` is `.prohibited` — LB2 ("never break at start of text"); for
+///     n == 0 the returned slice is a single `.prohibited`.
+///   - `out[n]` is `.mandatory` — LB3 ("always break at end of text").
+///
+/// The three-way classification is the meaningful return type: layout engines
+/// must always honor a mandatory break (a literal newline in the source),
+/// while opportunities are merely candidate wrap points. Collapsing the two
+/// onto a single boolean loses that distinction and makes the output unusable
+/// for wrapping, even though the UCD conformance test happens to accept it.
+///
+/// Strategy:
+///
+///   1. **Resolution pass.**  Look up the raw Line_Break class for each code
+///      point and apply LB1 (AI/SG/XX → AL; SA[gc=Mn|Mc] → CM, else SA → AL;
+///      CJ → NS). Cache East_Asian_Width and General_Category at the same
+///      time, since several later rules consult them.
+///
+///   2. **LB9 attachment pass.**  Mark every CM/ZWJ that LB9 absorbs into a
+///      preceding base character.  Boundaries before attached code points
+///      are unconditionally no-break; rule scanning skips over them.
+///
+///   3. **LB10 promotion pass.**  Any CM/ZWJ that is NOT attached (because
+///      it sits at sot or after BK/CR/LF/NL/SP/ZW) is promoted to AL for
+///      the purposes of all later rules.  Raw values are kept around so
+///      LB8a can still detect a literal ZWJ as the prior code point.
+///
+///   4. **Sequential rule scan.**  Walk the source code points in order.
+///      At each non-attached position decide the boundary by running the
+///      LB4..LB31 rules in numerical order against the most recent entries
+///      of an "effective tape" (the non-attached code points seen so far).
+///      Hard breaks (LB4 BK, LB5 CR/LF/NL, LB8 ZW-SP*, LB15c forced
+///      decimal-mark break, LB18 SP, LB20 CB) reset the tape so subsequent
+///      lookbacks never cross a break.
+///
+/// The two-pass shape avoids the trap that broke an earlier draft of this
+/// function: ZWJ for LB8a, CM/ZWJ absorption for LB9, and the LB10 → AL
+/// promotion are three distinct concerns and treating them as one breaks
+/// the lookback semantics of LB19a / LB28 / LB30b.
+pub fn computeLineBoundaries(allocator: std.mem.Allocator, code_points: []const CodePoint) ![]LineBreakKind {
+    const total = code_points.len;
+    const boundaries = try allocator.alloc(LineBreakKind, total + 1);
+    errdefer allocator.free(boundaries);
+
+    // LB2: × sot.
+    boundaries[0] = .prohibited;
+    if (total == 0) return boundaries;
+    // LB3: ! eot.
+    boundaries[total] = .mandatory;
+    if (total == 1) return boundaries;
+
+    // ------------------------------------------------------------------
+    // Pass 1 — resolution + per-codepoint metadata caches.
+    // ------------------------------------------------------------------
+
+    const raw_class = try allocator.alloc(LBProp, total);
+    defer allocator.free(raw_class);
+    const resolved_class = try allocator.alloc(LBProp, total);
+    defer allocator.free(resolved_class);
+    const is_east_asian_wide = try allocator.alloc(bool, total);
+    defer allocator.free(is_east_asian_wide);
+    const general_category = try allocator.alloc(unicode_data.GeneralCategory, total);
+    defer allocator.free(general_category);
+
+    for (code_points, 0..) |code_point, position| {
+        const raw = lineBreak(code_point);
+        raw_class[position] = raw;
+        resolved_class[position] = resolveLineBreakProp(raw, code_point);
+        const eaw = east_asian_width.eastAsianWidth(code_point);
+        is_east_asian_wide[position] = (eaw == .f or eaw == .w or eaw == .h);
+        general_category[position] = unicode_data.generalCategory(code_point);
+    }
+
+    // ------------------------------------------------------------------
+    // Pass 2 — LB9 attachment.
+    //
+    // A CM or ZWJ at position p attaches to the base at p-1 iff that base
+    // is NOT one of the LB9-excluded "hard breaker" classes.  Attached
+    // marks become invisible for the rule scan; boundaries directly before
+    // them are forced to no-break.
+    // ------------------------------------------------------------------
+
+    const is_attached = try allocator.alloc(bool, total);
+    defer allocator.free(is_attached);
+    for (resolved_class, 0..) |class, position| {
+        if (position == 0 or (class != .cm and class != .zwj)) {
+            is_attached[position] = false;
+            continue;
+        }
+        is_attached[position] = !isHardLineBreaker(resolved_class[position - 1]);
+    }
+
+    // ------------------------------------------------------------------
+    // Pass 3 — LB10 promotion of remaining CM/ZWJ to AL.
+    //
+    // Only the resolved class is rewritten; `raw_class` keeps the literal
+    // ZWJ so LB8a ("ZWJ ×") can still detect it as the previous codepoint.
+    // ------------------------------------------------------------------
+
+    for (resolved_class, 0..) |*class_ptr, position| {
+        if (is_attached[position]) continue;
+        if (class_ptr.* == .cm or class_ptr.* == .zwj) class_ptr.* = .al;
+    }
+
+    // ------------------------------------------------------------------
+    // Pass 4 — sequential rule scan with an "effective tape".
+    //
+    // `effective_tape` records the non-attached code points in order.
+    // After every hard break the tape is reset to a single entry (the
+    // first character of the new run), so lookbacks never accidentally
+    // cross a break.
+    // ------------------------------------------------------------------
+
+    const effective_tape = try allocator.alloc(LBTapeEntry, total);
+    defer allocator.free(effective_tape);
+    var tape_length: usize = 0;
+    effective_tape[0] = .{ .class = resolved_class[0], .code_point_index = 0 };
+    tape_length = 1;
+
+    // LB30a regional-indicator pairing: 1 means "the run ending at the
+    // previous effective entry has an odd number of unpaired RIs".
+    var ri_run_parity: u1 = if (resolved_class[0] == .ri) 1 else 0;
+
+    var position: usize = 1;
+    while (position < total) : (position += 1) {
+        // LB9 invisible marks.
+        if (is_attached[position]) {
+            boundaries[position] = .prohibited;
+            continue;
+        }
+
+        const current_class = resolved_class[position];
+        const literal_previous_class = raw_class[position - 1];
+        const previous_entry = effective_tape[tape_length - 1];
+        const previous_class = previous_entry.class;
+        const previous_code_point_index = previous_entry.code_point_index;
+
+        // ----- Hard-break rules and other unconditional early exits. -----
+
+        // LB4: BK !  — mandatory break after BK.
+        if (previous_class == .bk) {
+            boundaries[position] = .mandatory;
+            tape_length = 1;
+            effective_tape[0] = .{ .class = current_class, .code_point_index = position };
+            ri_run_parity = if (current_class == .ri) 1 else 0;
+            continue;
+        }
+        // LB5: CR × LF; CR ! ; LF ! ; NL ! .
+        if (previous_class == .cr and current_class == .lf) {
+            boundaries[position] = .prohibited;
+            effective_tape[tape_length] = .{ .class = current_class, .code_point_index = position };
+            tape_length += 1;
+            ri_run_parity = 0;
+            continue;
+        }
+        if (previous_class == .cr or previous_class == .lf or previous_class == .nl) {
+            boundaries[position] = .mandatory;
+            tape_length = 1;
+            effective_tape[0] = .{ .class = current_class, .code_point_index = position };
+            ri_run_parity = if (current_class == .ri) 1 else 0;
+            continue;
+        }
+        // LB6: × (BK | CR | LF | NL) — never break before a mandatory break.
+        if (current_class == .bk or current_class == .cr or current_class == .lf or current_class == .nl) {
+            boundaries[position] = .prohibited;
+            effective_tape[tape_length] = .{ .class = current_class, .code_point_index = position };
+            tape_length += 1;
+            ri_run_parity = 0;
+            continue;
+        }
+        // LB7: × SP ; × ZW — never break before SP or ZW.
+        if (current_class == .sp or current_class == .zw) {
+            boundaries[position] = .prohibited;
+            effective_tape[tape_length] = .{ .class = current_class, .code_point_index = position };
+            tape_length += 1;
+            ri_run_parity = 0;
+            continue;
+        }
+
+        // LB8: ZW SP* ÷  — break after ZW, with any number of intervening
+        // spaces. We resolve the "ZW reached through trailing SPs" question
+        // by walking the tape back from the most recent entry through SP.
+        const most_recent_non_space_in_tape: ?LBTapeEntry = blk: {
+            var scan_index = tape_length;
+            while (scan_index > 0) {
+                scan_index -= 1;
+                if (effective_tape[scan_index].class != .sp) break :blk effective_tape[scan_index];
+            }
+            break :blk null;
+        };
+        if (most_recent_non_space_in_tape) |entry| {
+            if (entry.class == .zw) {
+                boundaries[position] = .opportunity;
+                tape_length = 1;
+                effective_tape[0] = .{ .class = current_class, .code_point_index = position };
+                ri_run_parity = if (current_class == .ri) 1 else 0;
+                continue;
+            }
+        }
+
+        // LB8a: ZWJ × — never break right after a literal ZWJ (the source
+        // codepoint, not its LB9/LB10-resolved class).
+        if (literal_previous_class == .zwj) {
+            boundaries[position] = .prohibited;
+            effective_tape[tape_length] = .{ .class = current_class, .code_point_index = position };
+            tape_length += 1;
+            ri_run_parity = if (current_class == .ri) 1 else 0;
+            continue;
+        }
+
+        // ----- LB11..LB31. Default outcome is "break" (LB31). -----
+
+        // The "lookback through SP" used by LB14, LB15a, LB16, LB17.
+        const lookback_skipping_spaces: LBTapeEntry = most_recent_non_space_in_tape orelse previous_entry;
+
+        var allow_break = true;
+
+        // LB11: × WJ ; WJ ×.
+        if (current_class == .wj or previous_class == .wj) allow_break = false;
+
+        // LB12: GL × — never break right after GL.
+        if (allow_break and previous_class == .gl) allow_break = false;
+
+        // LB12a: [^SP BA HY HH] × GL.
+        if (allow_break and current_class == .gl) {
+            switch (previous_class) {
+                .sp, .ba, .hy, .hh => {},
+                else => allow_break = false,
+            }
+        }
+
+        // LB13: × CL ; × CP ; × EX ; × SY  (IS was removed in Unicode 17).
+        if (allow_break and (current_class == .cl or current_class == .cp or current_class == .ex or current_class == .sy)) {
+            allow_break = false;
+        }
+
+        // LB14: OP SP* × — never break after OP, even across spaces.
+        if (allow_break and lookback_skipping_spaces.class == .op) allow_break = false;
+
+        // LB15a: (sot | BK | CR | LF | NL | OP | QU | GL | SP | ZW)
+        //        [\p{Pi}&\p{QU}] SP* ×.
+        // Find the prior non-SP entry; if it is a Pi-class QU, also confirm
+        // that what stood before that QU was sot or a "fresh" class.
+        if (allow_break) {
+            var scan_index = tape_length;
+            while (scan_index > 0) : (scan_index -= 1) {
+                if (effective_tape[scan_index - 1].class != .sp) break;
+            }
+            if (scan_index > 0) {
+                const candidate = effective_tape[scan_index - 1];
+                if (candidate.class == .qu and
+                    general_category[candidate.code_point_index] == .initial_punctuation)
+                {
+                    const before_pi_qu_class: ?LBProp = if (scan_index == 1) null else effective_tape[scan_index - 2].class;
+                    const before_is_fresh = if (before_pi_qu_class) |class| switch (class) {
+                        .bk, .cr, .lf, .nl, .op, .qu, .gl, .sp, .zw => true,
+                        else => false,
+                    } else true; // sot
+                    if (before_is_fresh) allow_break = false;
+                }
+            }
+        }
+
+        // LB15b: × [\p{Pf}&\p{QU}] ( SP | GL | WJ | CL | QU | CP | EX |
+        //                            IS | SY | BK | CR | LF | NL | ZW | eot ).
+        if (allow_break and current_class == .qu and general_category[position] == .final_punctuation) {
+            const next_effective = nextEffectiveAfter(is_attached, resolved_class, position + 1, total);
+            const next_in_set = if (next_effective) |next_index| switch (resolved_class[next_index]) {
+                .sp, .gl, .wj, .cl, .qu, .cp, .ex, .is, .sy, .bk, .cr, .lf, .nl, .zw => true,
+                else => false,
+            } else true; // eot
+            if (next_in_set) allow_break = false;
+        }
+
+        // LB15c (Unicode 17): SP ÷ IS NU — forced break between SP and IS
+        // when an IS immediately followed by NU appears. Respect any earlier
+        // × decision (LB15a/LB15b can suppress the break).
+        if (allow_break and previous_class == .sp and current_class == .is) {
+            const after_is = nextEffectiveAfter(is_attached, resolved_class, position + 1, total);
+            if (after_is) |after_index| {
+                if (resolved_class[after_index] == .nu) {
+                    boundaries[position] = .opportunity;
+                    tape_length = 1;
+                    effective_tape[0] = .{ .class = current_class, .code_point_index = position };
+                    ri_run_parity = 0;
+                    continue;
+                }
+            }
+        }
+
+        // LB15d: × IS.
+        if (allow_break and current_class == .is) allow_break = false;
+
+        // LB16: (CL | CP) SP* × NS.
+        if (allow_break and current_class == .ns and
+            (lookback_skipping_spaces.class == .cl or lookback_skipping_spaces.class == .cp))
+        {
+            allow_break = false;
+        }
+
+        // LB17: B2 SP* × B2.
+        if (allow_break and lookback_skipping_spaces.class == .b2 and current_class == .b2) {
+            allow_break = false;
+        }
+
+        // LB18: SP ÷ — break after a space if nothing above caught it.
+        if (previous_class == .sp) {
+            boundaries[position] = if (allow_break) .opportunity else .prohibited;
+            if (allow_break) {
+                tape_length = 1;
+                effective_tape[0] = .{ .class = current_class, .code_point_index = position };
+                ri_run_parity = if (current_class == .ri) 1 else 0;
+            } else {
+                effective_tape[tape_length] = .{ .class = current_class, .code_point_index = position };
+                tape_length += 1;
+                ri_run_parity = 0;
+            }
+            continue;
+        }
+
+        // LB19: × [QU - Pi] ;  [QU - Pf] ×.
+        if (allow_break and current_class == .qu and general_category[position] != .initial_punctuation) {
+            allow_break = false;
+        }
+        if (allow_break and previous_class == .qu and
+            general_category[previous_code_point_index] != .final_punctuation)
+        {
+            allow_break = false;
+        }
+
+        // LB19a (Unicode 17): the EAW-conditioned QU rules.
+        //   1. [^EastAsian] × QU
+        //   2. × QU ([^EastAsian] | eot)
+        //   3. QU × [^EastAsian]
+        //   4. (sot | [^EastAsian]) QU ×
+        if (allow_break and current_class == .qu) {
+            if (!is_east_asian_wide[previous_code_point_index]) allow_break = false; // arm 1
+            if (allow_break) {
+                const next_effective = nextEffectiveAfter(is_attached, resolved_class, position + 1, total);
+                const next_is_non_ea_or_eot = if (next_effective) |next_index|
+                    !is_east_asian_wide[next_index]
+                else
+                    true; // eot
+                if (next_is_non_ea_or_eot) allow_break = false; // arm 2
+            }
+        }
+        if (allow_break and previous_class == .qu) {
+            if (!is_east_asian_wide[position]) allow_break = false; // arm 3
+            if (allow_break) {
+                // arm 4: the character BEFORE the previous QU. If it's sot
+                // or non-EA, suppress the break.
+                const before_qu_is_ea_or_missing = if (tape_length >= 2)
+                    is_east_asian_wide[effective_tape[tape_length - 2].code_point_index]
+                else
+                    false; // sot counts as non-EA → arm 4 fires
+                if (!before_qu_is_ea_or_missing) allow_break = false;
+            }
+        }
+
+        // LB20: ÷ CB ; CB ÷ — break on either side of CB, unless an earlier
+        // × rule already suppressed the break (e.g. LB13 × CL still holds
+        // over a CB-prior boundary).
+        if (allow_break and (current_class == .cb or previous_class == .cb)) {
+            boundaries[position] = .opportunity;
+            tape_length = 1;
+            effective_tape[0] = .{ .class = current_class, .code_point_index = position };
+            ri_run_parity = if (current_class == .ri) 1 else 0;
+            continue;
+        }
+
+        // LB20a (Unicode 17): (sot | BK | CR | LF | NL | SP | ZW | CB | GL)
+        //                     (HY | HH) × (AL | HL).
+        if (allow_break and (current_class == .al or current_class == .hl) and
+            (previous_class == .hy or previous_class == .hh))
+        {
+            const before_hyphen_class: ?LBProp = if (tape_length >= 2) effective_tape[tape_length - 2].class else null;
+            const fresh_for_word_initial_hyphen = if (before_hyphen_class) |class| switch (class) {
+                .bk, .cr, .lf, .nl, .sp, .zw, .cb, .gl => true,
+                else => false,
+            } else true; // sot
+            if (fresh_for_word_initial_hyphen) allow_break = false;
+        }
+
+        // LB21: × BA ; × HH ; × HY ; × NS ; BB ×.
+        if (allow_break and (current_class == .ba or current_class == .hh or
+            current_class == .hy or current_class == .ns or previous_class == .bb))
+        {
+            allow_break = false;
+        }
+
+        // LB21a: HL (HY | HH) × [^HL].
+        if (allow_break and tape_length >= 2 and current_class != .hl) {
+            const back_one = effective_tape[tape_length - 1].class;
+            const back_two = effective_tape[tape_length - 2].class;
+            if (back_two == .hl and (back_one == .hy or back_one == .hh)) allow_break = false;
+        }
+
+        // LB21b: SY × HL.
+        if (allow_break and previous_class == .sy and current_class == .hl) allow_break = false;
+
+        // LB22: × IN.
+        if (allow_break and current_class == .in) allow_break = false;
+
+        // LB23: (AL | HL) × NU ; NU × (AL | HL).
+        if (allow_break) {
+            const al_hl_to_nu = (previous_class == .al or previous_class == .hl) and current_class == .nu;
+            const nu_to_al_hl = previous_class == .nu and (current_class == .al or current_class == .hl);
+            if (al_hl_to_nu or nu_to_al_hl) allow_break = false;
+        }
+
+        // LB23a: PR × (ID | EB | EM) ; (ID | EB | EM) × PO.
+        if (allow_break) {
+            const pr_to_ideo_emoji = previous_class == .pr and
+                (current_class == .id or current_class == .eb or current_class == .em);
+            const ideo_emoji_to_po = (previous_class == .id or previous_class == .eb or previous_class == .em) and
+                current_class == .po;
+            if (pr_to_ideo_emoji or ideo_emoji_to_po) allow_break = false;
+        }
+
+        // LB24: (PR | PO) × (AL | HL) ; (AL | HL) × (PR | PO).
+        if (allow_break) {
+            const prpo_to_alhl = (previous_class == .pr or previous_class == .po) and
+                (current_class == .al or current_class == .hl);
+            const alhl_to_prpo = (previous_class == .al or previous_class == .hl) and
+                (current_class == .pr or current_class == .po);
+            if (prpo_to_alhl or alhl_to_prpo) allow_break = false;
+        }
+
+        // LB25 — fifteen sub-rules for numeric expressions.
+        if (allow_break and lb25Matches(
+            previous_class,
+            current_class,
+            previous_code_point_index,
+            position,
+            effective_tape[0..tape_length],
+            resolved_class,
+            is_attached,
+            total,
+        )) {
+            allow_break = false;
+        }
+
+        // LB26 — Hangul syllable interior.
+        if (allow_break) {
+            if (previous_class == .jl and
+                (current_class == .jl or current_class == .jv or
+                    current_class == .h2 or current_class == .h3))
+            {
+                allow_break = false;
+            } else if ((previous_class == .jv or previous_class == .h2) and
+                (current_class == .jv or current_class == .jt))
+            {
+                allow_break = false;
+            } else if ((previous_class == .jt or previous_class == .h3) and current_class == .jt) {
+                allow_break = false;
+            }
+        }
+
+        // LB27: (JL | JV | JT | H2 | H3) × PO ; PR × (JL | JV | JT | H2 | H3).
+        if (allow_break) {
+            if (isHangulSyllableClass(previous_class) and current_class == .po) allow_break = false;
+            if (previous_class == .pr and isHangulSyllableClass(current_class)) allow_break = false;
+        }
+
+        // LB28: (AL | HL) × (AL | HL).
+        if (allow_break and
+            (previous_class == .al or previous_class == .hl) and
+            (current_class == .al or current_class == .hl))
+        {
+            allow_break = false;
+        }
+
+        // LB28a — Brahmic letter pairs.
+        if (allow_break and lb28aMatches(
+            previous_class,
+            current_class,
+            previous_code_point_index,
+            position,
+            code_points,
+            effective_tape[0..tape_length],
+            resolved_class,
+            is_attached,
+            total,
+        )) {
+            allow_break = false;
+        }
+
+        // LB29: IS × (AL | HL).
+        if (allow_break and previous_class == .is and (current_class == .al or current_class == .hl)) {
+            allow_break = false;
+        }
+
+        // LB30: (AL | HL | NU) × [OP - EastAsian] ;
+        //       [CP - EastAsian] × (AL | HL | NU).
+        if (allow_break) {
+            const left_to_op = (previous_class == .al or previous_class == .hl or previous_class == .nu) and
+                current_class == .op and !is_east_asian_wide[position];
+            const cp_to_right = previous_class == .cp and
+                (current_class == .al or current_class == .hl or current_class == .nu) and
+                !is_east_asian_wide[previous_code_point_index];
+            if (left_to_op or cp_to_right) allow_break = false;
+        }
+
+        // LB30a — RI parity: RI × RI when the unbroken RI run ending at the
+        // previous code point has odd length.
+        var ri_no_break = false;
+        if (allow_break and previous_class == .ri and current_class == .ri and ri_run_parity == 1) {
+            allow_break = false;
+            ri_no_break = true;
+        }
+
+        // LB30b: EB × EM ; [Extended_Pictographic & gc=Cn] × EM.
+        if (allow_break and current_class == .em) {
+            if (previous_class == .eb) {
+                allow_break = false;
+            } else {
+                const previous_cp = code_points[previous_code_point_index];
+                if (isExtendedPictographic(previous_cp) and
+                    general_category[previous_code_point_index] == .unassigned)
+                {
+                    allow_break = false;
+                }
+            }
+        }
+
+        // ----- Commit the boundary. -----
+
+        boundaries[position] = if (allow_break) .opportunity else .prohibited;
+
+        // Track RI parity for LB30a on the next iteration.
+        if (current_class == .ri) {
+            // Extending an existing odd-length run pairs up (parity flips
+            // to even); starting a new RI (after break or after non-RI)
+            // resets the run to a single unpaired RI.
+            if (previous_class == .ri and ri_no_break) {
+                ri_run_parity = 0;
+            } else {
+                ri_run_parity = 1;
+            }
+        } else {
+            ri_run_parity = 0;
+        }
+
+        // Append current to the effective tape (or reset it on a break).
+        if (allow_break) {
+            tape_length = 1;
+            effective_tape[0] = .{ .class = current_class, .code_point_index = position };
+        } else {
+            effective_tape[tape_length] = .{ .class = current_class, .code_point_index = position };
+            tape_length += 1;
+        }
+    }
+
+    return boundaries;
+}
+
+/// Scan forward from `start_position` and return the index of the next
+/// non-attached code point, or null if the input ends first. Used by the
+/// lookahead clauses of LB15b, LB15c, LB19a, and LB25.
+fn nextEffectiveAfter(
+    is_attached: []const bool,
+    resolved_class: []const LBProp,
+    start_position: usize,
+    total: usize,
+) ?usize {
+    _ = resolved_class;
+    var scan = start_position;
+    while (scan < total) : (scan += 1) {
+        if (!is_attached[scan]) return scan;
+    }
+    return null;
+}
+
+/// LB25 — closed-form check for the fifteen numeric-expression sub-rules.
+/// Returns true iff the boundary between `previous_class` (at
+/// `previous_code_point_index`) and `current_class` (at `current_position`)
+/// must be suppressed by LB25.
+fn lb25Matches(
+    previous_class: LBProp,
+    current_class: LBProp,
+    previous_code_point_index: usize,
+    current_position: usize,
+    tape: []const LBTapeEntry,
+    resolved_class: []const LBProp,
+    is_attached: []const bool,
+    total: usize,
+) bool {
+    _ = previous_code_point_index;
+
+    // Helper: walk the tape backwards through (SY | IS)* and check whether
+    // it terminates at a NU. This implements the "NU (SY | IS)*" lookback
+    // shared by rules 1..6 and 15.
+    const walks_back_to_numeric_through_sy_is = struct {
+        fn check(scan_tape: []const LBTapeEntry) bool {
+            var index = scan_tape.len;
+            while (index > 0) {
+                index -= 1;
+                switch (scan_tape[index].class) {
+                    .nu => return true,
+                    .sy, .is => continue,
+                    else => return false,
+                }
+            }
+            return false;
+        }
+    }.check;
+
+    // Helper: same but allow at most one closing bracket (CL | CP) at the
+    // end. Implements the "(SY | IS)* (CL | CP)?" tail of rules 1..4.
+    const walks_back_to_numeric_through_closing = struct {
+        fn check(scan_tape: []const LBTapeEntry) bool {
+            if (scan_tape.len == 0) return false;
+            const last = scan_tape[scan_tape.len - 1].class;
+            const start_index = if (last == .cl or last == .cp) scan_tape.len - 1 else scan_tape.len;
+            var index = start_index;
+            while (index > 0) {
+                index -= 1;
+                switch (scan_tape[index].class) {
+                    .nu => return true,
+                    .sy, .is => continue,
+                    else => return false,
+                }
+            }
+            return false;
+        }
+    }.check;
+
+    // Rule 9 / 12 / 13 / 14: immediate-prev × NU.
+    if (current_class == .nu) {
+        switch (previous_class) {
+            .po, .pr, .hy, .is => return true,
+            else => {},
+        }
+        // Rule 15: NU (SY | IS)* × NU.
+        if (previous_class == .nu or previous_class == .sy or previous_class == .is) {
+            if (walks_back_to_numeric_through_sy_is(tape)) return true;
+        }
+    }
+
+    // Rules 7/8/10/11: (PO | PR) × OP (NU | IS NU).
+    if ((previous_class == .po or previous_class == .pr) and current_class == .op) {
+        const after_op = nextEffectiveAfter(is_attached, resolved_class, current_position + 1, total) orelse return false;
+        const after_op_class = resolved_class[after_op];
+        if (after_op_class == .nu) return true; // rules 7 / 10
+        if (after_op_class == .is) {
+            const after_is = nextEffectiveAfter(is_attached, resolved_class, after_op + 1, total) orelse return false;
+            if (resolved_class[after_is] == .nu) return true; // rules 8 / 11
+        }
+    }
+
+    // Rules 5 / 6 / 1..4: NU (SY | IS)* (CL | CP)? × (PO | PR).
+    if (current_class == .po or current_class == .pr) {
+        if (walks_back_to_numeric_through_closing(tape)) return true;
+    }
+
+    return false;
+}
+
+/// LB28a — Brahmic letter-pair lookups. Returns true iff one of the four
+/// sub-rules suppresses the break.
+fn lb28aMatches(
+    previous_class: LBProp,
+    current_class: LBProp,
+    previous_code_point_index: usize,
+    current_position: usize,
+    code_points: []const CodePoint,
+    tape: []const LBTapeEntry,
+    resolved_class: []const LBProp,
+    is_attached: []const bool,
+    total: usize,
+) bool {
+    const previous_is_ak_base = isAKBase(previous_class, code_points[previous_code_point_index]);
+    const current_is_ak_base = isAKBase(current_class, code_points[current_position]);
+
+    // Rule 1: AP × (AK | DC | AS).
+    if (previous_class == .ap and current_is_ak_base) return true;
+
+    // Rule 2: (AK | DC | AS) × (VF | VI).
+    if (previous_is_ak_base and (current_class == .vf or current_class == .vi)) return true;
+
+    // Rule 3: (AK | DC | AS) VI × (AK | DC).
+    if (tape.len >= 2 and previous_class == .vi and
+        (current_class == .ak or code_points[current_position] == DOTTED_CIRCLE))
+    {
+        const back_two = tape[tape.len - 2];
+        if (isAKBase(back_two.class, code_points[back_two.code_point_index])) return true;
+    }
+
+    // Rule 4: (AK | DC | AS) × (AK | DC | AS) VF — one-position lookahead
+    // for VF after the current AK-base.
+    if (previous_is_ak_base and current_is_ak_base) {
+        const after_current = nextEffectiveAfter(is_attached, resolved_class, current_position + 1, total);
+        if (after_current) |next_index| {
+            if (resolved_class[next_index] == .vf) return true;
+        }
+    }
+
+    return false;
+}
+
+/// One segment yielded by `LineBreakIterator` / `CodePointLineBoundaryIterator`:
+/// the bytes (or codepoints) up to the boundary, plus the kind of break that
+/// terminated the segment. Layout engines must honor `.mandatory` and may
+/// take `.opportunity` to fit a line; for the final segment of the input the
+/// kind is `.mandatory` (LB3).
+pub fn LineSegment(comptime Element: type) type {
+    return struct {
+        slice: []const Element,
+        kind: LineBreakKind,
+    };
+}
+
+/// Iterator over an explicit `[]const CodePoint` that yields successive
+/// line-break segments. Each item describes the codepoints from the previous
+/// boundary up to and including the position just before the next break,
+/// together with the `LineBreakKind` (mandatory vs opportunity) that
+/// terminates it.
+///
+/// Implementation note: unlike the word/sentence iterators, this one
+/// allocates on construction to materialize the full boundary array — the
+/// UAX #14 algorithm requires several passes (LB1 resolution, LB9
+/// attachment, LB10 promotion) over the input plus an unbounded "effective
+/// tape" of past entries for LB14/LB15a/LB16/LB17 lookback. The pragmatic
+/// v1 form trades alloc-freeness for code simplicity. Callers wanting
+/// streaming over very large inputs should slice and re-iterate.
+pub const CodePointLineBoundaryIterator = struct {
+    code_points: []const CodePoint,
+    boundaries: []LineBreakKind,
+    allocator: std.mem.Allocator,
+    pos: usize = 0,
+
+    pub fn deinit(self: *CodePointLineBoundaryIterator) void {
+        self.allocator.free(self.boundaries);
+    }
+
+    pub fn next(self: *CodePointLineBoundaryIterator) ?LineSegment(CodePoint) {
+        const n = self.code_points.len;
+        if (self.pos >= n) return null;
+        const start = self.pos;
+        var i = self.pos + 1;
+        while (i < n) : (i += 1) {
+            if (self.boundaries[i] != .prohibited) {
+                self.pos = i;
+                return .{ .slice = self.code_points[start..i], .kind = self.boundaries[i] };
+            }
+        }
+        self.pos = n;
+        // LB3: eot is always mandatory.
+        return .{ .slice = self.code_points[start..n], .kind = .mandatory };
+    }
+
+    pub fn reset(self: *CodePointLineBoundaryIterator) void {
+        self.pos = 0;
+    }
+};
+
+pub fn codePointLineBoundaryIterator(
+    allocator: std.mem.Allocator,
+    code_points: []const CodePoint,
+) !CodePointLineBoundaryIterator {
+    const boundaries = try computeLineBoundaries(allocator, code_points);
+    return .{
+        .code_points = code_points,
+        .boundaries = boundaries,
+        .allocator = allocator,
+    };
+}
+
+/// Iterator over UTF-8 input that yields successive line-break segments as
+/// byte slices paired with the `LineBreakKind` terminating each segment.
+///
+/// Internally allocates on construction — see the note on
+/// `CodePointLineBoundaryIterator` for why. Decoded codepoints are stored
+/// alongside the boundary array so byte offsets can be recovered without
+/// re-scanning the UTF-8 stream.
+pub const LineBreakIterator = struct {
+    bytes: []const u8,
+    /// Byte offset of the start of each decoded codepoint, with a sentinel
+    /// at `byte_offsets[n] == bytes.len`.
+    byte_offsets: []usize,
+    boundaries: []LineBreakKind,
+    allocator: std.mem.Allocator,
+    /// Index into `byte_offsets` of the next codepoint to yield from.
+    cp_pos: usize = 0,
+
+    pub fn deinit(self: *LineBreakIterator) void {
+        self.allocator.free(self.byte_offsets);
+        self.allocator.free(self.boundaries);
+    }
+
+    pub fn next(self: *LineBreakIterator) ?LineSegment(u8) {
+        const n_cp = self.boundaries.len - 1;
+        if (self.cp_pos >= n_cp) return null;
+        const start_byte = self.byte_offsets[self.cp_pos];
+        var i = self.cp_pos + 1;
+        while (i < n_cp) : (i += 1) {
+            if (self.boundaries[i] != .prohibited) {
+                self.cp_pos = i;
+                return .{
+                    .slice = self.bytes[start_byte..self.byte_offsets[i]],
+                    .kind = self.boundaries[i],
+                };
+            }
+        }
+        self.cp_pos = n_cp;
+        return .{ .slice = self.bytes[start_byte..self.bytes.len], .kind = .mandatory };
+    }
+
+    pub fn reset(self: *LineBreakIterator) void {
+        self.cp_pos = 0;
+    }
+};
+
+pub fn lineBreakIterator(allocator: std.mem.Allocator, bytes: []const u8) !LineBreakIterator {
+    // First decode every codepoint so we can both feed the codepoint-based
+    // computeLineBoundaries and report byte offsets back to the caller.
+    var cp_list: std.ArrayList(CodePoint) = .empty;
+    errdefer cp_list.deinit(allocator);
+    var off_list: std.ArrayList(usize) = .empty;
+    errdefer off_list.deinit(allocator);
+
+    var byte_pos: usize = 0;
+    while (byte_pos < bytes.len) {
+        try off_list.append(allocator, byte_pos);
+        const decoded = utf8.validateAndDecodeCodePointBytesLossy(bytes, byte_pos) catch unreachable;
+        try cp_list.append(allocator, decoded.code_point);
+        byte_pos += decoded.len;
+    }
+    try off_list.append(allocator, bytes.len);
+
+    const code_points = try cp_list.toOwnedSlice(allocator);
+    defer allocator.free(code_points);
+    const byte_offsets = try off_list.toOwnedSlice(allocator);
+    errdefer allocator.free(byte_offsets);
+
+    const boundaries = try computeLineBoundaries(allocator, code_points);
+    return .{
+        .bytes = bytes,
+        .byte_offsets = byte_offsets,
+        .boundaries = boundaries,
+        .allocator = allocator,
+    };
+}
+
+/// Count the number of line-break segments in `bytes`.
+pub fn countLineSegments(allocator: std.mem.Allocator, bytes: []const u8) !usize {
+    var it = try lineBreakIterator(allocator, bytes);
+    defer it.deinit();
+    var count: usize = 0;
+    while (it.next() != null) count += 1;
+    return count;
+}
+
+pub fn countLineSegmentsFromCodePoints(allocator: std.mem.Allocator, code_points: []const CodePoint) !usize {
+    var it = try codePointLineBoundaryIterator(allocator, code_points);
+    defer it.deinit();
     var count: usize = 0;
     while (it.next() != null) count += 1;
     return count;
@@ -737,4 +2635,191 @@ test "emoji-data: each predicate matches known examples and rejects unrelated co
     // Out-of-range guard.
     try testing.expect(!isEmoji(0x110000));
     try testing.expect(!isExtendedPictographic(0x110000));
+}
+
+// ============================================================================
+// Line-break kind, iterators, and count helpers
+// ============================================================================
+
+test "line break: LB3 marks end-of-text as mandatory and LB2 sot as prohibited" {
+    const cps = [_]CodePoint{ 'a', 'b' };
+    const got = try computeLineBoundaries(testing.allocator, &cps);
+    defer testing.allocator.free(got);
+    try testing.expectEqual(@as(usize, 3), got.len);
+    try testing.expectEqual(LineBreakKind.prohibited, got[0]);
+    try testing.expectEqual(LineBreakKind.prohibited, got[1]); // LB28: AL × AL
+    try testing.expectEqual(LineBreakKind.mandatory, got[2]); // LB3
+}
+
+test "line break: mandatory vs opportunity is distinguished where conformance hides it" {
+    // "a b\nc" — boundary before 'b' is a regular opportunity (SP ÷ via LB18),
+    // boundary before 'c' is a MANDATORY break (LB5 after LF). Conformance
+    // returns ÷ for both; the enum must not.
+    const cps = [_]CodePoint{ 'a', ' ', 'b', '\n', 'c' };
+    const got = try computeLineBoundaries(testing.allocator, &cps);
+    defer testing.allocator.free(got);
+    try testing.expectEqual(LineBreakKind.prohibited, got[0]); // sot
+    try testing.expectEqual(LineBreakKind.prohibited, got[1]); // × SP (LB7)
+    try testing.expectEqual(LineBreakKind.opportunity, got[2]); // SP ÷ b (LB18)
+    try testing.expectEqual(LineBreakKind.prohibited, got[3]); // × LF (LB6)
+    try testing.expectEqual(LineBreakKind.mandatory, got[4]); // LF ! c (LB5)
+    try testing.expectEqual(LineBreakKind.mandatory, got[5]); // eot (LB3)
+}
+
+test "line break: CR LF stays together; lone CR is still mandatory" {
+    {
+        const cps = [_]CodePoint{ 'a', '\r', '\n', 'b' };
+        const got = try computeLineBoundaries(testing.allocator, &cps);
+        defer testing.allocator.free(got);
+        try testing.expectEqual(LineBreakKind.prohibited, got[2]); // CR × LF
+        try testing.expectEqual(LineBreakKind.mandatory, got[3]); // after LF
+    }
+    {
+        const cps = [_]CodePoint{ 'a', '\r', 'b' };
+        const got = try computeLineBoundaries(testing.allocator, &cps);
+        defer testing.allocator.free(got);
+        try testing.expectEqual(LineBreakKind.mandatory, got[2]); // lone CR is LB5 mandatory
+    }
+}
+
+test "line break: BK forces mandatory break (LB4)" {
+    // FORM FEED U+000C is class BK.
+    const cps = [_]CodePoint{ 'a', 0x000C, 'b' };
+    const got = try computeLineBoundaries(testing.allocator, &cps);
+    defer testing.allocator.free(got);
+    try testing.expectEqual(LineBreakKind.prohibited, got[1]); // × BK (LB6)
+    try testing.expectEqual(LineBreakKind.mandatory, got[2]); // BK ! b (LB4)
+}
+
+test "word iterator: codepoint slice yields word-level segments matching the compute primitive" {
+    const cps = [_]CodePoint{ 'h', 'e', 'l', 'l', 'o', ' ', 'w', 'o', 'r', 'l', 'd' };
+    var it = codePointWordIterator(&cps);
+    const w1 = it.next() orelse return error.TestExpectedSegment;
+    try testing.expectEqual(@as(usize, 5), w1.len); // "hello"
+    const w2 = it.next() orelse return error.TestExpectedSegment;
+    try testing.expectEqual(@as(usize, 1), w2.len); // " "
+    const w3 = it.next() orelse return error.TestExpectedSegment;
+    try testing.expectEqual(@as(usize, 5), w3.len); // "world"
+    try testing.expect(it.next() == null);
+}
+
+test "word iterator: byte stream matches grapheme-style ergonomics over UTF-8" {
+    var it = wordIterator("hello world");
+    try testing.expectEqualStrings("hello", it.next().?);
+    try testing.expectEqualStrings(" ", it.next().?);
+    try testing.expectEqualStrings("world", it.next().?);
+    try testing.expect(it.next() == null);
+}
+
+test "word iterator: empty input yields no words" {
+    var it = wordIterator("");
+    try testing.expect(it.next() == null);
+    var cp_it = codePointWordIterator(&[_]CodePoint{});
+    try testing.expect(cp_it.next() == null);
+}
+
+test "word iterator: reset re-emits the same sequence" {
+    var it = wordIterator("foo bar");
+    try testing.expectEqualStrings("foo", it.next().?);
+    try testing.expectEqualStrings(" ", it.next().?);
+    it.reset();
+    try testing.expectEqualStrings("foo", it.next().?);
+}
+
+test "word iterator: agrees with computeWordBoundaries on a hostile case" {
+    // Numeric expressions, ZWJ emoji, and CR LF in one sample.
+    const cps = [_]CodePoint{ '1', '2', '.', '5', ' ', 'A', '\r', '\n', 0x1F468, 0x200D, 0x1F469 };
+    const want = try computeWordBoundaries(testing.allocator, &cps);
+    defer testing.allocator.free(want);
+
+    var it = codePointWordIterator(&cps);
+    var i: usize = 0;
+    while (it.next()) |word| {
+        // Boundary before the start of every word must be true in `want`.
+        try testing.expect(want[i]);
+        i += word.len;
+    }
+    try testing.expectEqual(cps.len, i);
+    try testing.expect(want[cps.len]); // WB2
+}
+
+test "sentence iterator: byte stream splits a multi-sentence paragraph" {
+    var it = sentenceIterator("Hello. How are you? I am fine.");
+    try testing.expectEqualStrings("Hello. ", it.next().?);
+    try testing.expectEqualStrings("How are you? ", it.next().?);
+    try testing.expectEqualStrings("I am fine.", it.next().?);
+    try testing.expect(it.next() == null);
+}
+
+test "sentence iterator: agrees with computeSentenceBoundaries" {
+    const cps = [_]CodePoint{ 'H', 'i', '.', ' ', 'B', 'y', 'e', '.' };
+    const want = try computeSentenceBoundaries(testing.allocator, &cps);
+    defer testing.allocator.free(want);
+
+    var it = codePointSentenceIterator(&cps);
+    var i: usize = 0;
+    while (it.next()) |seg| {
+        try testing.expect(want[i]);
+        i += seg.len;
+    }
+    try testing.expectEqual(cps.len, i);
+    try testing.expect(want[cps.len]);
+}
+
+test "line break iterator: yields opportunities and final mandatory" {
+    var it = try lineBreakIterator(testing.allocator, "hello world");
+    defer it.deinit();
+    const s1 = it.next() orelse return error.TestExpectedSegment;
+    try testing.expectEqualStrings("hello ", s1.slice);
+    try testing.expectEqual(LineBreakKind.opportunity, s1.kind);
+    const s2 = it.next() orelse return error.TestExpectedSegment;
+    try testing.expectEqualStrings("world", s2.slice);
+    try testing.expectEqual(LineBreakKind.mandatory, s2.kind);
+    try testing.expect(it.next() == null);
+}
+
+test "line break iterator: distinguishes mandatory from opportunity over a newline" {
+    var it = try lineBreakIterator(testing.allocator, "foo bar\nbaz");
+    defer it.deinit();
+    const s1 = it.next() orelse return error.TestExpectedSegment;
+    try testing.expectEqualStrings("foo ", s1.slice);
+    try testing.expectEqual(LineBreakKind.opportunity, s1.kind);
+    const s2 = it.next() orelse return error.TestExpectedSegment;
+    try testing.expectEqualStrings("bar\n", s2.slice);
+    try testing.expectEqual(LineBreakKind.mandatory, s2.kind); // LF ! baz
+    const s3 = it.next() orelse return error.TestExpectedSegment;
+    try testing.expectEqualStrings("baz", s3.slice);
+    try testing.expectEqual(LineBreakKind.mandatory, s3.kind); // eot LB3
+    try testing.expect(it.next() == null);
+}
+
+test "line break iterator: empty input yields no segments" {
+    var it = try lineBreakIterator(testing.allocator, "");
+    defer it.deinit();
+    try testing.expect(it.next() == null);
+}
+
+test "line break iterator: codepoint variant agrees with byte variant" {
+    const text = "ab cd\nef";
+    var byte_it = try lineBreakIterator(testing.allocator, text);
+    defer byte_it.deinit();
+    const cps = [_]CodePoint{ 'a', 'b', ' ', 'c', 'd', '\n', 'e', 'f' };
+    var cp_it = try codePointLineBoundaryIterator(testing.allocator, &cps);
+    defer cp_it.deinit();
+    while (true) {
+        const a = byte_it.next();
+        const b = cp_it.next();
+        if (a == null and b == null) break;
+        try testing.expect(a != null and b != null);
+        try testing.expectEqual(a.?.slice.len, b.?.slice.len);
+        try testing.expectEqual(a.?.kind, b.?.kind);
+    }
+}
+
+test "count helpers: counts match iterator output" {
+    try testing.expectEqual(@as(usize, 3), countWords("foo bar"));
+    try testing.expectEqual(@as(usize, 0), countWords(""));
+    try testing.expectEqual(@as(usize, 2), countSentences("One. Two."));
+    try testing.expectEqual(@as(usize, 2), try countLineSegments(testing.allocator, "hi there"));
+    try testing.expectEqual(@as(usize, 3), try countLineSegments(testing.allocator, "a b\nc"));
 }
