@@ -112,8 +112,7 @@ fn caseLineBreakIterator(ctx: *Context) !RunResult {
     var lines: u64 = 0;
     var n: u32 = 0;
     while (n < inner) : (n += 1) {
-        var it = try seg.lineBreakIterator(ctx.allocator, corpus);
-        defer it.deinit();
+        var it = seg.lineBreakIterator(corpus);
         while (it.next() != null) lines += 1;
     }
     return .{ .bytes_processed = @as(u64, corpus.len) * inner, .ops = lines };
@@ -177,6 +176,6 @@ pub const suite: framework.Suite = .{
         .{ .name = "WordIterator (bytes)", .run = caseWordIterator },
         .{ .name = "CodePointWordIterator", .run = caseCodePointWordIterator, .setup = setup, .teardown = teardown },
         .{ .name = "SentenceIterator (bytes)", .run = caseSentenceIterator },
-        .{ .name = "LineBreakIterator (bytes)", .run = caseLineBreakIterator, .notes = "Allocates internally for boundary array." },
+        .{ .name = "LineBreakIterator (bytes)", .run = caseLineBreakIterator, .notes = "Allocation-free streaming UAX #14." },
     },
 };
