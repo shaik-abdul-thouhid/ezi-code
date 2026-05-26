@@ -552,20 +552,27 @@ pub const WordIterator = struct {
         const n = self.bytes.len;
         if (self.pos >= n) return null;
         const start = self.pos;
+        // Decode the codepoint at the start of this segment. On the first ever
+        // call we use it to seed the state; on subsequent calls, the state's
+        // prev_lit is already set to this codepoint's WB property (the previous
+        // break decision recorded it). Either way we skip past it so the loop
+        // below tests boundaries against the NEXT codepoint.
+        const first = utf8.validateAndDecodeCodePointBytesLossy(self.bytes, self.pos) catch unreachable;
         if (!self.primed) {
-            const first = utf8.validateAndDecodeCodePointBytesLossy(self.bytes, self.pos) catch unreachable;
             self.state = WordStepState.init(first.code_point);
-            self.pos += first.len;
             self.primed = true;
         }
-        while (self.pos < n) {
-            const decision = wordStepBytes(self.state, self.bytes, self.pos);
+        var cursor = self.pos + first.len;
+        while (cursor < n) {
+            const decision = wordStepBytes(self.state, self.bytes, cursor);
             self.state = decision.new_state;
             if (decision.is_break) {
-                return self.bytes[start..self.pos];
+                self.pos = cursor;
+                return self.bytes[start..cursor];
             }
-            self.pos += decision.consumed;
+            cursor += decision.consumed;
         }
+        self.pos = n;
         return self.bytes[start..n];
     }
 
@@ -1144,27 +1151,33 @@ pub const SentenceIterator = struct {
         const n = self.bytes.len;
         if (self.pos >= n) return null;
         const start = self.pos;
+        // Same trick as WordIterator: decode the codepoint at the start of the
+        // segment, prime state on the first ever call (otherwise the state was
+        // updated by the previous break decision), then scan boundaries from
+        // the byte AFTER this codepoint.
+        const first = utf8.validateAndDecodeCodePointBytesLossy(self.bytes, self.pos) catch unreachable;
         if (!self.primed) {
-            const first = utf8.validateAndDecodeCodePointBytesLossy(self.bytes, self.pos) catch unreachable;
             self.state = SentenceStepState.init(first.code_point);
-            self.pos += first.len;
             self.primed = true;
         }
-        while (self.pos < n) {
-            const decoded = utf8.validateAndDecodeCodePointBytesLossy(self.bytes, self.pos) catch unreachable;
+        var cursor = self.pos + first.len;
+        while (cursor < n) {
+            const decoded = utf8.validateAndDecodeCodePointBytesLossy(self.bytes, cursor) catch unreachable;
             const curr = sentenceBreakProperty(decoded.code_point);
             const lookahead = if (self.state.ctx_is_aterm and
                 (self.state.ctx == .saterm or self.state.ctx == .saterm_close or self.state.ctx == .saterm_close_sp))
-                sb8LookaheadBytes(self.bytes, self.pos)
+                sb8LookaheadBytes(self.bytes, cursor)
             else
                 null;
             const decision = sentenceStepInner(self.state, curr, lookahead);
             self.state = decision.new_state;
             if (decision.is_break) {
-                return self.bytes[start..self.pos];
+                self.pos = cursor;
+                return self.bytes[start..cursor];
             }
-            self.pos += decoded.len;
+            cursor += decoded.len;
         }
+        self.pos = n;
         return self.bytes[start..n];
     }
 

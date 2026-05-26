@@ -1,51 +1,78 @@
+//! Human-readable formatters for time, memory, and throughput.
+
 const std = @import("std");
-const config = @import("config.zig");
 
-pub fn durationMs(ns: u128) f64 {
-    return @as(f64, @floatFromInt(ns)) / @as(f64, @floatFromInt(std.time.ns_per_ms));
+pub const ns_per_us: f64 = 1_000.0;
+pub const ns_per_ms: f64 = 1_000_000.0;
+pub const ns_per_s: f64 = 1_000_000_000.0;
+
+pub fn formatDuration(ns: f64, buf: []u8) []const u8 {
+    if (ns < 1_000.0) {
+        return std.fmt.bufPrint(buf, "{d:.2} ns", .{ns}) catch unreachable;
+    }
+    if (ns < 1_000_000.0) {
+        return std.fmt.bufPrint(buf, "{d:.2} us", .{ns / ns_per_us}) catch unreachable;
+    }
+    if (ns < 1_000_000_000.0) {
+        return std.fmt.bufPrint(buf, "{d:.3} ms", .{ns / ns_per_ms}) catch unreachable;
+    }
+    return std.fmt.bufPrint(buf, "{d:.3} s", .{ns / ns_per_s}) catch unreachable;
 }
 
-pub fn formatBytes(n: u128, buf: []u8) []const u8 {
-    if (n == 0) return "none";
+pub fn formatBytes(n_u128: u128, buf: []u8) []const u8 {
+    const n: f64 = @floatFromInt(n_u128);
+    const KiB: f64 = 1024.0;
+    const MiB: f64 = KiB * 1024.0;
+    const GiB: f64 = MiB * 1024.0;
 
-    const KiB: u128 = 1024;
-    const MiB = KiB * 1024;
-    const GiB = MiB * 1024;
-
-    if (n < KiB) {
-        return std.fmt.bufPrint(buf, "{d} bytes", .{n}) catch unreachable;
-    }
-    if (n < MiB) {
-        const v = @as(f64, @floatFromInt(n)) / @as(f64, @floatFromInt(KiB));
-        return std.fmt.bufPrint(buf, "{d:.2} KiB", .{v}) catch unreachable;
-    }
-    if (n < GiB) {
-        const v = @as(f64, @floatFromInt(n)) / @as(f64, @floatFromInt(MiB));
-        return std.fmt.bufPrint(buf, "{d:.2} MiB", .{v}) catch unreachable;
-    }
-    const v = @as(f64, @floatFromInt(n)) / @as(f64, @floatFromInt(GiB));
-    return std.fmt.bufPrint(buf, "{d:.2} GiB", .{v}) catch unreachable;
+    if (n_u128 == 0) return std.fmt.bufPrint(buf, "0 B", .{}) catch unreachable;
+    if (n < KiB) return std.fmt.bufPrint(buf, "{d} B", .{n_u128}) catch unreachable;
+    if (n < MiB) return std.fmt.bufPrint(buf, "{d:.2} KiB", .{n / KiB}) catch unreachable;
+    if (n < GiB) return std.fmt.bufPrint(buf, "{d:.2} MiB", .{n / MiB}) catch unreachable;
+    return std.fmt.bufPrint(buf, "{d:.2} GiB", .{n / GiB}) catch unreachable;
 }
 
-pub fn printRow(
-    name: []const u8,
-    avg_ns: u128,
-    avg_peak: usize,
-    avg_total_alloc: usize,
-    workload_bytes_per_run: u128,
-    workload_caption: []const u8,
-) void {
-    var b1: [72]u8 = undefined;
-    var b2: [72]u8 = undefined;
-    var b3: [72]u8 = undefined;
+pub fn formatBytesFloat(n: f64, buf: []u8) []const u8 {
+    const KiB: f64 = 1024.0;
+    const MiB: f64 = KiB * 1024.0;
+    const GiB: f64 = MiB * 1024.0;
 
-    const work = formatBytes(workload_bytes_per_run, &b1);
-    const peak = formatBytes(@as(u128, @intCast(avg_peak)), &b2);
-    const volume = formatBytes(@as(u128, @intCast(avg_total_alloc)), &b3);
+    if (n < 1.0) return std.fmt.bufPrint(buf, "{d:.2} B", .{n}) catch unreachable;
+    if (n < KiB) return std.fmt.bufPrint(buf, "{d:.0} B", .{n}) catch unreachable;
+    if (n < MiB) return std.fmt.bufPrint(buf, "{d:.2} KiB", .{n / KiB}) catch unreachable;
+    if (n < GiB) return std.fmt.bufPrint(buf, "{d:.2} MiB", .{n / MiB}) catch unreachable;
+    return std.fmt.bufPrint(buf, "{d:.2} GiB", .{n / GiB}) catch unreachable;
+}
 
-    std.debug.print("{s}\n", .{name});
-    std.debug.print("  mean wall time ({d} samples): {d:.3} ms\n", .{ config.sample_runs, durationMs(avg_ns) });
-    std.debug.print("  workload per timed run ({s}): {s}\n", .{ workload_caption, work });
-    std.debug.print("  mean peak allocator footprint: {s}\n", .{peak});
-    std.debug.print("  mean total allocation volume: {s}\n", .{volume});
+/// Throughput in bytes/second, rendered with the right unit.
+/// Returns "n/a" if ns is zero.
+pub fn formatThroughput(bytes: u64, ns: f64, buf: []u8) []const u8 {
+    if (ns <= 0.0 or bytes == 0) {
+        return std.fmt.bufPrint(buf, "n/a", .{}) catch unreachable;
+    }
+    const bytes_f: f64 = @floatFromInt(bytes);
+    const bps = bytes_f * ns_per_s / ns;
+
+    const KiB: f64 = 1024.0;
+    const MiB: f64 = KiB * 1024.0;
+    const GiB: f64 = MiB * 1024.0;
+
+    if (bps < KiB) return std.fmt.bufPrint(buf, "{d:.2} B/s", .{bps}) catch unreachable;
+    if (bps < MiB) return std.fmt.bufPrint(buf, "{d:.2} KiB/s", .{bps / KiB}) catch unreachable;
+    if (bps < GiB) return std.fmt.bufPrint(buf, "{d:.2} MiB/s", .{bps / MiB}) catch unreachable;
+    return std.fmt.bufPrint(buf, "{d:.2} GiB/s", .{bps / GiB}) catch unreachable;
+}
+
+/// Operations / second. Renders with k/M/G suffixes.
+pub fn formatOpsPerSec(ops: u64, ns: f64, buf: []u8) []const u8 {
+    if (ns <= 0.0 or ops == 0) {
+        return std.fmt.bufPrint(buf, "n/a", .{}) catch unreachable;
+    }
+    const ops_f: f64 = @floatFromInt(ops);
+    const ops_per_s = ops_f * ns_per_s / ns;
+
+    if (ops_per_s < 1_000.0) return std.fmt.bufPrint(buf, "{d:.2} op/s", .{ops_per_s}) catch unreachable;
+    if (ops_per_s < 1_000_000.0) return std.fmt.bufPrint(buf, "{d:.2} kop/s", .{ops_per_s / 1_000.0}) catch unreachable;
+    if (ops_per_s < 1_000_000_000.0) return std.fmt.bufPrint(buf, "{d:.2} Mop/s", .{ops_per_s / 1_000_000.0}) catch unreachable;
+    return std.fmt.bufPrint(buf, "{d:.2} Gop/s", .{ops_per_s / 1_000_000_000.0}) catch unreachable;
 }

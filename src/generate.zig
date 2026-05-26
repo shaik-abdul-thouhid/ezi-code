@@ -391,51 +391,26 @@ const CaseMappingTracker = struct {
     }
 };
 
-/// Run-length tracker for canonical combining classes. Contiguous codepoints
-/// sharing the same nonzero class merge into one CombiningClassEntry; zero
-/// classes flush whatever was pending.
-const CombiningClassTracker = struct {
-    range_start: ?u21 = null,
-    range_end: ?u21 = null,
-    current_class: ?[]const u8 = null,
-    buffer: std.ArrayList(u8) = .empty,
-
-    fn add(self: *CombiningClassTracker, arena: std.mem.Allocator, cp: u21, combining_class: []const u8) !void {
-        if (!std.mem.eql(u8, combining_class, "0")) {
-            if (self.current_class == null) {
-                self.range_start = cp;
-                self.range_end = cp;
-                self.current_class = combining_class;
-            } else if (std.mem.eql(u8, self.current_class.?, combining_class) and cp == self.range_end.? + 1) {
-                self.range_end = cp;
-            } else {
-                try self.flushPending(arena);
-                self.range_start = cp;
-                self.range_end = cp;
-                self.current_class = combining_class;
-            }
-        } else if (self.current_class != null) {
-            try self.flushPending(arena);
-            self.range_start = null;
-            self.range_end = null;
-            self.current_class = null;
+/// Emit a 2-level page table where each slot is a `CanonicalCombiningClass`
+/// enum variant. Pages store the raw u8 value (`@enumFromInt` at lookup time)
+/// — significantly smaller in source than emitting variant names, and lets
+/// the optimizer fold the whole lookup into two array indexes.
+fn emitCombiningClassPageTable(
+    writer: *std.Io.Writer,
+    pt: PageTable(u8),
+) !void {
+    try emitLevel1(writer, "combining_class", pt.level1);
+    try writer.writeAll("//zig fmt: off\nconst combining_class_level_2 = [_][256]u8 {\n");
+    for (pt.unique_pages) |page| {
+        try writer.writeAll("    .{\n        ");
+        for (page, 0..) |val, j| {
+            try writer.print("{d},", .{val});
+            if ((j + 1) % 16 == 0 and (j + 1) != page.len) try writer.writeAll("\n        ");
         }
+        try writer.writeAll("\n    },\n");
     }
-
-    fn flushPending(self: *CombiningClassTracker, arena: std.mem.Allocator) !void {
-        const ccc = try std.fmt.parseInt(u8, self.current_class.?, 10);
-        const p = try std.fmt.allocPrint(
-            arena,
-            "    .{{ .range_start = 0x{X}, .range_end = 0x{X}, .ccc = {any} }},\n",
-            .{ self.range_start.?, self.range_end.?, CanonicalCombiningClass.fromU8(ccc) },
-        );
-        try self.buffer.appendSlice(arena, p);
-    }
-
-    fn finalize(self: *CombiningClassTracker, arena: std.mem.Allocator) !void {
-        if (self.current_class != null) try self.flushPending(arena);
-    }
-};
+    try writer.writeAll("};\n//zig fmt: on\n\n");
+}
 
 const CategoryEntry = struct { short: []const u8, name: []const u8 };
 
@@ -557,20 +532,22 @@ fn generateUnicodeData(arena: std.mem.Allocator, io: std.Io, data: []const u8, u
     var file_writer = file.writer(io, buf);
     const writer = &file_writer.interface;
 
-    var combining = CombiningClassTracker{};
     var lowercase = CaseMappingTracker{};
     var uppercase = CaseMappingTracker{};
     var titlecase = CaseMappingTracker{};
 
     var category_values = std.ArrayList(u8).empty;
     var bidi_values = std.ArrayList(u8).empty;
+    var combining_values = std.ArrayList(u8).empty;
 
     var pending_range_start: ?u21 = null;
     var pending_range_category: u8 = general_category_default;
     var pending_range_bidi: u8 = bidi_class_gap_fill;
+    var pending_range_combining: u8 = 0;
 
     var next_cp: u21 = 0;
     var next_bidi_cp: u21 = 0;
+    var next_combining_cp: u21 = 0;
 
     var lines = std.mem.splitScalar(u8, data, '\n');
     while (lines.next()) |line| {
@@ -596,10 +573,13 @@ fn generateUnicodeData(arena: std.mem.Allocator, io: std.Io, data: []const u8, u
         const cat_idx = lookupCategory(&general_category_table, general_category_default, category);
         const bidi_idx = lookupCategory(&bidi_class_table, bidi_class_unknown, bidi_class);
 
+        const ccc_byte: u8 = std.fmt.parseInt(u8, combining_class, 10) catch 0;
+
         if (std.mem.endsWith(u8, range_hint, ", First>")) {
             pending_range_start = cp;
             pending_range_category = cat_idx;
             pending_range_bidi = bidi_idx;
+            pending_range_combining = ccc_byte;
             continue;
         }
 
@@ -607,13 +587,16 @@ fn generateUnicodeData(arena: std.mem.Allocator, io: std.Io, data: []const u8, u
             const start_cp = pending_range_start orelse return error.InvalidUnicodeRange;
             while (next_cp < start_cp) : (next_cp += 1) try category_values.append(arena, general_category_default);
             while (next_bidi_cp < start_cp) : (next_bidi_cp += 1) try bidi_values.append(arena, bidi_class_gap_fill);
+            while (next_combining_cp < start_cp) : (next_combining_cp += 1) try combining_values.append(arena, 0);
             var range_cp = start_cp;
             while (range_cp <= cp) : (range_cp += 1) {
                 try category_values.append(arena, pending_range_category);
                 try bidi_values.append(arena, pending_range_bidi);
+                try combining_values.append(arena, pending_range_combining);
             }
             next_cp = cp + 1;
             next_bidi_cp = cp + 1;
+            next_combining_cp = cp + 1;
             pending_range_start = null;
             continue;
         }
@@ -622,7 +605,9 @@ fn generateUnicodeData(arena: std.mem.Allocator, io: std.Io, data: []const u8, u
         try category_values.append(arena, cat_idx);
         next_cp = cp + 1;
 
-        try combining.add(arena, cp, combining_class);
+        while (next_combining_cp < cp) : (next_combining_cp += 1) try combining_values.append(arena, 0);
+        try combining_values.append(arena, ccc_byte);
+        next_combining_cp = cp + 1;
 
         while (next_bidi_cp < cp) : (next_bidi_cp += 1) try bidi_values.append(arena, bidi_class_gap_fill);
         try bidi_values.append(arena, bidi_idx);
@@ -635,6 +620,7 @@ fn generateUnicodeData(arena: std.mem.Allocator, io: std.Io, data: []const u8, u
 
     while (next_cp <= 0x10FFFF) : (next_cp += 1) try category_values.append(arena, general_category_default);
     while (next_bidi_cp <= 0x10FFFF) : (next_bidi_cp += 1) try bidi_values.append(arena, bidi_class_gap_fill);
+    while (next_combining_cp <= 0x10FFFF) : (next_combining_cp += 1) try combining_values.append(arena, 0);
 
     try writer.writeAll(
         \\//! This file is auto-generated. Do not edit directly.
@@ -653,12 +639,6 @@ fn generateUnicodeData(arena: std.mem.Allocator, io: std.Io, data: []const u8, u
     try emitNamedEnum(writer, "BidiClass", &bidi_class_table);
 
     try writer.writeAll(
-        \\pub const CombiningClassEntry = struct {
-        \\    range_start: CodePoint,
-        \\    range_end: CodePoint,
-        \\    ccc: CanonicalCombiningClass,
-        \\};
-        \\
         \\pub const BidiEntry = struct {
         \\    range_start: CodePoint,
         \\    range_end: CodePoint,
@@ -683,10 +663,18 @@ fn generateUnicodeData(arena: std.mem.Allocator, io: std.Io, data: []const u8, u
         \\
     );
 
-    try combining.finalize(arena);
-    try writer.writeAll("pub const combining_class_table = [_]CombiningClassEntry {\n");
-    try writer.writeAll(combining.buffer.items);
-    try writer.writeAll("};\n\n");
+    const combining_pt = try buildPageTable(u8, arena, combining_values.items, 0);
+    try emitCombiningClassPageTable(writer, combining_pt);
+
+    try writer.writeAll(
+        \\pub inline fn canonicalCombiningClass(cp: CodePoint) CanonicalCombiningClass {
+        \\    if (cp > 0x10FFFF) return .not_reordered;
+        \\    const page = combining_class_level1[cp >> 8];
+        \\    return @enumFromInt(combining_class_level_2[page][cp & 0xFF]);
+        \\}
+        \\
+        \\
+    );
 
     const bidi_pt = try buildPageTable(u8, arena, bidi_values.items, bidi_class_gap_fill);
     try emitNamedEnumPageTable(writer, "bidi", "_level_2", "BidiClass", &bidi_class_table, bidi_pt);
