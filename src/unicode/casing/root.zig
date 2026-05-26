@@ -218,6 +218,173 @@ pub fn toTitleCaseFull(
     return singletonResult(cap, toTitleCase(code_point));
 }
 
+// ============================================================================
+// Tests (relocated from unicode/root.zig during the slim-facade refactor)
+// ============================================================================
+
+const properties = @import("../properties/root.zig");
+const testing = std.testing;
+
+test "unicode api: derived properties, case folding, and full special casing are not decorative wrappers" {
+    try testing.expect(properties.isAlphabetic('A'));
+    try testing.expect(properties.isUpperCase('A'));
+    try testing.expect(properties.isLowerCase('a'));
+    try testing.expect(properties.isMath('+'));
+    try testing.expect(properties.isIdStart('A'));
+    try testing.expect(!properties.isIdStart('_'));
+    try testing.expect(properties.isIdentifierStart('_'));
+    try testing.expect(properties.isXidContinue(0x0301));
+
+    try testing.expectEqual(@as(CodePoint, 'a'), caseFoldSimple('A'));
+    try testing.expectEqual(@as(CodePoint, 0x0131), caseFoldSimpleTurkic('I'));
+    try testing.expectEqual(@as(CodePoint, 'a'), caseFoldSimpleTurkic('A'));
+
+    {
+        const r = caseFoldFull(0x00DF);
+        try testing.expectEqualSlices(CodePoint, &.{ 's', 's' }, r.slice());
+    }
+    {
+        const r = caseFoldFull(0x10FFFF);
+        try testing.expectEqualSlices(CodePoint, &.{0x10FFFF}, r.slice());
+    }
+
+    {
+        const r = toLowerCaseFull(0x0130, .none, .none);
+        try testing.expectEqualSlices(CodePoint, &.{ 0x69, 0x307 }, r.slice());
+    }
+    {
+        const r = toLowerCaseFull(0x0130, .tr, .none);
+        try testing.expectEqualSlices(CodePoint, &.{0x69}, r.slice());
+    }
+    {
+        const r = toLowerCaseFull(0x03A3, .none, .final_sigma);
+        try testing.expectEqualSlices(CodePoint, &.{0x03C2}, r.slice());
+    }
+}
+
+test "toUpperCase: ASCII lowercase to uppercase" {
+    for ('a'..'z' + 1) |cp| {
+        const upper = toUpperCase(@as(CodePoint, @intCast(cp)));
+        try testing.expectEqual(cp - ('a' - 'A'), upper);
+    }
+}
+
+test "toUpperCase: ASCII uppercase unchanged" {
+    for ('A'..'Z' + 1) |cp| {
+        const upper = toUpperCase(@as(CodePoint, @intCast(cp)));
+        try testing.expectEqual(cp, upper);
+    }
+}
+
+test "toUpperCase: ASCII non-letters unchanged" {
+    for ('0'..'9' + 1) |cp| {
+        const upper = toUpperCase(@as(CodePoint, @intCast(cp)));
+        try testing.expectEqual(cp, upper);
+    }
+}
+
+test "toUpperCase: extended Latin" {
+    const cases = [_]struct { lower: CodePoint, upper: CodePoint }{
+        .{ .lower = 0xE0, .upper = 0xC0 },
+        .{ .lower = 0xE9, .upper = 0xC9 },
+        .{ .lower = 0xF1, .upper = 0xD1 },
+    };
+    for (cases) |tc| try testing.expectEqual(tc.upper, toUpperCase(tc.lower));
+}
+
+test "toUpperCase: already uppercase unchanged" {
+    for ([_]CodePoint{ 0xC0, 0xC9, 0xD1 }) |cp| try testing.expectEqual(cp, toUpperCase(cp));
+}
+
+test "toLowerCase: ASCII uppercase to lowercase" {
+    for ('A'..'Z' + 1) |cp| {
+        const lower = toLowerCase(@as(CodePoint, @intCast(cp)));
+        try testing.expectEqual(cp + ('a' - 'A'), lower);
+    }
+}
+
+test "toLowerCase: ASCII lowercase unchanged" {
+    for ('a'..'z' + 1) |cp| {
+        const lower = toLowerCase(@as(CodePoint, @intCast(cp)));
+        try testing.expectEqual(cp, lower);
+    }
+}
+
+test "toLowerCase: ASCII non-letters unchanged" {
+    for ('0'..'9' + 1) |cp| {
+        const lower = toLowerCase(@as(CodePoint, @intCast(cp)));
+        try testing.expectEqual(cp, lower);
+    }
+}
+
+test "toLowerCase: extended Latin" {
+    const cases = [_]struct { upper: CodePoint, lower: CodePoint }{
+        .{ .upper = 0xC0, .lower = 0xE0 },
+        .{ .upper = 0xC9, .lower = 0xE9 },
+        .{ .upper = 0xD1, .lower = 0xF1 },
+    };
+    for (cases) |tc| try testing.expectEqual(tc.lower, toLowerCase(tc.upper));
+}
+
+test "toLowerCase: already lowercase unchanged" {
+    for ([_]CodePoint{ 0xE0, 0xE9, 0xF1 }) |cp| try testing.expectEqual(cp, toLowerCase(cp));
+}
+
+test "toTitleCase: ASCII uppercase and lowercase" {
+    for ('a'..'z' + 1) |cp| {
+        try testing.expectEqual(cp - ('a' - 'A'), toTitleCase(@as(CodePoint, @intCast(cp))));
+    }
+    for ('A'..'Z' + 1) |cp| {
+        try testing.expectEqual(cp, toTitleCase(@as(CodePoint, @intCast(cp))));
+    }
+}
+
+test "toTitleCase: non-letters unchanged" {
+    for ('0'..'9' + 1) |cp| {
+        try testing.expectEqual(cp, toTitleCase(@as(CodePoint, @intCast(cp))));
+    }
+}
+
+test "case conversion roundtrip: uppercase->lowercase->uppercase" {
+    for ([_]CodePoint{ 'A', 'B', 'Z', 0xC0, 0xC9 }) |cp| {
+        const lower = toLowerCase(cp);
+        const upper = toUpperCase(lower);
+        if (cp <= 'Z') try testing.expectEqual(cp, upper);
+    }
+}
+
+test "case conversion roundtrip: lowercase->uppercase->lowercase" {
+    for ([_]CodePoint{ 'a', 'b', 'z', 0xE0, 0xE9 }) |cp| {
+        const upper = toUpperCase(cp);
+        const lower = toLowerCase(upper);
+        if (cp <= 'z') try testing.expectEqual(cp, lower);
+    }
+}
+
+test "edge case: null code point maps to itself under every casing operation" {
+    try testing.expectEqual(@as(CodePoint, 0), toUpperCase(0));
+    try testing.expectEqual(@as(CodePoint, 0), toLowerCase(0));
+    try testing.expectEqual(@as(CodePoint, 0), toTitleCase(0));
+}
+
+test "hostile: case mapping with unusual inputs never produces invalid code points" {
+    for (0x0000..0x10FFFF) |cp_usize| {
+        const cp: CodePoint = @intCast(cp_usize);
+        if (cp >= 0xD800 and cp <= 0xDFFF) continue; // skip surrogates
+        try testing.expect(toUpperCase(cp) <= 0x10FFFF);
+        try testing.expect(toLowerCase(cp) <= 0x10FFFF);
+        try testing.expect(toTitleCase(cp) <= 0x10FFFF);
+    }
+}
+
+test "binary search: case mapping correctness in ranges" {
+    for (0xC2..0xDF) |cp_usize| {
+        const cp: CodePoint = @intCast(cp_usize);
+        _ = toUpperCase(cp);
+        _ = toLowerCase(cp);
+    }
+}
+
 test {
     std.testing.refAllDecls(@This());
 }
