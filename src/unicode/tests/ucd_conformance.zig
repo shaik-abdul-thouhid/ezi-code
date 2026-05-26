@@ -27,8 +27,11 @@ const special_casing_path = "ucd/SpecialCasing.txt";
 const grapheme_break_property_path = "ucd/GraphemeBreakProperty.txt";
 const grapheme_break_test_path = "ucd/GraphemeBreakTest.txt";
 const word_break_property_path = "ucd/WordBreakProperty.txt";
+const word_break_test_path = "ucd/WordBreakTest.txt";
 const sentence_break_property_path = "ucd/SentenceBreakProperty.txt";
+const sentence_break_test_path = "ucd/SentenceBreakTest.txt";
 const line_break_path = "ucd/LineBreak.txt";
+const line_break_test_path = "ucd/LineBreakTest.txt";
 const east_asian_width_path = "ucd/EastAsianWidth.txt";
 const emoji_data_path = "ucd/emoji-data.txt";
 
@@ -1070,4 +1073,161 @@ test "ucd hostile: every emoji-data property predicate matches every codepoint" 
             return error.EmojiPredicateMissingFromFile;
         }
     }
+}
+
+// ============================================================================
+// UAX #29 / UAX #14 segmentation conformance — WordBreakTest, SentenceBreakTest,
+// LineBreakTest.
+// ============================================================================
+
+// ÷ U+00F7 — UTF-8 0xC3 0xB7 — break opportunity.
+const break_marker = "\xC3\xB7";
+// × U+00D7 — UTF-8 0xC3 0x97 — no break.
+const no_break_marker = "\xC3\x97";
+
+const ParsedSegmentationLine = struct {
+    code_points: []CodePoint,
+    boundaries: []bool,
+
+    fn deinit(self: *ParsedSegmentationLine, allocator: std.mem.Allocator) void {
+        allocator.free(self.code_points);
+        allocator.free(self.boundaries);
+    }
+};
+
+/// Parse one row of a UCD break-test file. The format alternates boundary
+/// markers and hexadecimal code points, with whitespace as the only delimiter.
+fn parseSegmentationLine(allocator: std.mem.Allocator, data_part: []const u8) !ParsedSegmentationLine {
+    var code_points: std.ArrayList(CodePoint) = .empty;
+    errdefer code_points.deinit(allocator);
+    var boundaries: std.ArrayList(bool) = .empty;
+    errdefer boundaries.deinit(allocator);
+
+    var tokens = std.mem.tokenizeAny(u8, data_part, " \t");
+    while (tokens.next()) |tok| {
+        if (std.mem.eql(u8, tok, break_marker)) {
+            try boundaries.append(allocator, true);
+        } else if (std.mem.eql(u8, tok, no_break_marker)) {
+            try boundaries.append(allocator, false);
+        } else {
+            const cp = try std.fmt.parseInt(CodePoint, tok, 16);
+            try code_points.append(allocator, cp);
+        }
+    }
+
+    return .{
+        .code_points = try code_points.toOwnedSlice(allocator),
+        .boundaries = try boundaries.toOwnedSlice(allocator),
+    };
+}
+
+const SegmentationKind = enum { word, sentence, line };
+
+fn runSegmentationConformance(
+    allocator: std.mem.Allocator,
+    text: []const u8,
+    kind: SegmentationKind,
+) !void {
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    var line_no: usize = 0;
+    var tested: usize = 0;
+    while (lines.next()) |raw_line| {
+        line_no += 1;
+        const trimmed = std.mem.trim(u8, raw_line, " \t\r");
+        if (trimmed.len == 0 or trimmed[0] == '#') continue;
+
+        const hash_idx = std.mem.indexOfScalar(u8, trimmed, '#') orelse trimmed.len;
+        const data_part = std.mem.trim(u8, trimmed[0..hash_idx], " \t");
+        const comment = if (hash_idx < trimmed.len) trimmed[hash_idx + 1 ..] else "";
+
+        var parsed = try parseSegmentationLine(allocator, data_part);
+        defer parsed.deinit(allocator);
+
+        try testing.expectEqual(parsed.code_points.len + 1, parsed.boundaries.len);
+
+        // LineBreakTest.txt only marks ÷ vs ×; mandatory and opportunity
+        // both encode as ÷ (true). Flatten the line-break enum back to a
+        // boolean here so the conformance loop stays uniform across kinds.
+        const actual: []bool = switch (kind) {
+            .word => try segmentation.computeWordBoundaries(allocator, parsed.code_points),
+            .sentence => try segmentation.computeSentenceBoundaries(allocator, parsed.code_points),
+            .line => blk: {
+                const kinds = try segmentation.computeLineBoundaries(allocator, parsed.code_points);
+                defer allocator.free(kinds);
+                const flattened = try allocator.alloc(bool, kinds.len);
+                for (kinds, flattened) |k, *out| out.* = (k != .prohibited);
+                break :blk flattened;
+            },
+        };
+        defer allocator.free(actual);
+
+        for (parsed.boundaries, actual, 0..) |want, got, i| {
+            if (want != got) {
+                const tag = switch (kind) {
+                    .word => "WordBreakTest.txt",
+                    .sentence => "SentenceBreakTest.txt",
+                    .line => "LineBreakTest.txt",
+                };
+                std.debug.print(
+                    "{s} line {d}: boundary index {d} expected {} got {}\n  data: {s}\n  comment: {s}\n",
+                    .{ tag, line_no, i, want, got, data_part, comment },
+                );
+                return switch (kind) {
+                    .word => error.WordBreakBoundaryMismatch,
+                    .sentence => error.SentenceBreakBoundaryMismatch,
+                    .line => error.LineBreakBoundaryMismatch,
+                };
+            }
+        }
+        tested += 1;
+    }
+
+    try testing.expect(tested > 0);
+}
+
+test "ucd hostile: WordBreakTest.txt full conformance (all rules WB1..WB999)" {
+    const allocator = testing.allocator;
+    const text = try std.Io.Dir.cwd().readFileAlloc(
+        testing.io,
+        word_break_test_path,
+        allocator,
+        .limited(4 * 1024 * 1024),
+    );
+    defer allocator.free(text);
+    try runSegmentationConformance(allocator, text, .word);
+}
+
+test "ucd hostile: SentenceBreakTest.txt full conformance (all rules SB1..SB999)" {
+    const allocator = testing.allocator;
+    const text = try std.Io.Dir.cwd().readFileAlloc(
+        testing.io,
+        sentence_break_test_path,
+        allocator,
+        .limited(4 * 1024 * 1024),
+    );
+    defer allocator.free(text);
+    try runSegmentationConformance(allocator, text, .sentence);
+}
+
+test "ucd hostile: LineBreakTest.txt full conformance (UAX #14 LB1..LB31)" {
+    const allocator = testing.allocator;
+    const text = try std.Io.Dir.cwd().readFileAlloc(
+        testing.io,
+        line_break_test_path,
+        allocator,
+        .limited(8 * 1024 * 1024),
+    );
+    defer allocator.free(text);
+    try runSegmentationConformance(allocator, text, .line);
+}
+
+test "ucd: parseSegmentationLine roundtrips a representative line" {
+    const allocator = testing.allocator;
+    const data = break_marker ++ " 000D " ++ no_break_marker ++ " 000A " ++ break_marker;
+    var parsed = try parseSegmentationLine(allocator, data);
+    defer parsed.deinit(allocator);
+    try testing.expectEqual(@as(usize, 2), parsed.code_points.len);
+    try testing.expectEqual(@as(CodePoint, 0x000D), parsed.code_points[0]);
+    try testing.expectEqual(@as(CodePoint, 0x000A), parsed.code_points[1]);
+    try testing.expectEqualSlices(bool, &.{ true, false, true }, parsed.boundaries);
 }

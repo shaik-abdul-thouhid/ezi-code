@@ -2583,3 +2583,4 @@ pub inline fn graphemeBreakProperty(cp: CodePoint) GraphemeBreakProperty {
     const page = grapheme_break_level1[cp >> 8];
     return grapheme_break_level2[page][cp & 0xFF];
 }
+
