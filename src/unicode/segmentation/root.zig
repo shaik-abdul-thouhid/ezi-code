@@ -2822,3 +2822,41 @@ test "count helpers: counts match iterator output" {
     try testing.expectEqual(@as(usize, 2), countLineSegments("hi there"));
     try testing.expectEqual(@as(usize, 3), countLineSegments("a b\nc"));
 }
+
+// ============================================================================
+// Zalgo (combining-mark-saturated) text. UAX #29 GB9 binds every Extend onto
+// the preceding base, so a base with a stack of N combining marks is exactly
+// one grapheme cluster regardless of N. The cluster count therefore equals the
+// number of base characters, however deep the stacks go. Driven by the shared
+// corpus, so a new torture case is just another input line.
+// ============================================================================
+
+const zalgo_corpus = @import("../tests/zalgo_corpus.zig");
+
+test "grapheme zalgo: each base plus its combining-mark stack collapses to one cluster" {
+    for (zalgo_corpus.samples) |s| {
+        const cps = try zalgo_corpus.decode(testing.allocator, s.text);
+        defer testing.allocator.free(cps);
+
+        // The corpus's recorded scalar count is what we actually decoded.
+        try testing.expectEqual(s.total_cps, cps.len);
+
+        // Byte path and codepoint path agree, and both equal the base count.
+        try testing.expectEqual(s.base_count, countGraphemes(s.text));
+        try testing.expectEqual(s.base_count, countGraphemesFromCodePoints(cps));
+
+        // Walk the clusters: each opens on a base (non-Extend) scalar and every
+        // following scalar within it is a combining mark (Extend).
+        var it = codePointIterator(cps);
+        var clusters: usize = 0;
+        while (it.next()) |cluster| {
+            try testing.expect(cluster.len >= 1);
+            try testing.expect(graphemeBreakProperty(cluster[0]) != .extend);
+            for (cluster[1..]) |mark| {
+                try testing.expectEqual(GraphemeBreakProperty.extend, graphemeBreakProperty(mark));
+            }
+            clusters += 1;
+        }
+        try testing.expectEqual(s.base_count, clusters);
+    }
+}

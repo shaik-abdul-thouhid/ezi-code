@@ -765,6 +765,44 @@ test "Normalizer: non-Stream-Safe input (50 marks in a row) terminates and emits
     }
 }
 
+// ============================================================================
+// Zalgo (combining-mark-saturated) text. Heavy combining-mark stacks are the
+// stress case for canonical ordering and the streaming/batch buffers. For any
+// input, all four forms must be idempotent, must self-report as normalized, and
+// must emit marks in non-decreasing CCC order within each non-starter run.
+// Driven by the shared corpus, so a new torture case is just another input.
+// ============================================================================
+
+const zalgo_corpus = @import("../tests/zalgo_corpus.zig");
+
+test "normalization zalgo: every form is idempotent, self-normalized, and canonically ordered" {
+    for (zalgo_corpus.samples) |s| {
+        const cps = try zalgo_corpus.decode(testing.allocator, s.text);
+        defer testing.allocator.free(cps);
+
+        inline for (.{ NormalizationForm.nfd, .nfc, .nfkd, .nfkc }) |form| {
+            const once = try normalize(form, testing.allocator, cps);
+            defer testing.allocator.free(once);
+
+            // Re-normalizing the normal form changes nothing.
+            const twice = try normalize(form, testing.allocator, once);
+            defer testing.allocator.free(twice);
+            try testing.expectEqualSlices(CodePoint, once, twice);
+
+            // ...and the quick-check sweep agrees it is already normalized.
+            try testing.expect(isNormalized(form, once));
+
+            // Within each maximal run of non-starters, CCC is non-decreasing.
+            var last_ccc: u8 = 0;
+            for (once) |cp| {
+                const c = ccc(cp);
+                if (c != 0) try testing.expect(c >= last_ccc);
+                last_ccc = c;
+            }
+        }
+    }
+}
+
 test {
     testing.refAllDecls(@This());
 }
