@@ -12,6 +12,7 @@
         "Titlecase",
         "Titlecased",
         "Uppercased",
-        "virama"
+        "virama",
+        "zalgo"
     ]
 }

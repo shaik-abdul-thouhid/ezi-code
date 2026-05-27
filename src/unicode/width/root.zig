@@ -107,6 +107,28 @@ test "terminalColumnWidth: never reports more than 2 columns for any scalar" {
     }
 }
 
+// ============================================================================
+// Zalgo (combining-mark-saturated) text. Combining marks are nonspacing and
+// occupy zero terminal columns, so a base buried under any number of marks is
+// still just the width of the base. With ASCII bases (1 column each) the summed
+// width equals the base count. Driven by the shared corpus.
+// ============================================================================
+
+const zalgo_corpus = @import("../tests/zalgo_corpus.zig");
+
+test "terminalColumnWidth zalgo: combining marks add zero columns" {
+    for (zalgo_corpus.samples) |s| {
+        const cps = try zalgo_corpus.decode(testing.allocator, s.text);
+        defer testing.allocator.free(cps);
+
+        var total: usize = 0;
+        for (cps) |cp| total += terminalColumnWidth(cp);
+
+        // Each base is a 1-column ASCII scalar; each mark is 0 columns.
+        try testing.expectEqual(s.base_count, total);
+    }
+}
+
 test {
     testing.refAllDecls(@This());
 }

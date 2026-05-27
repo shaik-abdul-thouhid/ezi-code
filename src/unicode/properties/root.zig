@@ -890,6 +890,33 @@ test "isDecimalDigit: decimal digit handling vs identifier rules" {
     }
 }
 
+// ============================================================================
+// Zalgo (combining-mark-saturated) text. Every decorating scalar is a
+// nonspacing combining mark: it carries a nonzero canonical combining class and
+// classifies as a Mark, while only the ASCII bases are starters (ccc == 0). So
+// the count of starters equals the base count. Driven by the shared corpus.
+// ============================================================================
+
+const zalgo_corpus = @import("../tests/zalgo_corpus.zig");
+
+test "properties zalgo: only bases are starters and every mark is a combining Mark" {
+    for (zalgo_corpus.samples) |s| {
+        const cps = try zalgo_corpus.decode(testing.allocator, s.text);
+        defer testing.allocator.free(cps);
+
+        var starters: usize = 0;
+        for (cps) |cp| {
+            if (@intFromEnum(canonicalCombiningClass(cp)) == 0) {
+                starters += 1;
+            } else {
+                // A nonzero combining class is carried only by combining marks.
+                try testing.expect(isMark(cp));
+            }
+        }
+        try testing.expectEqual(s.base_count, starters);
+    }
+}
+
 test {
     std.testing.refAllDecls(@This());
 }
