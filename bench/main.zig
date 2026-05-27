@@ -25,6 +25,7 @@ const unicode_properties = @import("modules/unicode_properties.zig");
 const unicode_casing = @import("modules/unicode_casing.zig");
 const unicode_segmentation = @import("modules/unicode_segmentation.zig");
 const unicode_width = @import("modules/unicode_width.zig");
+const unicode_normalization = @import("modules/unicode_normalization.zig");
 const utils_slices = @import("modules/utils_slices.zig");
 const utils_search = @import("modules/utils_search.zig");
 
@@ -37,6 +38,7 @@ const registry: []const framework.Suite = &.{
     unicode_casing.suite,
     unicode_segmentation.suite,
     unicode_width.suite,
+    unicode_normalization.suite,
     utils_slices.suite,
     utils_search.suite,
 };

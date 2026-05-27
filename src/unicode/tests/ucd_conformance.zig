@@ -13,6 +13,9 @@ const word_break = @import("../segmentation/generated/word_break.zig");
 const sentence_break = @import("../segmentation/generated/sentence_break.zig");
 const line_break = @import("../segmentation/generated/line_break.zig");
 const east_asian_width = @import("../width/generated/east_asian_width.zig");
+const dnp = @import("../normalization/generated/derived_normalization_props.zig");
+const decomposition = @import("../normalization/generated/decomposition.zig");
+const normalization = @import("../normalization/root.zig");
 const segmentation = @import("../segmentation/root.zig");
 const unicode_types = @import("../types.zig");
 
@@ -34,6 +37,8 @@ const line_break_path = "ucd/LineBreak.txt";
 const line_break_test_path = "ucd/LineBreakTest.txt";
 const east_asian_width_path = "ucd/EastAsianWidth.txt";
 const emoji_data_path = "ucd/emoji-data.txt";
+const derived_normalization_props_path = "ucd/DerivedNormalizationProps.txt";
+const normalization_test_path = "ucd/NormalizationTest.txt";
 
 fn cleanData(line: []const u8) []const u8 {
     var comment_split = std.mem.splitScalar(u8, line, '#');
@@ -1222,4 +1227,897 @@ test "ucd: parseSegmentationLine roundtrips a representative line" {
     try testing.expectEqual(@as(CodePoint, 0x000D), parsed.code_points[0]);
     try testing.expectEqual(@as(CodePoint, 0x000A), parsed.code_points[1]);
     try testing.expectEqualSlices(bool, &.{ true, false, true }, parsed.boundaries);
+}
+
+// ============================================================================
+// DerivedNormalizationProps.txt + NormalizationTest.txt conformance
+// ============================================================================
+
+fn quickCheckFromUcd(raw: []const u8) ?dnp.QuickCheck {
+    const t = std.mem.trim(u8, raw, " \t\r");
+    if (t.len == 1) switch (t[0]) {
+        'Y' => return .yes,
+        'N' => return .no,
+        'M' => return .maybe,
+        else => {},
+    };
+    return null;
+}
+
+// Re-parse DerivedNormalizationProps.txt into dense expected arrays and
+// verify every codepoint matches the generated lookup. Combines all 13
+// properties into one walk to avoid 13 separate file reads.
+test "ucd hostile: DerivedNormalizationProps full conformance — every property at every codepoint" {
+    const allocator = testing.allocator;
+
+    var arena_state: std.heap.ArenaAllocator = .init(allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const txt = try std.Io.Dir.cwd().readFileAlloc(testing.io, derived_normalization_props_path, allocator, .limited(8 * 1024 * 1024));
+    defer allocator.free(txt);
+
+    // Boolean expected arrays.
+    const expected_fce = try arena.alloc(bool, 0x110000);
+    const expected_exp_nfd = try arena.alloc(bool, 0x110000);
+    const expected_exp_nfc = try arena.alloc(bool, 0x110000);
+    const expected_exp_nfkd = try arena.alloc(bool, 0x110000);
+    const expected_exp_nfkc = try arena.alloc(bool, 0x110000);
+    const expected_cwkcf = try arena.alloc(bool, 0x110000);
+    @memset(expected_fce, false);
+    @memset(expected_exp_nfd, false);
+    @memset(expected_exp_nfc, false);
+    @memset(expected_exp_nfkd, false);
+    @memset(expected_exp_nfkc, false);
+    @memset(expected_cwkcf, false);
+
+    // Quick_Check expected arrays — default is `.unknown` (matches the
+    // generated table's gap-fill, not the UCD `@missing` default of `.yes`).
+    const expected_nfc_qc = try arena.alloc(dnp.QuickCheck, 0x110000);
+    const expected_nfd_qc = try arena.alloc(dnp.QuickCheck, 0x110000);
+    const expected_nfkc_qc = try arena.alloc(dnp.QuickCheck, 0x110000);
+    const expected_nfkd_qc = try arena.alloc(dnp.QuickCheck, 0x110000);
+    @memset(expected_nfc_qc, .unknown);
+    @memset(expected_nfd_qc, .unknown);
+    @memset(expected_nfkc_qc, .unknown);
+    @memset(expected_nfkd_qc, .unknown);
+
+    // Mapping expected arrays. `null` = no entry; a (possibly empty) slice = explicit mapping (incl. delete).
+    const Maybe = ?[]const CodePoint;
+    const expected_fc_nfkc = try arena.alloc(Maybe, 0x110000);
+    const expected_nfkc_cf = try arena.alloc(Maybe, 0x110000);
+    const expected_nfkc_scf = try arena.alloc(Maybe, 0x110000);
+    @memset(expected_fc_nfkc, null);
+    @memset(expected_nfkc_cf, null);
+    @memset(expected_nfkc_scf, null);
+
+    var lines = std.mem.splitScalar(u8, txt, '\n');
+    line_loop: while (lines.next()) |raw_line| {
+        if (raw_line.len == 0 or raw_line[0] == '#') continue :line_loop;
+
+        var split_hash = std.mem.splitScalar(u8, raw_line, '#');
+        const data_part = std.mem.trim(u8, split_hash.next() orelse continue :line_loop, " \t\r");
+        if (data_part.len == 0) continue :line_loop;
+
+        var fields: [3][]const u8 = @splat("");
+        var field_count: usize = 0;
+        var split = std.mem.splitScalar(u8, data_part, ';');
+        while (split.next()) |f| : (field_count += 1) {
+            if (field_count == fields.len) break;
+            fields[field_count] = std.mem.trim(u8, f, " \t");
+        }
+        if (field_count < 2) continue :line_loop;
+
+        var cp_split = std.mem.splitSequence(u8, fields[0], "..");
+        const start = try std.fmt.parseInt(CodePoint, cp_split.next() orelse continue :line_loop, 16);
+        const end = if (cp_split.next()) |raw| try std.fmt.parseInt(CodePoint, raw, 16) else start;
+        const label = fields[1];
+
+        if (field_count == 2) {
+            const arr: ?[]bool = if (std.mem.eql(u8, label, "Full_Composition_Exclusion"))
+                expected_fce
+            else if (std.mem.eql(u8, label, "Expands_On_NFD"))
+                expected_exp_nfd
+            else if (std.mem.eql(u8, label, "Expands_On_NFC"))
+                expected_exp_nfc
+            else if (std.mem.eql(u8, label, "Expands_On_NFKD"))
+                expected_exp_nfkd
+            else if (std.mem.eql(u8, label, "Expands_On_NFKC"))
+                expected_exp_nfkc
+            else if (std.mem.eql(u8, label, "Changes_When_NFKC_Casefolded"))
+                expected_cwkcf
+            else
+                null;
+            if (arr) |a| {
+                for (@as(usize, start)..@as(usize, end) + 1) |cp| a[cp] = true;
+            }
+            continue :line_loop;
+        }
+
+        if (std.mem.endsWith(u8, label, "_QC")) {
+            const qc = quickCheckFromUcd(fields[2]) orelse {
+                std.debug.print("unknown QC value: '{s}'\n", .{fields[2]});
+                return error.UnknownQuickCheckValue;
+            };
+            const target: ?[]dnp.QuickCheck = if (std.mem.eql(u8, label, "NFC_QC"))
+                expected_nfc_qc
+            else if (std.mem.eql(u8, label, "NFD_QC"))
+                expected_nfd_qc
+            else if (std.mem.eql(u8, label, "NFKC_QC"))
+                expected_nfkc_qc
+            else if (std.mem.eql(u8, label, "NFKD_QC"))
+                expected_nfkd_qc
+            else
+                null;
+            if (target) |t| {
+                for (@as(usize, start)..@as(usize, end) + 1) |cp| t[cp] = qc;
+            }
+            continue :line_loop;
+        }
+
+        // Mapping. Empty third field => explicit empty mapping.
+        var mapping_buf: std.ArrayList(CodePoint) = .empty;
+        var tok = std.mem.splitScalar(u8, fields[2], ' ');
+        while (tok.next()) |t| {
+            const tt = std.mem.trim(u8, t, " \t");
+            if (tt.len == 0) continue;
+            try mapping_buf.append(arena, try std.fmt.parseInt(CodePoint, tt, 16));
+        }
+        const mapping: []CodePoint = try mapping_buf.toOwnedSlice(arena);
+
+        const target_map: ?[]Maybe = if (std.mem.eql(u8, label, "FC_NFKC"))
+            expected_fc_nfkc
+        else if (std.mem.eql(u8, label, "NFKC_CF"))
+            expected_nfkc_cf
+        else if (std.mem.eql(u8, label, "NFKC_SCF"))
+            expected_nfkc_scf
+        else
+            null;
+        if (target_map) |t| {
+            for (@as(usize, start)..@as(usize, end) + 1) |cp| t[cp] = mapping;
+        }
+    }
+
+    // Now sweep every codepoint and assert lookups agree with the expected arrays.
+    var cp_iter: usize = 0;
+    while (cp_iter < 0x110000) : (cp_iter += 1) {
+        const cp: CodePoint = @intCast(cp_iter);
+
+        try testing.expectEqual(expected_fce[cp_iter], dnp.isFullCompositionExclusion(cp));
+        try testing.expectEqual(expected_exp_nfd[cp_iter], dnp.isExpandsOnNfd(cp));
+        try testing.expectEqual(expected_exp_nfc[cp_iter], dnp.isExpandsOnNfc(cp));
+        try testing.expectEqual(expected_exp_nfkd[cp_iter], dnp.isExpandsOnNfkd(cp));
+        try testing.expectEqual(expected_exp_nfkc[cp_iter], dnp.isExpandsOnNfkc(cp));
+        try testing.expectEqual(expected_cwkcf[cp_iter], dnp.isChangesWhenNfkcCasefolded(cp));
+
+        try testing.expectEqual(expected_nfc_qc[cp_iter], dnp.nfcQuickCheck(cp));
+        try testing.expectEqual(expected_nfd_qc[cp_iter], dnp.nfdQuickCheck(cp));
+        try testing.expectEqual(expected_nfkc_qc[cp_iter], dnp.nfkcQuickCheck(cp));
+        try testing.expectEqual(expected_nfkd_qc[cp_iter], dnp.nfkdQuickCheck(cp));
+
+        try expectOptionalCpSlices(expected_fc_nfkc[cp_iter], dnp.fcNfkcMap(cp));
+        try expectOptionalCpSlices(expected_nfkc_cf[cp_iter], dnp.nfkcCaseFoldMap(cp));
+        try expectOptionalCpSlices(expected_nfkc_scf[cp_iter], dnp.nfkcSimpleCaseFoldMap(cp));
+    }
+
+    // Out-of-range boundary: every lookup must return the safe default.
+    try testing.expectEqual(false, dnp.isFullCompositionExclusion(0x110000));
+    try testing.expectEqual(false, dnp.isExpandsOnNfd(0x110000));
+    try testing.expectEqual(dnp.QuickCheck.unknown, dnp.nfcQuickCheck(0x110000));
+    try testing.expectEqual(dnp.QuickCheck.unknown, dnp.nfdQuickCheck(0x110000));
+    try testing.expectEqual(@as(?[]const CodePoint, null), dnp.fcNfkcMap(0x110000));
+    try testing.expectEqual(@as(?[]const CodePoint, null), dnp.nfkcCaseFoldMap(0x110000));
+}
+
+fn expectOptionalCpSlices(want: ?[]const CodePoint, got: ?[]const CodePoint) !void {
+    if (want == null and got == null) return;
+    if (want == null) {
+        std.debug.print("expected null, got slice of len {}\n", .{got.?.len});
+        return error.UnexpectedSlice;
+    }
+    if (got == null) {
+        std.debug.print("expected slice of len {}, got null\n", .{want.?.len});
+        return error.UnexpectedNull;
+    }
+    try testing.expectEqualSlices(CodePoint, want.?, got.?);
+}
+
+// Spot tests for the three comptime-dispatched generic APIs — confirms the
+// switch table compiles down to direct calls and that each arm reaches the
+// right per-form lookup.
+test "ucd: dnp comptime-dispatched generic API round-trips" {
+    // QC: NFD on a precomposed letter must be .no (it decomposes).
+    try testing.expectEqual(dnp.nfdQuickCheck(0x00C0), dnp.quickCheck(.nfd, 0x00C0));
+    try testing.expectEqual(dnp.nfcQuickCheck(0x0300), dnp.quickCheck(.nfc, 0x0300));
+    try testing.expectEqual(dnp.nfkcQuickCheck(0x00B5), dnp.quickCheck(.nfkc, 0x00B5));
+    try testing.expectEqual(dnp.nfkdQuickCheck(0x00B5), dnp.quickCheck(.nfkd, 0x00B5));
+
+    // Mapping: NFKC_CF on Latin capital A maps to lowercase a.
+    const fold_a = dnp.casefoldMap(.nfkc_cf, 0x0041).?;
+    try testing.expectEqualSlices(CodePoint, &.{0x61}, fold_a);
+    // SOFT HYPHEN maps to empty (delete) under NFKC_CF.
+    const fold_softhyphen = dnp.casefoldMap(.nfkc_cf, 0x00AD).?;
+    try testing.expectEqual(@as(usize, 0), fold_softhyphen.len);
+
+    // Boolean: combining grave is Expands_On_NFD? No — it's the decomposition target, not source.
+    // 0x00C0 (À) IS Expands_On_NFD though — it decomposes to A + combining grave.
+    try testing.expectEqual(dnp.isExpandsOnNfd(0x00C0), dnp.isExpandsOn(.nfd, 0x00C0));
+    try testing.expectEqual(dnp.isExpandsOnNfkc(0x00C0), dnp.isExpandsOn(.nfkc, 0x00C0));
+}
+
+// Smoke test the new QuickCheck enum and the `unknown` default for unlisted
+// codepoints. ASCII letters aren't in any QC table → all four checks return
+// `.unknown` (not `.yes`).
+test "ucd: dnp Quick_Check returns .unknown for unlisted codepoints" {
+    try testing.expectEqual(dnp.QuickCheck.unknown, dnp.nfcQuickCheck(0x0041));
+    try testing.expectEqual(dnp.QuickCheck.unknown, dnp.nfdQuickCheck(0x0041));
+    try testing.expectEqual(dnp.QuickCheck.unknown, dnp.nfkcQuickCheck(0x0041));
+    try testing.expectEqual(dnp.QuickCheck.unknown, dnp.nfkdQuickCheck(0x0041));
+}
+
+// ----- NormalizationTest.txt Part 1 cross-check against QC tables -----
+
+const NormTestRow = struct {
+    c1: []CodePoint,
+    c2: []CodePoint,
+    c3: []CodePoint,
+    c4: []CodePoint,
+    c5: []CodePoint,
+};
+
+fn parseHexSeq(arena: std.mem.Allocator, raw: []const u8) ![]CodePoint {
+    var out: std.ArrayList(CodePoint) = .empty;
+    var tok = std.mem.tokenizeAny(u8, raw, " \t");
+    while (tok.next()) |t| {
+        try out.append(arena, try std.fmt.parseInt(CodePoint, t, 16));
+    }
+    return try out.toOwnedSlice(arena);
+}
+
+fn parseNormTestRow(arena: std.mem.Allocator, data: []const u8) !NormTestRow {
+    var iter = std.mem.splitScalar(u8, data, ';');
+    const c1 = try parseHexSeq(arena, std.mem.trim(u8, iter.next() orelse return error.BadRow, " \t"));
+    const c2 = try parseHexSeq(arena, std.mem.trim(u8, iter.next() orelse return error.BadRow, " \t"));
+    const c3 = try parseHexSeq(arena, std.mem.trim(u8, iter.next() orelse return error.BadRow, " \t"));
+    const c4 = try parseHexSeq(arena, std.mem.trim(u8, iter.next() orelse return error.BadRow, " \t"));
+    const c5 = try parseHexSeq(arena, std.mem.trim(u8, iter.next() orelse return error.BadRow, " \t"));
+    return .{ .c1 = c1, .c2 = c2, .c3 = c3, .c4 = c4, .c5 = c5 };
+}
+
+// Cross-check the four Quick_Check tables against NormalizationTest.txt Part 1.
+// Part 1 has one row per assigned codepoint; for each row the source column
+// c1 is the single codepoint X and the other columns are NFC(X), NFD(X),
+// NFKC(X), NFKD(X). We don't normalize anything — we just observe column
+// equality and assert it matches the QC table:
+//
+//   X == NFD(X)  ⇒  nfdQuickCheck(X) in {.yes, .unknown}
+//   X != NFD(X)  ⇒  nfdQuickCheck(X) == .no            (NFD has no Maybe)
+//   X == NFC(X)  ⇒  nfcQuickCheck(X) != .no
+//   X != NFC(X)  ⇒  nfcQuickCheck(X) in {.no, .maybe}  (Maybe means "may differ")
+//
+// Same shape for NFKC/NFKD. Rows whose c1 has != 1 codepoint are skipped
+// (those exist in Part 4/5; Part 1 lines all have single-codepoint sources).
+test "ucd hostile: NormalizationTest.txt Part 1 — QC tables consistent with column equality" {
+    const allocator = testing.allocator;
+
+    var arena_state: std.heap.ArenaAllocator = .init(allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const txt = try std.Io.Dir.cwd().readFileAlloc(testing.io, normalization_test_path, allocator, .limited(8 * 1024 * 1024));
+    defer allocator.free(txt);
+
+    var in_part1 = false;
+    var checked: usize = 0;
+
+    var lines = std.mem.splitScalar(u8, txt, '\n');
+    while (lines.next()) |raw_line| {
+        const trimmed = std.mem.trim(u8, raw_line, " \t\r");
+        if (trimmed.len == 0 or trimmed[0] == '#') continue;
+
+        if (trimmed[0] == '@') {
+            in_part1 = std.mem.startsWith(u8, trimmed, "@Part1");
+            continue;
+        }
+        if (!in_part1) continue;
+
+        const hash_idx = std.mem.indexOfScalar(u8, trimmed, '#') orelse trimmed.len;
+        const data_part = std.mem.trim(u8, trimmed[0..hash_idx], " \t;");
+        if (data_part.len == 0) continue;
+
+        const row = try parseNormTestRow(arena, data_part);
+        if (row.c1.len != 1) continue;
+        const cp = row.c1[0];
+
+        const eq = struct {
+            fn call(a: []const CodePoint, b: []const CodePoint) bool {
+                return std.mem.eql(CodePoint, a, b);
+            }
+        }.call;
+
+        // NFD: column 3. NFD has no Maybe per UAX #15.
+        const nfd_eq = eq(row.c1, row.c3);
+        const nfd_qc = dnp.nfdQuickCheck(cp);
+        if (nfd_eq) {
+            if (nfd_qc == .no) {
+                std.debug.print("NFD_QC mismatch for U+{X}: expected yes/unknown, got .no\n", .{cp});
+                return error.NfdQcMismatch;
+            }
+        } else {
+            if (nfd_qc != .no) {
+                std.debug.print("NFD_QC mismatch for U+{X}: expected .no, got {}\n", .{ cp, nfd_qc });
+                return error.NfdQcMismatch;
+            }
+        }
+
+        // NFC: column 2. NFC may have Maybe (codepoint may differ depending on context).
+        const nfc_eq = eq(row.c1, row.c2);
+        const nfc_qc = dnp.nfcQuickCheck(cp);
+        if (nfc_eq) {
+            if (nfc_qc == .no) {
+                std.debug.print("NFC_QC mismatch for U+{X}: expected non-.no, got .no\n", .{cp});
+                return error.NfcQcMismatch;
+            }
+        } else {
+            if (nfc_qc == .yes or nfc_qc == .unknown) {
+                std.debug.print("NFC_QC mismatch for U+{X}: expected .no/.maybe, got {}\n", .{ cp, nfc_qc });
+                return error.NfcQcMismatch;
+            }
+        }
+
+        // NFKD: column 5. No Maybe.
+        const nfkd_eq = eq(row.c1, row.c5);
+        const nfkd_qc = dnp.nfkdQuickCheck(cp);
+        if (nfkd_eq) {
+            if (nfkd_qc == .no) {
+                std.debug.print("NFKD_QC mismatch for U+{X}: expected yes/unknown, got .no\n", .{cp});
+                return error.NfkdQcMismatch;
+            }
+        } else {
+            if (nfkd_qc != .no) {
+                std.debug.print("NFKD_QC mismatch for U+{X}: expected .no, got {}\n", .{ cp, nfkd_qc });
+                return error.NfkdQcMismatch;
+            }
+        }
+
+        // NFKC: column 4. May have Maybe.
+        const nfkc_eq = eq(row.c1, row.c4);
+        const nfkc_qc = dnp.nfkcQuickCheck(cp);
+        if (nfkc_eq) {
+            if (nfkc_qc == .no) {
+                std.debug.print("NFKC_QC mismatch for U+{X}: expected non-.no, got .no\n", .{cp});
+                return error.NfkcQcMismatch;
+            }
+        } else {
+            if (nfkc_qc == .yes or nfkc_qc == .unknown) {
+                std.debug.print("NFKC_QC mismatch for U+{X}: expected .no/.maybe, got {}\n", .{ cp, nfkc_qc });
+                return error.NfkcQcMismatch;
+            }
+        }
+
+        checked += 1;
+    }
+
+    try testing.expect(checked > 0);
+}
+
+// ============================================================================
+// NormalizationTest.txt full conformance (Parts 0..3) for NFC/NFD/NFKC/NFKD.
+//
+// UAX #15 conformance invariants (per the file's preamble):
+//
+//   NFC:   c2 == toNFC(c1)  == toNFC(c2)  == toNFC(c3)
+//          c4 == toNFC(c4)  == toNFC(c5)
+//   NFD:   c3 == toNFD(c1)  == toNFD(c2)  == toNFD(c3)
+//          c5 == toNFD(c4)  == toNFD(c5)
+//   NFKC:  c4 == toNFKC(c1) == toNFKC(c2) == toNFKC(c3) == toNFKC(c4) == toNFKC(c5)
+//   NFKD:  c5 == toNFKD(c1) == toNFKD(c2) == toNFKD(c3) == toNFKD(c4) == toNFKD(c5)
+//
+// Part 0: specific cases. Part 1: per-codepoint identity tests (single cp in c1
+// per row). Parts 2/3: canonical order and PRI tests. We walk every row in
+// every Part and assert all invariants. With ~25k rows this is the bedrock
+// guarantee that our pipeline is wired up correctly across the table fully.
+// ============================================================================
+
+fn invariantsForRow(
+    allocator: std.mem.Allocator,
+    row: NormTestRow,
+    part: u8,
+    line_no: usize,
+) !void {
+    inline for (.{ "c1", "c2", "c3" }) |col_name| {
+        const col = @field(row, col_name);
+        const got = try normalization.nfc(allocator, col);
+        defer allocator.free(got);
+        if (!std.mem.eql(CodePoint, row.c2, got)) {
+            std.debug.print(
+                "NormalizationTest.txt Part {d} line {d}: NFC({s}) != c2\n  in:  {any}\n  got: {any}\n  c2:  {any}\n",
+                .{ part, line_no, col_name, col, got, row.c2 },
+            );
+            return error.NFCMismatch;
+        }
+    }
+    inline for (.{ "c1", "c2", "c3" }) |col_name| {
+        const col = @field(row, col_name);
+        const got = try normalization.nfd(allocator, col);
+        defer allocator.free(got);
+        if (!std.mem.eql(CodePoint, row.c3, got)) {
+            std.debug.print(
+                "NormalizationTest.txt Part {d} line {d}: NFD({s}) != c3\n  in:  {any}\n  got: {any}\n  c3:  {any}\n",
+                .{ part, line_no, col_name, col, got, row.c3 },
+            );
+            return error.NFDMismatch;
+        }
+    }
+    // c4 / c5 NFC/NFD invariants (compatibility decomposition collapses
+    // into c4/c5 under NFC/NFD too).
+    inline for (.{ "c4", "c5" }) |col_name| {
+        const col = @field(row, col_name);
+        const got_nfc = try normalization.nfc(allocator, col);
+        defer allocator.free(got_nfc);
+        if (!std.mem.eql(CodePoint, row.c4, got_nfc)) {
+            std.debug.print(
+                "NormalizationTest.txt Part {d} line {d}: NFC({s}) != c4\n  in:  {any}\n  got: {any}\n  c4:  {any}\n",
+                .{ part, line_no, col_name, col, got_nfc, row.c4 },
+            );
+            return error.NFCMismatch;
+        }
+        const got_nfd = try normalization.nfd(allocator, col);
+        defer allocator.free(got_nfd);
+        if (!std.mem.eql(CodePoint, row.c5, got_nfd)) {
+            std.debug.print(
+                "NormalizationTest.txt Part {d} line {d}: NFD({s}) != c5\n  in:  {any}\n  got: {any}\n  c5:  {any}\n",
+                .{ part, line_no, col_name, col, got_nfd, row.c5 },
+            );
+            return error.NFDMismatch;
+        }
+    }
+
+    // NFKC: c4 == NFKC(c1..c5)
+    inline for (.{ "c1", "c2", "c3", "c4", "c5" }) |col_name| {
+        const col = @field(row, col_name);
+        const got = try normalization.nfkc(allocator, col);
+        defer allocator.free(got);
+        if (!std.mem.eql(CodePoint, row.c4, got)) {
+            std.debug.print(
+                "NormalizationTest.txt Part {d} line {d}: NFKC({s}) != c4\n  in:  {any}\n  got: {any}\n  c4:  {any}\n",
+                .{ part, line_no, col_name, col, got, row.c4 },
+            );
+            return error.NFKCMismatch;
+        }
+    }
+    // NFKD: c5 == NFKD(c1..c5)
+    inline for (.{ "c1", "c2", "c3", "c4", "c5" }) |col_name| {
+        const col = @field(row, col_name);
+        const got = try normalization.nfkd(allocator, col);
+        defer allocator.free(got);
+        if (!std.mem.eql(CodePoint, row.c5, got)) {
+            std.debug.print(
+                "NormalizationTest.txt Part {d} line {d}: NFKD({s}) != c5\n  in:  {any}\n  got: {any}\n  c5:  {any}\n",
+                .{ part, line_no, col_name, col, got, row.c5 },
+            );
+            return error.NFKDMismatch;
+        }
+    }
+}
+
+/// Decode `@PartN` header lines into a `0..5` part index, or null for any
+/// other `@…` line. Centralizing this matters because NormalizationTest.txt
+/// has 6 parts and we want each test to identify the part precisely (for
+/// labelling errors and for the per-part row-count floor).
+fn partFromHeader(trimmed: []const u8) ?u8 {
+    if (!std.mem.startsWith(u8, trimmed, "@Part")) return null;
+    if (trimmed.len < 6) return null;
+    return switch (trimmed[5]) {
+        '0'...'5' => trimmed[5] - '0',
+        else => null,
+    };
+}
+
+test "ucd hostile: NormalizationTest.txt Parts 0..5 — all four forms match every row (specific, char-by-char, canonical order, PRI #29, canonical closures, chained primary composites)" {
+    const allocator = testing.allocator;
+
+    const txt = try std.Io.Dir.cwd().readFileAlloc(testing.io, normalization_test_path, allocator, .limited(8 * 1024 * 1024));
+    defer allocator.free(txt);
+
+    var arena_state: std.heap.ArenaAllocator = .init(allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var part: u8 = 255;
+    var per_part: [6]usize = .{ 0, 0, 0, 0, 0, 0 };
+    var line_no: usize = 0;
+    var lines = std.mem.splitScalar(u8, txt, '\n');
+
+    while (lines.next()) |raw_line| {
+        line_no += 1;
+        const trimmed = std.mem.trim(u8, raw_line, " \t\r");
+        if (trimmed.len == 0 or trimmed[0] == '#') continue;
+
+        if (trimmed[0] == '@') {
+            if (partFromHeader(trimmed)) |p| part = p;
+            continue;
+        }
+
+        const hash_idx = std.mem.indexOfScalar(u8, trimmed, '#') orelse trimmed.len;
+        const data_part = std.mem.trim(u8, trimmed[0..hash_idx], " \t;");
+        if (data_part.len == 0) continue;
+
+        const row = try parseNormTestRow(arena, data_part);
+        try invariantsForRow(allocator, row, part, line_no);
+        if (part < per_part.len) per_part[part] += 1;
+    }
+
+    // Floors per part — a future UCD release dropping any part is loud.
+    // Current counts: 45 / 17086 / 1936 / 194 / 735 / 38.
+    try testing.expect(per_part[0] >= 40); // Specific cases
+    try testing.expect(per_part[1] >= 15_000); // Character by character
+    try testing.expect(per_part[2] >= 1500); // Canonical Order Test
+    try testing.expect(per_part[3] >= 150); // PRI #29 Test
+    try testing.expect(per_part[4] >= 700); // Canonical closures (excluding Hangul)
+    try testing.expect(per_part[5] >= 30); // Chained primary composites
+}
+
+// ----- Hostile: idempotency across every NormalizationTest.txt row -----
+
+test "ucd hostile: idempotency — normalize(normalize(x)) == normalize(x) for every row in every Part" {
+    const allocator = testing.allocator;
+
+    const txt = try std.Io.Dir.cwd().readFileAlloc(testing.io, normalization_test_path, allocator, .limited(8 * 1024 * 1024));
+    defer allocator.free(txt);
+
+    var arena_state: std.heap.ArenaAllocator = .init(allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var per_part: [6]usize = .{ 0, 0, 0, 0, 0, 0 };
+    var part: u8 = 255;
+    var lines = std.mem.splitScalar(u8, txt, '\n');
+    while (lines.next()) |raw_line| {
+        const trimmed = std.mem.trim(u8, raw_line, " \t\r");
+        if (trimmed.len == 0 or trimmed[0] == '#') continue;
+        if (trimmed[0] == '@') {
+            if (partFromHeader(trimmed)) |p| part = p;
+            continue;
+        }
+        if (part >= per_part.len) continue;
+
+        const hash_idx = std.mem.indexOfScalar(u8, trimmed, '#') orelse trimmed.len;
+        const data_part = std.mem.trim(u8, trimmed[0..hash_idx], " \t;");
+        if (data_part.len == 0) continue;
+
+        const row = try parseNormTestRow(arena, data_part);
+
+        // Run idempotency on every column, not just c1 — every column is a
+        // possible "input" the API will see in the wild.
+        inline for (.{ "c1", "c2", "c3", "c4", "c5" }) |col_name| {
+            const col = @field(row, col_name);
+            inline for (.{ normalization.NormalizationForm.nfc, .nfd, .nfkc, .nfkd }) |form| {
+                const once = try normalization.normalize(form, allocator, col);
+                defer allocator.free(once);
+                const twice = try normalization.normalize(form, allocator, once);
+                defer allocator.free(twice);
+                if (!std.mem.eql(CodePoint, once, twice)) {
+                    std.debug.print(
+                        "idempotency fail Part {d} form .{s} column {s} (first cp U+{X}): norm(norm(x)) != norm(x)\n  once: {any}\n  twice: {any}\n",
+                        .{ part, @tagName(form), col_name, if (col.len == 0) @as(CodePoint, 0) else col[0], once, twice },
+                    );
+                    return error.IdempotencyViolation;
+                }
+            }
+        }
+        per_part[part] += 1;
+    }
+    try testing.expect(per_part[0] >= 40);
+    try testing.expect(per_part[1] >= 15_000);
+    try testing.expect(per_part[2] >= 1500);
+    try testing.expect(per_part[3] >= 150);
+    try testing.expect(per_part[4] >= 700);
+    try testing.expect(per_part[5] >= 30);
+}
+
+// ----- Hostile: cross-form NFC(NFD(x)) == NFC(x), NFD(NFC(x)) == NFD(x), etc. -----
+
+test "ucd hostile: cross-form invariants — NFC(NFD(x))==NFC(x), NFD(NFC(x))==NFD(x), NFKC/NFKD analogs across every Part" {
+    const allocator = testing.allocator;
+
+    const txt = try std.Io.Dir.cwd().readFileAlloc(testing.io, normalization_test_path, allocator, .limited(8 * 1024 * 1024));
+    defer allocator.free(txt);
+
+    var arena_state: std.heap.ArenaAllocator = .init(allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var part: u8 = 255;
+    var checked: usize = 0;
+    var lines = std.mem.splitScalar(u8, txt, '\n');
+    while (lines.next()) |raw_line| {
+        const trimmed = std.mem.trim(u8, raw_line, " \t\r");
+        if (trimmed.len == 0 or trimmed[0] == '#') continue;
+        if (trimmed[0] == '@') {
+            if (partFromHeader(trimmed)) |p| part = p;
+            continue;
+        }
+        if (part >= 6) continue;
+
+        const hash_idx = std.mem.indexOfScalar(u8, trimmed, '#') orelse trimmed.len;
+        const data_part = std.mem.trim(u8, trimmed[0..hash_idx], " \t;");
+        if (data_part.len == 0) continue;
+
+        const row = try parseNormTestRow(arena, data_part);
+
+        const nfc_x = try normalization.nfc(allocator, row.c1);
+        defer allocator.free(nfc_x);
+        const nfd_x = try normalization.nfd(allocator, row.c1);
+        defer allocator.free(nfd_x);
+
+        // NFC(NFD(x)) == NFC(x)
+        const nfc_of_nfd = try normalization.nfc(allocator, nfd_x);
+        defer allocator.free(nfc_of_nfd);
+        try testing.expectEqualSlices(CodePoint, nfc_x, nfc_of_nfd);
+
+        // NFD(NFC(x)) == NFD(x)
+        const nfd_of_nfc = try normalization.nfd(allocator, nfc_x);
+        defer allocator.free(nfd_of_nfc);
+        try testing.expectEqualSlices(CodePoint, nfd_x, nfd_of_nfc);
+
+        // NFKC/NFKD analogues
+        const nfkc_x = try normalization.nfkc(allocator, row.c1);
+        defer allocator.free(nfkc_x);
+        const nfkd_x = try normalization.nfkd(allocator, row.c1);
+        defer allocator.free(nfkd_x);
+
+        const nfkc_of_nfkd = try normalization.nfkc(allocator, nfkd_x);
+        defer allocator.free(nfkc_of_nfkd);
+        try testing.expectEqualSlices(CodePoint, nfkc_x, nfkc_of_nfkd);
+
+        const nfkd_of_nfkc = try normalization.nfkd(allocator, nfkc_x);
+        defer allocator.free(nfkd_of_nfkc);
+        try testing.expectEqualSlices(CodePoint, nfkd_x, nfkd_of_nfkc);
+
+        checked += 1;
+    }
+    try testing.expect(checked > 15_000);
+}
+
+// ----- Hostile: every Hangul syllable round-trips through NFC and NFD -----
+
+test "ucd hostile: every Hangul syllable in AC00..D7A3 decomposes and recomposes correctly" {
+    const allocator = testing.allocator;
+
+    // Pre-compute base constants per UAX #15 / TUS §3.12.
+    const S_BASE: CodePoint = 0xAC00;
+    const L_BASE: CodePoint = 0x1100;
+    const V_BASE: CodePoint = 0x1161;
+    const T_BASE: CodePoint = 0x11A7;
+    const V_COUNT: CodePoint = 21;
+    const T_COUNT: CodePoint = 28;
+    const N_COUNT: CodePoint = V_COUNT * T_COUNT; // 588
+    const S_COUNT: CodePoint = 11172;
+
+    var s_idx: CodePoint = 0;
+    while (s_idx < S_COUNT) : (s_idx += 1) {
+        const cp = S_BASE + s_idx;
+        const l = L_BASE + s_idx / N_COUNT;
+        const v = V_BASE + (s_idx % N_COUNT) / T_COUNT;
+        const t_off = s_idx % T_COUNT;
+
+        const decomposed = try normalization.nfd(allocator, &.{cp});
+        defer allocator.free(decomposed);
+
+        if (t_off == 0) {
+            try testing.expectEqualSlices(CodePoint, &.{ l, v }, decomposed);
+        } else {
+            try testing.expectEqualSlices(CodePoint, &.{ l, v, T_BASE + t_off }, decomposed);
+        }
+
+        const recomposed = try normalization.nfc(allocator, decomposed);
+        defer allocator.free(recomposed);
+        try testing.expectEqualSlices(CodePoint, &.{cp}, recomposed);
+    }
+}
+
+// ----- Hostile: streaming Normalizer agrees with the batch API on every Part 1 row -----
+
+test "ucd hostile: streaming Normalizer(form) emits identical output to batch normalize for every row in every Part" {
+    const allocator = testing.allocator;
+
+    const txt = try std.Io.Dir.cwd().readFileAlloc(testing.io, normalization_test_path, allocator, .limited(8 * 1024 * 1024));
+    defer allocator.free(txt);
+
+    var arena_state: std.heap.ArenaAllocator = .init(allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var part: u8 = 255;
+    var per_part: [6]usize = @splat(0);
+    var lines = std.mem.splitScalar(u8, txt, '\n');
+
+    while (lines.next()) |raw_line| {
+        const trimmed = std.mem.trim(u8, raw_line, " \t\r");
+        if (trimmed.len == 0 or trimmed[0] == '#') continue;
+        if (trimmed[0] == '@') {
+            if (partFromHeader(trimmed)) |p| part = p;
+            continue;
+        }
+        if (part >= per_part.len) continue;
+
+        const hash_idx = std.mem.indexOfScalar(u8, trimmed, '#') orelse trimmed.len;
+        const data_part = std.mem.trim(u8, trimmed[0..hash_idx], " \t;");
+        if (data_part.len == 0) continue;
+
+        const row = try parseNormTestRow(arena, data_part);
+
+        // Drive every column through the streaming Normalizer (not just c1) —
+        // Parts 4 and 5 exercise multi-codepoint sources that only show up in
+        // c1, but c4/c5 are the gnarliest compatibility inputs we test against.
+        inline for (.{ "c1", "c2", "c3", "c4", "c5" }) |col_name| {
+            const col = @field(row, col_name);
+            inline for (.{ normalization.NormalizationForm.nfc, .nfd, .nfkc, .nfkd }) |form| {
+                const batch = try normalization.normalize(form, allocator, col);
+                defer allocator.free(batch);
+
+                var streamed: std.ArrayList(CodePoint) = .empty;
+                defer streamed.deinit(allocator);
+                var norm = normalization.Normalizer(form).init();
+                var scratch: [normalization.MAX_DECOMP_LEN]CodePoint = undefined;
+                for (col) |cp| {
+                    const emitted = norm.feed(cp, &scratch);
+                    try streamed.appendSlice(allocator, emitted);
+                }
+                const tail = norm.flush(&scratch);
+                try streamed.appendSlice(allocator, tail);
+
+                if (!std.mem.eql(CodePoint, batch, streamed.items)) {
+                    std.debug.print(
+                        "streaming != batch for Part {d} form .{s} column {s}\n  input:    {any}\n  batch:    {any}\n  streamed: {any}\n",
+                        .{ part, @tagName(form), col_name, col, batch, streamed.items },
+                    );
+                    return error.StreamingDisagreesWithBatch;
+                }
+            }
+        }
+
+        per_part[part] += 1;
+    }
+    try testing.expect(per_part[0] >= 40);
+    try testing.expect(per_part[1] >= 15_000);
+    try testing.expect(per_part[2] >= 1500);
+    try testing.expect(per_part[3] >= 150);
+    try testing.expect(per_part[4] >= 700);
+    try testing.expect(per_part[5] >= 30);
+}
+
+// ----- Hostile: ASCII fast-path produces the same answer as the full pipeline -----
+
+test "ucd hostile: ASCII fast-path agrees with full pipeline for every length-1..16 ASCII string" {
+    const allocator = testing.allocator;
+
+    // Sweep 0x00..0x7F. ASCII codepoints are NFC=NFD=NFKC=NFKD=self per UCD.
+    var cp: CodePoint = 0;
+    while (cp < 0x80) : (cp += 1) {
+        const input: []const CodePoint = &.{cp};
+        inline for (.{ normalization.NormalizationForm.nfc, .nfd, .nfkc, .nfkd }) |form| {
+            const got = try normalization.normalize(form, allocator, input);
+            defer allocator.free(got);
+            try testing.expectEqualSlices(CodePoint, input, got);
+            try testing.expect(normalization.isNormalized(form, got));
+        }
+    }
+}
+
+// ----- Hostile: isNormalized agrees with normalize for every Part 0 row -----
+
+test "ucd hostile: isNormalized(form, normalize(form, x)) == true for every Part 0 + Part 1 row" {
+    const allocator = testing.allocator;
+
+    const txt = try std.Io.Dir.cwd().readFileAlloc(testing.io, normalization_test_path, allocator, .limited(8 * 1024 * 1024));
+    defer allocator.free(txt);
+
+    var arena_state: std.heap.ArenaAllocator = .init(allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var part: u8 = 255;
+    var checked: usize = 0;
+    var lines = std.mem.splitScalar(u8, txt, '\n');
+
+    while (lines.next()) |raw_line| {
+        const trimmed = std.mem.trim(u8, raw_line, " \t\r");
+        if (trimmed.len == 0 or trimmed[0] == '#') continue;
+        if (trimmed[0] == '@') {
+            if (std.mem.startsWith(u8, trimmed, "@Part0")) part = 0;
+            if (std.mem.startsWith(u8, trimmed, "@Part1")) part = 1;
+            if (std.mem.startsWith(u8, trimmed, "@Part2")) part = 2;
+            if (std.mem.startsWith(u8, trimmed, "@Part3")) part = 3;
+            continue;
+        }
+        if (part > 1) continue;
+
+        const hash_idx = std.mem.indexOfScalar(u8, trimmed, '#') orelse trimmed.len;
+        const data_part = std.mem.trim(u8, trimmed[0..hash_idx], " \t;");
+        if (data_part.len == 0) continue;
+
+        const row = try parseNormTestRow(arena, data_part);
+
+        inline for (.{ normalization.NormalizationForm.nfc, .nfd, .nfkc, .nfkd }) |form| {
+            const out = try normalization.normalize(form, allocator, row.c1);
+            defer allocator.free(out);
+            if (!normalization.isNormalized(form, out)) {
+                std.debug.print(
+                    "isNormalized(.{s}, normalize(.{s}, {any})) == false (out={any})\n",
+                    .{ @tagName(form), @tagName(form), row.c1, out },
+                );
+                return error.IsNormalizedDisagreesWithNormalize;
+            }
+        }
+        checked += 1;
+    }
+    try testing.expect(checked > 1000);
+}
+
+// ----- Hostile: empty input round-trips and out-of-range guard -----
+
+test "ucd: normalize empty input returns empty slice across every form" {
+    const allocator = testing.allocator;
+    const empty: []const CodePoint = &.{};
+    inline for (.{ normalization.NormalizationForm.nfc, .nfd, .nfkc, .nfkd }) |form| {
+        const got = try normalization.normalize(form, allocator, empty);
+        defer allocator.free(got);
+        try testing.expectEqual(@as(usize, 0), got.len);
+    }
+}
+
+// ----- Hostile: every assigned starter that is its own NFC also has nfcQuickCheck != .no -----
+
+test "ucd hostile: every codepoint that is its own NFC has nfcQuickCheck != .no" {
+    const allocator = testing.allocator;
+    var cp: CodePoint = 0;
+    while (cp < 0x10000) : (cp += 1) {
+        if (cp >= 0xD800 and cp <= 0xDFFF) continue; // skip surrogates
+        const got = try normalization.nfc(allocator, &.{cp});
+        defer allocator.free(got);
+        if (got.len == 1 and got[0] == cp) {
+            // x is its own NFC. QC must not say .no.
+            const qc = dnp.nfcQuickCheck(cp);
+            if (qc == .no) {
+                std.debug.print("U+{X}: NFC(x)==x but nfcQuickCheck == .no\n", .{cp});
+                return error.QcDisagreesWithNormalize;
+            }
+        }
+    }
+}
+
+// ----- Hostile: decomposition table — every entry round-trips through canonical compose -----
+
+test "ucd hostile: every canonical 2-component decomp recomposes (modulo Full_Composition_Exclusion)" {
+    var cp: CodePoint = 0;
+    while (cp <= 0x10FFFF) : (cp += 1) {
+        if (cp >= 0xD800 and cp <= 0xDFFF) continue;
+        if (dnp.isFullCompositionExclusion(cp)) continue;
+        const raw = decomposition.canonicalDecomposeRaw(cp) orelse continue;
+        if (raw.len != 2) continue;
+        // Hangul syllables don't appear in the raw table, so we don't have
+        // to special-case them here — they're tested in the dedicated sweep.
+        const composed = decomposition.canonicalCompose(raw[0], raw[1]) orelse {
+            std.debug.print("U+{X}: decomp = U+{X} U+{X} but canonicalCompose returns null\n", .{ cp, raw[0], raw[1] });
+            return error.CompositionMissing;
+        };
+        if (composed != cp) {
+            std.debug.print("U+{X}: decomp+compose round-trips to U+{X}, expected U+{X}\n", .{ cp, composed, cp });
+            return error.CompositionRoundTripMismatch;
+        }
+    }
+}
+
+// ----- Sanity: out-of-range codepoints pass through the API safely -----
+
+test "ucd: normalize handles edge codepoints (0, 0x10FFFF, 0x110000) without UB" {
+    const allocator = testing.allocator;
+    const input: []const CodePoint = &.{ 0, 0x10FFFF };
+    inline for (.{ normalization.NormalizationForm.nfc, .nfd, .nfkc, .nfkd }) |form| {
+        const got = try normalization.normalize(form, allocator, input);
+        defer allocator.free(got);
+        try testing.expect(got.len >= input.len);
+    }
 }

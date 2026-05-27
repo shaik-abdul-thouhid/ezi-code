@@ -13,6 +13,7 @@ pub const properties = @import("properties/root.zig");
 pub const casing = @import("casing/root.zig");
 pub const segmentation = @import("segmentation/root.zig");
 pub const width = @import("width/root.zig");
+pub const normalization = @import("normalization/root.zig");
 
 // Generated data table re-exports — useful for callers that want raw
 // table-level access rather than the consumer module's higher-level API.
@@ -27,6 +28,7 @@ pub const word_break = segmentation.word_break;
 pub const sentence_break = segmentation.sentence_break;
 pub const line_break = segmentation.line_break;
 pub const east_asian_width = width.generated;
+pub const derived_normalization_props = normalization.derived_normalization_props;
 
 // Widely-used type aliases. Anything more specific belongs in the submodule.
 pub const GeneralCategory = properties.GeneralCategory;
@@ -46,6 +48,26 @@ pub const EastAsianWidth = width.EastAsianWidth;
 pub const GraphemeIterator = segmentation.GraphemeIterator;
 pub const CodePointGraphemeIterator = segmentation.CodePointGraphemeIterator;
 pub const InCB = segmentation.InCB;
+pub const QuickCheck = types.QuickCheck;
+pub const QuickCheckForm = types.QuickCheckForm;
+pub const ExpandsForm = types.ExpandsForm;
+pub const CasefoldKind = types.CasefoldKind;
+pub const NormalizationForm = normalization.NormalizationForm;
+pub const DecompositionForm = normalization.DecompositionForm;
+pub const CompositionForm = normalization.CompositionForm;
+pub const Normalizer = normalization.Normalizer;
+
+// Normalization entry points. The two primary primitives are
+// comptime-specialized on form; the four-way `normalize` plus the named
+// wrappers (nfc/nfd/nfkc/nfkd) thread through them.
+pub const decompose = normalization.decompose;
+pub const compose = normalization.compose;
+pub const normalize = normalization.normalize;
+pub const nfc = normalization.nfc;
+pub const nfd = normalization.nfd;
+pub const nfkc = normalization.nfkc;
+pub const nfkd = normalization.nfkd;
+pub const isNormalized = normalization.isNormalized;
 
 // Pull in submodule tests via refAllDecls — the test binary built for this
 // module otherwise wouldn't see them because each submodule lives behind a

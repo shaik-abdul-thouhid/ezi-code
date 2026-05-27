@@ -77,3 +77,16 @@ pub fn FoldResult(comptime mode: CaseFoldingMode) type {
         .full => []const CodePoint,
     };
 }
+
+/// Result of a UAX #15 Quick_Check on a single codepoint.
+/// `.unknown` is what the generated tables return for any codepoint that
+/// the UCD source file does not list — callers who want the Unicode default
+/// should treat `.unknown` as `.yes` (the `@missing` default for every QC
+/// property in DerivedNormalizationProps.txt).
+pub const QuickCheck = enum(u2) { yes, no, maybe, unknown };
+
+pub const QuickCheckForm = enum { nfc, nfd, nfkc, nfkd };
+
+pub const ExpandsForm = enum { nfd, nfc, nfkd, nfkc };
+
+pub const CasefoldKind = enum { fc_nfkc, nfkc_cf, nfkc_scf };

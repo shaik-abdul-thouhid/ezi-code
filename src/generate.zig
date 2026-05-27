@@ -6,6 +6,7 @@ const some = @import("utils/helpers.zig").some;
 
 const unicode_types = @import("unicode/types.zig");
 const CanonicalCombiningClass = unicode_types.CanonicalCombiningClass;
+const QuickCheck = unicode_types.QuickCheck;
 
 // ============================================================================
 // HTTP / file IO
@@ -1274,6 +1275,180 @@ fn emitPagePredicate(writer: *std.Io.Writer, arena: std.mem.Allocator, normalize
     , .{ head, fn_name[1..], normalized_name, normalized_name });
 }
 
+/// Emit a 2-level page table whose slots are `bool`, plus the `is{PascalCase}`
+/// predicate that reads it. Used by every set-membership property in
+/// DerivedNormalizationProps (Full_Composition_Exclusion, Expands_On_*,
+/// Changes_When_NFKC_Casefolded). Returns immediately when there are no
+/// ranges so an unused property still emits an always-false predicate.
+fn emitBoolPageTable(
+    arena: std.mem.Allocator,
+    writer: *std.Io.Writer,
+    ranges: []const RangeType,
+    table_prefix: []const u8,
+) !void {
+    const values = try arena.alloc(bool, 0x110000);
+    @memset(values, false);
+    for (ranges) |range| {
+        var cp = range.start;
+        while (cp <= range.end) : (cp += 1) values[cp] = true;
+    }
+
+    const pt = try buildPageTable(bool, arena, values, false);
+
+    try emitLevel1(writer, table_prefix, pt.level1);
+
+    try writer.print("//zig fmt: off\nconst {s}_level2 = [_][256]bool {{\n", .{table_prefix});
+    for (pt.unique_pages) |page| {
+        try writer.writeAll("    .{\n        ");
+        for (page, 0..) |val, j| {
+            try writer.print("{},", .{val});
+            try writePageItemSep(writer, j, page.len);
+        }
+        try writer.writeAll("\n    },\n");
+    }
+    try writer.writeAll("};\n//zig fmt: on\n\n");
+
+    try emitPagePredicate(writer, arena, table_prefix);
+}
+
+/// Emit a 2-level page table whose slots are the `QuickCheck` enum, plus the
+/// public lookup function. Default slot value is `.unknown` per user spec —
+/// codepoints not in the source file get `.unknown`, callers map that to
+/// `.yes` if they want the Unicode `@missing` default.
+fn emitQuickCheckPageTable(
+    arena: std.mem.Allocator,
+    writer: *std.Io.Writer,
+    entries: []const CodePointRangeToCertainty,
+    table_prefix: []const u8,
+    lookup_fn_name: []const u8,
+) !void {
+    const values = try arena.alloc(QuickCheck, 0x110000);
+    @memset(values, .unknown);
+    for (entries) |entry| {
+        var cp = entry.start;
+        while (cp <= entry.end) : (cp += 1) values[cp] = entry.check;
+    }
+
+    const pt = try buildPageTable(QuickCheck, arena, values, .unknown);
+
+    try emitLevel1(writer, table_prefix, pt.level1);
+
+    try writer.print("//zig fmt: off\nconst {s}_level2 = [_][256]QuickCheck {{\n", .{table_prefix});
+    for (pt.unique_pages) |page| {
+        try writer.writeAll("    .{\n        ");
+        for (page, 0..) |val, j| {
+            const name = switch (val) {
+                .yes => "yes",
+                .no => "no",
+                .maybe => "maybe",
+                .unknown => "unknown",
+            };
+            try writer.print(".{s},", .{name});
+            try writePageItemSep(writer, j, page.len);
+        }
+        try writer.writeAll("\n    },\n");
+    }
+    try writer.writeAll("};\n//zig fmt: on\n\n");
+
+    try writer.print(
+        \\pub inline fn {s}(cp: CodePoint) QuickCheck {{
+        \\    if (cp > 0x10FFFF) return .unknown;
+        \\    const page = {s}_level1[cp >> 8];
+        \\    return {s}_level2[page][cp & 0xFF];
+        \\}}
+        \\
+        \\
+    , .{ lookup_fn_name, table_prefix, table_prefix });
+}
+
+const MappingHashCtx = struct {
+    pub fn hash(_: @This(), key: []const u21) u64 {
+        var hasher = std.hash.Wyhash.init(0);
+        hasher.update(std.mem.sliceAsBytes(key));
+        return hasher.final();
+    }
+    pub fn eql(_: @This(), a: []const u21, b: []const u21) bool {
+        return std.mem.eql(u21, a, b);
+    }
+};
+
+/// Emit a 2-level page table whose slots are `u16` indices into a flat
+/// `[]const u21` mapping pool. Index 0 means "no entry" (lookup returns
+/// `null`); index 1 means "explicit empty mapping / delete" (lookup returns
+/// `&.{}`). Indices 2..N are deduplicated real mappings.
+fn emitMappingPageTable(
+    arena: std.mem.Allocator,
+    writer: *std.Io.Writer,
+    entries: []const CodePointToMap,
+    table_prefix: []const u8,
+    lookup_fn_name: []const u8,
+) !void {
+    var pool: std.ArrayList([]const u21) = .empty;
+    try pool.append(arena, &.{}); // idx 0 — null sentinel
+    try pool.append(arena, &.{}); // idx 1 — explicit-empty sentinel
+
+    var intern: std.HashMapUnmanaged([]const u21, u16, MappingHashCtx, std.hash_map.default_max_load_percentage) = .empty;
+
+    const indices = try arena.alloc(u16, 0x110000);
+    @memset(indices, 0);
+
+    for (entries) |entry| {
+        const idx: u16 = blk: {
+            const map = entry.map orelse break :blk 0;
+            if (map.len == 0) break :blk 1;
+            const gop = try intern.getOrPutContext(arena, map, .{});
+            if (!gop.found_existing) {
+                if (pool.items.len > 0xFFFE) {
+                    @panic("mapping pool exceeded u16 capacity — widen the slot type in emitMappingPageTable");
+                }
+                gop.value_ptr.* = @intCast(pool.items.len);
+                try pool.append(arena, map);
+            }
+            break :blk gop.value_ptr.*;
+        };
+        indices[entry.code_point] = idx;
+    }
+
+    const pt = try buildPageTable(u16, arena, indices, 0);
+
+    try emitLevel1(writer, table_prefix, pt.level1);
+
+    try writer.print("//zig fmt: off\nconst {s}_level2 = [_][256]u16 {{\n", .{table_prefix});
+    for (pt.unique_pages) |page| {
+        try writer.writeAll("    .{\n        ");
+        for (page, 0..) |val, j| {
+            try writer.print("{d},", .{val});
+            try writePageItemSep(writer, j, page.len);
+        }
+        try writer.writeAll("\n    },\n");
+    }
+    try writer.writeAll("};\n//zig fmt: on\n\n");
+
+    try writer.print("//zig fmt: off\nconst {s}_mappings = [_][]const CodePoint {{\n", .{table_prefix});
+    for (pool.items, 0..) |map, i| {
+        try writer.writeAll("    &.{");
+        for (map, 0..) |cp, j| {
+            if (j > 0) try writer.writeAll(",");
+            try writer.print(" 0x{X}", .{cp});
+        }
+        try writer.writeAll(if (map.len == 0) "}," else " },");
+        if ((i + 1) % 4 == 0) try writer.writeAll("\n") else try writer.writeAll(" ");
+    }
+    try writer.writeAll("\n};\n//zig fmt: on\n\n");
+
+    try writer.print(
+        \\pub inline fn {s}(cp: CodePoint) ?[]const CodePoint {{
+        \\    if (cp > 0x10FFFF) return null;
+        \\    const page = {s}_level1[cp >> 8];
+        \\    const idx = {s}_level2[page][cp & 0xFF];
+        \\    if (idx == 0) return null;
+        \\    return {s}_mappings[idx];
+        \\}}
+        \\
+        \\
+    , .{ lookup_fn_name, table_prefix, table_prefix, table_prefix });
+}
+
 fn generatePropList(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
     var dir: std.Io.Dir = .cwd();
     var file = try dir.createFile(io, file_name, .{ .truncate = true, .permissions = .default_file });
@@ -1456,40 +1631,592 @@ fn generateEastAsianWidth(arena: std.mem.Allocator, io: std.Io, data: []const u8
     return generateSimpleEnumProperty(arena, io, data, url, file_name, "EastAsianWidth", "east_asian_width", "n", "eastAsianWidth");
 }
 
-// ----- Tier 2: normalization ------------------------------------------------
-
-/// Source: https://www.unicode.org/Public/UCD/latest/ucd/DerivedNormalizationProps.txt
-/// Shape: same `<range> ; <property> [; <value>]` style as DerivedCoreProperties,
-/// but several properties carry a tri-state value (Yes/No/Maybe) — NFC_QC,
-/// NFD_QC, NFKC_QC, NFKD_QC — not a plain bool.
-fn generateDerivedNormalizationProps(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
-    _ = arena;
-    _ = io;
-    _ = data;
-    _ = url;
-    _ = file_name;
-    @panic("TODO: generateDerivedNormalizationProps");
+/// Parse a Y/N/M token as it appears in DerivedNormalizationProps.txt. UCD
+/// only ever emits these three exact bytes for QC properties — anything else
+/// is a corrupt input we want to fail loudly on.
+fn quickCheckFromStr(in: []const u8) QuickCheck {
+    const trimmed = std.mem.trim(u8, in, " \t");
+    if (trimmed.len == 1) switch (trimmed[0]) {
+        'Y' => return .yes,
+        'N' => return .no,
+        'M' => return .maybe,
+        else => {},
+    };
+    @panic("invalid Quick_Check value");
 }
 
-/// Source: https://www.unicode.org/Public/UCD/latest/ucd/CompositionExclusions.txt
-fn generateCompositionExclusions(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
+const CodePointToMap = struct { code_point: u21, map: ?[]const u21 };
+const CodePointRangeToCertainty = struct { start: u21, end: u21, check: QuickCheck };
+
+fn generateDerivedNormalizationProps(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
+    var dir: std.Io.Dir = .cwd();
+    var file = try dir.createFile(io, file_name, .{ .truncate = true, .permissions = .default_file });
+    defer file.close(io);
+    const buf = try arena.alloc(u8, 4096);
+    var file_writer = file.writer(io, buf);
+    const writer = &file_writer.interface;
+
+    // Boolean (set-membership) accumulators.
+    var full_composition_exclusion: std.ArrayList(RangeType) = .empty;
+    var expands_on_nfd: std.ArrayList(RangeType) = .empty;
+    var expands_on_nfc: std.ArrayList(RangeType) = .empty;
+    var expands_on_nfkd: std.ArrayList(RangeType) = .empty;
+    var expands_on_nfkc: std.ArrayList(RangeType) = .empty;
+    var changes_when_nfkc_casefolded: std.ArrayList(RangeType) = .empty;
+
+    // Quick_Check accumulators.
+    var nfc_qc: std.ArrayList(CodePointRangeToCertainty) = .empty;
+    var nfd_qc: std.ArrayList(CodePointRangeToCertainty) = .empty;
+    var nfkc_qc: std.ArrayList(CodePointRangeToCertainty) = .empty;
+    var nfkd_qc: std.ArrayList(CodePointRangeToCertainty) = .empty;
+
+    // Mapping accumulators. `null` map = explicit empty/delete row.
+    var fc_nfkc_map: std.ArrayList(CodePointToMap) = .empty;
+    var nfkc_cf_map: std.ArrayList(CodePointToMap) = .empty;
+    var nfkc_scf_map: std.ArrayList(CodePointToMap) = .empty;
+
+    var lines = std.mem.splitScalar(u8, data, '\n');
+    line_loop: while (lines.next()) |raw_line| {
+        if (raw_line.len == 0 or raw_line[0] == '#') continue :line_loop;
+        const line = blk: {
+            var split_comments = std.mem.splitScalar(u8, raw_line, '#');
+            break :blk std.mem.trim(u8, split_comments.next() orelse continue :line_loop, " \t\r");
+        };
+        if (line.len == 0) continue :line_loop;
+
+        var fields: [3][]const u8 = .{ "", "", "" };
+        var field_count: usize = 0;
+        var split = std.mem.splitScalar(u8, line, ';');
+        while (split.next()) |field| : (field_count += 1) {
+            if (field_count == fields.len) break;
+            fields[field_count] = std.mem.trim(u8, field, " \t");
+        }
+        if (field_count < 2) continue :line_loop;
+
+        const cp_raw = fields[0];
+        const label = fields[1];
+        var cp_split = std.mem.splitSequence(u8, cp_raw, "..");
+        const start = try std.fmt.parseInt(u21, cp_split.next() orelse continue :line_loop, 16);
+        const end = if (cp_split.next()) |raw| try std.fmt.parseInt(u21, raw, 16) else start;
+
+        if (field_count == 2) {
+            const range: RangeType = .{ .start = start, .end = end };
+            if (std.mem.eql(u8, label, "Full_Composition_Exclusion")) {
+                try full_composition_exclusion.append(arena, range);
+            } else if (std.mem.eql(u8, label, "Expands_On_NFD")) {
+                try expands_on_nfd.append(arena, range);
+            } else if (std.mem.eql(u8, label, "Expands_On_NFC")) {
+                try expands_on_nfc.append(arena, range);
+            } else if (std.mem.eql(u8, label, "Expands_On_NFKD")) {
+                try expands_on_nfkd.append(arena, range);
+            } else if (std.mem.eql(u8, label, "Expands_On_NFKC")) {
+                try expands_on_nfkc.append(arena, range);
+            } else if (std.mem.eql(u8, label, "Changes_When_NFKC_Casefolded")) {
+                try changes_when_nfkc_casefolded.append(arena, range);
+            }
+            // Silently skip unknown 2-field labels (forward-compat with new UCD
+            // properties we haven't wired up yet).
+            continue :line_loop;
+        }
+
+        const third = fields[2];
+        if (std.mem.endsWith(u8, label, "_QC")) {
+            const qc = quickCheckFromStr(third);
+            const entry: CodePointRangeToCertainty = .{ .start = start, .end = end, .check = qc };
+            if (std.mem.eql(u8, label, "NFC_QC")) {
+                try nfc_qc.append(arena, entry);
+            } else if (std.mem.eql(u8, label, "NFD_QC")) {
+                try nfd_qc.append(arena, entry);
+            } else if (std.mem.eql(u8, label, "NFKC_QC")) {
+                try nfkc_qc.append(arena, entry);
+            } else if (std.mem.eql(u8, label, "NFKD_QC")) {
+                try nfkd_qc.append(arena, entry);
+            }
+            continue :line_loop;
+        }
+
+        // Mapping form. `parseCodePointSequence` returns null for an empty
+        // third field — that's UCD's "explicit delete" (NFKC_CF on SOFT HYPHEN
+        // etc.). Distinguish from "no entry" via the slice we accumulate.
+        const map_owned = try parseCodePointSequence(arena, third);
+        const map_val: ?[]const u21 = if (map_owned) |m| m else &.{};
+
+        var cp = start;
+        while (cp <= end) : (cp += 1) {
+            const entry: CodePointToMap = .{ .code_point = cp, .map = map_val };
+            if (std.mem.eql(u8, label, "FC_NFKC")) {
+                try fc_nfkc_map.append(arena, entry);
+            } else if (std.mem.eql(u8, label, "NFKC_CF")) {
+                try nfkc_cf_map.append(arena, entry);
+            } else if (std.mem.eql(u8, label, "NFKC_SCF")) {
+                try nfkc_scf_map.append(arena, entry);
+            }
+        }
+    }
+
+    try writer.writeAll(
+        \\//! This file is auto-generated. Do not edit directly.
+        \\//! To regenerate run `zig build generate` in same level
+        \\//! as `build.zig` file.
+        \\
+        \\const std = @import("std");
+        \\const CodePoint = @import("encoding").CodePoint;
+        \\const unicode_types = @import("../../types.zig");
+        \\
+        \\pub const QuickCheck = unicode_types.QuickCheck;
+        \\pub const QuickCheckForm = unicode_types.QuickCheckForm;
+        \\pub const ExpandsForm = unicode_types.ExpandsForm;
+        \\pub const CasefoldKind = unicode_types.CasefoldKind;
+        \\
+        \\
+    );
+
+    // ----- Boolean set-membership predicates -----
+    try emitBoolPageTable(arena, writer, full_composition_exclusion.items, "full_composition_exclusion");
+    try emitBoolPageTable(arena, writer, expands_on_nfd.items, "expands_on_nfd");
+    try emitBoolPageTable(arena, writer, expands_on_nfc.items, "expands_on_nfc");
+    try emitBoolPageTable(arena, writer, expands_on_nfkd.items, "expands_on_nfkd");
+    try emitBoolPageTable(arena, writer, expands_on_nfkc.items, "expands_on_nfkc");
+    try emitBoolPageTable(arena, writer, changes_when_nfkc_casefolded.items, "changes_when_nfkc_casefolded");
+
+    // ----- Quick_Check tables -----
+    try emitQuickCheckPageTable(arena, writer, nfc_qc.items, "nfc_qc", "nfcQuickCheck");
+    try emitQuickCheckPageTable(arena, writer, nfd_qc.items, "nfd_qc", "nfdQuickCheck");
+    try emitQuickCheckPageTable(arena, writer, nfkc_qc.items, "nfkc_qc", "nfkcQuickCheck");
+    try emitQuickCheckPageTable(arena, writer, nfkd_qc.items, "nfkd_qc", "nfkdQuickCheck");
+
+    // ----- Mapping tables -----
+    try emitMappingPageTable(arena, writer, fc_nfkc_map.items, "fc_nfkc", "fcNfkcMap");
+    try emitMappingPageTable(arena, writer, nfkc_cf_map.items, "nfkc_cf", "nfkcCaseFoldMap");
+    try emitMappingPageTable(arena, writer, nfkc_scf_map.items, "nfkc_scf", "nfkcSimpleCaseFoldMap");
+
+    // ----- Comptime-dispatched generic API -----
+    try writer.writeAll(
+        \\pub inline fn quickCheck(comptime form: QuickCheckForm, cp: CodePoint) QuickCheck {
+        \\    return switch (form) {
+        \\        .nfc => nfcQuickCheck(cp),
+        \\        .nfd => nfdQuickCheck(cp),
+        \\        .nfkc => nfkcQuickCheck(cp),
+        \\        .nfkd => nfkdQuickCheck(cp),
+        \\    };
+        \\}
+        \\
+        \\pub inline fn isExpandsOn(comptime form: ExpandsForm, cp: CodePoint) bool {
+        \\    return switch (form) {
+        \\        .nfd => isExpandsOnNfd(cp),
+        \\        .nfc => isExpandsOnNfc(cp),
+        \\        .nfkd => isExpandsOnNfkd(cp),
+        \\        .nfkc => isExpandsOnNfkc(cp),
+        \\    };
+        \\}
+        \\
+        \\pub inline fn casefoldMap(comptime kind: CasefoldKind, cp: CodePoint) ?[]const CodePoint {
+        \\    return switch (kind) {
+        \\        .fc_nfkc => fcNfkcMap(cp),
+        \\        .nfkc_cf => nfkcCaseFoldMap(cp),
+        \\        .nfkc_scf => nfkcSimpleCaseFoldMap(cp),
+        \\    };
+        \\}
+        \\
+    );
+
+    try file_writer.flush();
+    try saveUCDFile(arena, io, &dir, data, url, buf);
+}
+
+// ============================================================================
+// Decomposition + canonical composition tables (UAX #15)
+// ============================================================================
+//
+// Driven by UnicodeData.txt (field 5: Decomposition_Mapping) and
+// DerivedNormalizationProps.txt (Full_Composition_Exclusion). We pre-expand
+// each codepoint's decomposition to its fixed point at *generator* time so the
+// runtime decompose step is a single 2-level page lookup. Composition pairs
+// are emitted as a flat sorted list keyed by `(starter, combiner)` for branch-
+// less binary search.
+
+const RawDecomp = struct {
+    is_compat: bool,
+    components: []const u21,
+};
+
+const CompositionPair = struct {
+    starter: u21,
+    combiner: u21,
+    composed: u21,
+};
+
+fn parseRawDecomp(arena: std.mem.Allocator, data: []const u8) !std.AutoHashMapUnmanaged(u21, RawDecomp) {
+    var raw: std.AutoHashMapUnmanaged(u21, RawDecomp) = .empty;
+
+    var lines = std.mem.splitScalar(u8, data, '\n');
+    while (lines.next()) |line| {
+        if (line.len == 0) continue;
+        var fields = std.mem.splitScalar(u8, line, ';');
+        const cp_raw = fields.next() orelse continue;
+        const cp = std.fmt.parseInt(u21, cp_raw, 16) catch continue;
+        _ = fields.next(); // name
+        _ = fields.next(); // category
+        _ = fields.next(); // ccc
+        _ = fields.next(); // bidi
+        const decomp_raw = fields.next() orelse continue;
+        const decomp_trim = std.mem.trim(u8, decomp_raw, " \t");
+        if (decomp_trim.len == 0) continue;
+
+        var is_compat = false;
+        var to_parse = decomp_trim;
+        if (decomp_trim[0] == '<') {
+            const close = std.mem.indexOfScalar(u8, decomp_trim, '>') orelse continue;
+            is_compat = true;
+            to_parse = std.mem.trim(u8, decomp_trim[close + 1 ..], " \t");
+        }
+
+        var comps: std.ArrayList(u21) = .empty;
+        var tok = std.mem.tokenizeAny(u8, to_parse, " \t");
+        while (tok.next()) |t| try comps.append(arena, try std.fmt.parseInt(u21, t, 16));
+        try raw.put(arena, cp, .{ .is_compat = is_compat, .components = try comps.toOwnedSlice(arena) });
+    }
+    return raw;
+}
+
+fn parseFullCompositionExclusion(arena: std.mem.Allocator, dnp_data: []const u8) ![]bool {
+    const set = try arena.alloc(bool, 0x110000);
+    @memset(set, false);
+
+    var lines = std.mem.splitScalar(u8, dnp_data, '\n');
+    while (lines.next()) |raw_line| {
+        if (raw_line.len == 0 or raw_line[0] == '#') continue;
+        var hashsplit = std.mem.splitScalar(u8, raw_line, '#');
+        const data_part = std.mem.trim(u8, hashsplit.next() orelse continue, " \t\r");
+        if (data_part.len == 0) continue;
+
+        var fields = std.mem.splitScalar(u8, data_part, ';');
+        const cp_raw = std.mem.trim(u8, fields.next() orelse continue, " \t");
+        const label_raw = fields.next() orelse continue;
+        const label = std.mem.trim(u8, label_raw, " \t");
+        if (!std.mem.eql(u8, label, "Full_Composition_Exclusion")) continue;
+
+        var cp_split = std.mem.splitSequence(u8, cp_raw, "..");
+        const start = try std.fmt.parseInt(u21, cp_split.next() orelse continue, 16);
+        const end = if (cp_split.next()) |r| try std.fmt.parseInt(u21, r, 16) else start;
+        for (start..end + 1) |cp| set[cp] = true;
+    }
+    return set;
+}
+
+/// Iteratively expand `cp` to its fully-decomposed form. `compat` switches
+/// between canonical (canonical-only rows) and compatibility (any row).
+/// Memoizes via `cache`. Detects cycles defensively (UCD shouldn't have any,
+/// but we want to bail rather than spin).
+fn expandDecomposition(
+    arena: std.mem.Allocator,
+    raw: *const std.AutoHashMapUnmanaged(u21, RawDecomp),
+    cache: *std.AutoHashMapUnmanaged(u21, []const u21),
+    cp: u21,
+    compat: bool,
+    depth: u8,
+) ![]const u21 {
+    if (depth > 32) return error.DecompositionCycle;
+    if (cache.get(cp)) |cached| return cached;
+
+    const rd = raw.get(cp) orelse {
+        const out = try arena.alloc(u21, 1);
+        out[0] = cp;
+        try cache.put(arena, cp, out);
+        return out;
+    };
+
+    // Canonical-mode skips rows tagged as compat.
+    if (!compat and rd.is_compat) {
+        const out = try arena.alloc(u21, 1);
+        out[0] = cp;
+        try cache.put(arena, cp, out);
+        return out;
+    }
+
+    var buf: std.ArrayList(u21) = .empty;
+    for (rd.components) |comp| {
+        const sub = try expandDecomposition(arena, raw, cache, comp, compat, depth + 1);
+        try buf.appendSlice(arena, sub);
+    }
+    const out = try buf.toOwnedSlice(arena);
+    try cache.put(arena, cp, out);
+    return out;
+}
+
+/// Stable sort `seq` by CCC, run by run. Marks with CCC=0 act as barriers.
+/// Marks with equal CCC keep their relative order (UAX #15 D109).
+fn canonicalReorder(arena: std.mem.Allocator, ccc_table: []const u8, seq: []u21) !void {
+    if (seq.len < 2) return;
+    var i: usize = 0;
+    while (i < seq.len) {
+        // Skip past starters.
+        if (ccc_table[seq[i]] == 0) {
+            i += 1;
+            continue;
+        }
+        var j = i + 1;
+        while (j < seq.len and ccc_table[seq[j]] != 0) j += 1;
+        // Stable insertion sort over [i, j).
+        var k: usize = i + 1;
+        while (k < j) : (k += 1) {
+            const v = seq[k];
+            const vc = ccc_table[v];
+            var m = k;
+            while (m > i and ccc_table[seq[m - 1]] > vc) : (m -= 1) seq[m] = seq[m - 1];
+            seq[m] = v;
+        }
+        i = j;
+    }
     _ = arena;
-    _ = io;
-    _ = data;
-    _ = url;
-    _ = file_name;
-    @panic("TODO: generateCompositionExclusions");
+}
+
+/// Walk UnicodeData.txt and pull CCC into a dense [0x110000]u8 array.
+/// Mirrors the same parse rules `generateUnicodeData` uses, but standalone
+/// so the decomposition generator can call it without restructuring the
+/// existing function.
+fn parseCccDense(arena: std.mem.Allocator, data: []const u8) ![]u8 {
+    const ccc = try arena.alloc(u8, 0x110000);
+    @memset(ccc, 0);
+
+    var pending_start: ?u21 = null;
+    var pending_ccc: u8 = 0;
+
+    var lines = std.mem.splitScalar(u8, data, '\n');
+    while (lines.next()) |line| {
+        if (line.len == 0) continue;
+        var fields = std.mem.splitScalar(u8, line, ';');
+        const cp_raw = fields.next() orelse continue;
+        const cp = std.fmt.parseInt(u21, cp_raw, 16) catch continue;
+        const name = fields.next() orelse continue;
+        _ = fields.next(); // category
+        const ccc_raw = fields.next() orelse continue;
+        const v: u8 = std.fmt.parseInt(u8, ccc_raw, 10) catch 0;
+
+        if (std.mem.endsWith(u8, name, ", First>")) {
+            pending_start = cp;
+            pending_ccc = v;
+            continue;
+        }
+        if (std.mem.endsWith(u8, name, ", Last>")) {
+            const s = pending_start orelse return error.InvalidUnicodeRange;
+            var r = s;
+            while (r <= cp) : (r += 1) ccc[r] = pending_ccc;
+            pending_start = null;
+            continue;
+        }
+        ccc[cp] = v;
+    }
+    return ccc;
+}
+
+/// Emit the composition table + lookup. Pairs are sorted by
+/// `(starter << 21) | combiner` so the runtime binary search is a single
+/// u64 compare per step.
+fn emitCompositionTable(writer: *std.Io.Writer, pairs: []CompositionPair) !void {
+    std.mem.sort(CompositionPair, pairs, {}, struct {
+        fn lessThan(_: void, a: CompositionPair, b: CompositionPair) bool {
+            if (a.starter != b.starter) return a.starter < b.starter;
+            return a.combiner < b.combiner;
+        }
+    }.lessThan);
+
+    try writer.writeAll(
+        \\pub const CompositionPair = struct {
+        \\    starter: CodePoint,
+        \\    combiner: CodePoint,
+        \\    composed: CodePoint,
+        \\};
+        \\
+        \\
+    );
+
+    try writer.print("//zig fmt: off\npub const composition_pairs = [_]CompositionPair {{\n", .{});
+    for (pairs, 0..) |p, i| {
+        if (i % 3 == 0) try writer.writeAll("    ");
+        try writer.print(".{{ .starter = 0x{X}, .combiner = 0x{X}, .composed = 0x{X} }},", .{ p.starter, p.combiner, p.composed });
+        if ((i + 1) % 3 == 0 or i + 1 == pairs.len) try writer.writeAll("\n") else try writer.writeAll(" ");
+    }
+    try writer.writeAll("};\n//zig fmt: on\n\n");
+
+    // Bin the table by starter into a 2-level page table → small per-starter
+    // run of (combiner, composed). One starter has at most ~10 combiners in
+    // the entire UCD, so a linear scan within the run is L1-resident.
+    try writer.writeAll(
+        \\pub inline fn canonicalCompose(starter: CodePoint, combiner: CodePoint) ?CodePoint {
+        \\    if (hangulCompose(starter, combiner)) |c| return c;
+        \\    // Branchless binary search over composition_pairs, keyed by
+        \\    // (starter << 21) | combiner so one u64 compare orders the row.
+        \\    const want: u64 = (@as(u64, starter) << 21) | combiner;
+        \\    var lo: usize = 0;
+        \\    var hi: usize = composition_pairs.len;
+        \\    while (lo < hi) {
+        \\        const mid = lo + (hi - lo) / 2;
+        \\        const e = composition_pairs[mid];
+        \\        const got: u64 = (@as(u64, e.starter) << 21) | e.combiner;
+        \\        if (got == want) return e.composed;
+        \\        if (got < want) lo = mid + 1 else hi = mid;
+        \\    }
+        \\    return null;
+        \\}
+        \\
+        \\// Hangul algorithmic composition (UAX #15 / TUS §3.12). Composing
+        \\// L + V → LV syllable, or LV + T → LVT syllable. ~5% of CJK content
+        \\// is Hangul; bypassing the binary search keeps that path L1-only.
+        \\const HANGUL_S_BASE: CodePoint = 0xAC00;
+        \\const HANGUL_L_BASE: CodePoint = 0x1100;
+        \\const HANGUL_V_BASE: CodePoint = 0x1161;
+        \\const HANGUL_T_BASE: CodePoint = 0x11A7;
+        \\const HANGUL_L_COUNT: CodePoint = 19;
+        \\const HANGUL_V_COUNT: CodePoint = 21;
+        \\const HANGUL_T_COUNT: CodePoint = 28;
+        \\const HANGUL_N_COUNT: CodePoint = HANGUL_V_COUNT * HANGUL_T_COUNT; // 588
+        \\const HANGUL_S_COUNT: CodePoint = HANGUL_L_COUNT * HANGUL_N_COUNT; // 11172
+        \\
+        \\inline fn hangulCompose(starter: CodePoint, combiner: CodePoint) ?CodePoint {
+        \\    // L + V → LV syllable.
+        \\    const l_idx = starter -% HANGUL_L_BASE;
+        \\    if (l_idx < HANGUL_L_COUNT) {
+        \\        const v_idx = combiner -% HANGUL_V_BASE;
+        \\        if (v_idx < HANGUL_V_COUNT) {
+        \\            return HANGUL_S_BASE + (l_idx * HANGUL_V_COUNT + v_idx) * HANGUL_T_COUNT;
+        \\        }
+        \\    }
+        \\    // LV + T → LVT syllable. starter must be an LV syllable (T == 0).
+        \\    const s_idx = starter -% HANGUL_S_BASE;
+        \\    if (s_idx < HANGUL_S_COUNT and (s_idx % HANGUL_T_COUNT) == 0) {
+        \\        const t_idx = combiner -% HANGUL_T_BASE;
+        \\        // Excludes filler T (0x11A7 itself); composition starts at 0x11A8.
+        \\        if (t_idx > 0 and t_idx < HANGUL_T_COUNT) {
+        \\            return starter + t_idx;
+        \\        }
+        \\    }
+        \\    return null;
+        \\}
+        \\
+        \\pub inline fn hangulDecompose(cp: CodePoint, out: *[3]CodePoint) ?[]const CodePoint {
+        \\    const s_idx = cp -% HANGUL_S_BASE;
+        \\    if (s_idx >= HANGUL_S_COUNT) return null;
+        \\    const l = HANGUL_L_BASE + s_idx / HANGUL_N_COUNT;
+        \\    const v = HANGUL_V_BASE + (s_idx % HANGUL_N_COUNT) / HANGUL_T_COUNT;
+        \\    const t_off = s_idx % HANGUL_T_COUNT;
+        \\    out[0] = l;
+        \\    out[1] = v;
+        \\    if (t_off == 0) return out[0..2];
+        \\    out[2] = HANGUL_T_BASE + t_off;
+        \\    return out[0..3];
+        \\}
+        \\
+        \\pub inline fn isHangulSyllable(cp: CodePoint) bool {
+        \\    return (cp -% HANGUL_S_BASE) < HANGUL_S_COUNT;
+        \\}
+        \\
+        \\
+    );
+}
+
+fn generateDecomposition(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
+    var dir: std.Io.Dir = .cwd();
+    var file = try dir.createFile(io, file_name, .{ .truncate = true, .permissions = .default_file });
+    defer file.close(io);
+    const buf = try arena.alloc(u8, 4096);
+    var file_writer = file.writer(io, buf);
+    const writer = &file_writer.interface;
+
+    // Read sibling UCD file from local fixture saved earlier in the run.
+    const dnp_data = try dir.readFileAlloc(io, "ucd/DerivedNormalizationProps.txt", arena, .limited(8 * 1024 * 1024));
+    const fce = try parseFullCompositionExclusion(arena, dnp_data);
+    const ccc = try parseCccDense(arena, data);
+    var raw = try parseRawDecomp(arena, data);
+
+    // Recursively expand each codepoint's decomposition once at generator time.
+    var canonical_cache: std.AutoHashMapUnmanaged(u21, []const u21) = .empty;
+    var compat_cache: std.AutoHashMapUnmanaged(u21, []const u21) = .empty;
+
+    var canonical_entries: std.ArrayList(CodePointToMap) = .empty;
+    var compat_entries: std.ArrayList(CodePointToMap) = .empty;
+
+    var raw_iter = raw.iterator();
+    while (raw_iter.next()) |entry| {
+        const cp = entry.key_ptr.*;
+        const rd = entry.value_ptr.*;
+
+        // Canonical: skip codepoints whose only decomp is compat-tagged.
+        if (!rd.is_compat) {
+            const canon = try arena.dupe(u21, try expandDecomposition(arena, &raw, &canonical_cache, cp, false, 0));
+            try canonicalReorder(arena, ccc, canon);
+            try canonical_entries.append(arena, .{ .code_point = cp, .map = canon });
+        }
+
+        // Compatibility: every row produces an entry (compat decomp includes
+        // canonical; chained recursion handles intermediates).
+        const compat = try arena.dupe(u21, try expandDecomposition(arena, &raw, &compat_cache, cp, true, 0));
+        try canonicalReorder(arena, ccc, compat);
+        // Drop the entry if its compat expansion is exactly [cp] (would emit
+        // a useless no-op slot otherwise).
+        if (compat.len != 1 or compat[0] != cp) {
+            try compat_entries.append(arena, .{ .code_point = cp, .map = compat });
+        }
+    }
+
+    // Composition pairs: every length-2 canonical decomp NOT in FCE produces
+    // one (starter, combiner) → composed entry. Per UAX #15 D117, that's the
+    // set of primary composites.
+    var comp_pairs: std.ArrayList(CompositionPair) = .empty;
+    raw_iter = raw.iterator();
+    while (raw_iter.next()) |entry| {
+        const cp = entry.key_ptr.*;
+        const rd = entry.value_ptr.*;
+        if (rd.is_compat) continue;
+        if (rd.components.len != 2) continue;
+        if (fce[cp]) continue;
+        try comp_pairs.append(arena, .{
+            .starter = rd.components[0],
+            .combiner = rd.components[1],
+            .composed = cp,
+        });
+    }
+
+    try writer.writeAll(
+        \\//! This file is auto-generated. Do not edit directly.
+        \\//! To regenerate run `zig build generate` in same level
+        \\//! as `build.zig` file.
+        \\
+        \\const std = @import("std");
+        \\const CodePoint = @import("encoding").CodePoint;
+        \\
+        \\
+    );
+
+    try emitMappingPageTable(arena, writer, canonical_entries.items, "canonical_decomp", "canonicalDecomposeRaw");
+    try emitMappingPageTable(arena, writer, compat_entries.items, "compat_decomp", "compatibilityDecomposeRaw");
+    try emitCompositionTable(writer, comp_pairs.items);
+
+    // Convenience wrappers that fold the Hangul algorithmic path into the
+    // table lookups so callers don't have to special-case it.
+    try writer.writeAll(
+        \\pub inline fn canonicalDecompose(cp: CodePoint, hangul_out: *[3]CodePoint) ?[]const CodePoint {
+        \\    if (hangulDecompose(cp, hangul_out)) |s| return s;
+        \\    return canonicalDecomposeRaw(cp);
+        \\}
+        \\
+        \\pub inline fn compatibilityDecompose(cp: CodePoint, hangul_out: *[3]CodePoint) ?[]const CodePoint {
+        \\    if (hangulDecompose(cp, hangul_out)) |s| return s;
+        \\    return compatibilityDecomposeRaw(cp);
+        \\}
+        \\
+    );
+
+    try file_writer.flush();
+    try saveUCDFile(arena, io, &dir, data, url, buf);
 }
 
 /// Source: https://www.unicode.org/Public/UCD/latest/ucd/NormalizationTest.txt
 /// NOT a code generator — this is the conformance fixture for NFC/NFD/NFKC/NFKD.
+/// Persisted to `ucd/NormalizationTest.txt` and consumed at test time by
+/// `src/unicode/tests/ucd_conformance.zig`.
 fn generateNormalizationTestFixture(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
-    _ = arena;
-    _ = io;
-    _ = data;
-    _ = url;
-    _ = file_name;
-    @panic("TODO: generateNormalizationTestFixture (download + save only, no Zig output)");
+    return saveUCDFixtureOnly(arena, io, data, url, file_name);
 }
 
 /// Generic "download-only" generator: just persist the upstream UCD file
@@ -1666,6 +2393,19 @@ pub fn main(init: std.process.Init) !void {
             .url = "https://www.unicode.org/Public/UCD/latest/ucd/EastAsianWidth.txt",
             .generatorFn = generateEastAsianWidth,
         },
+        .{
+            .file_name = "src/unicode/normalization/generated/derived_normalization_props.zig",
+            .url = "https://www.unicode.org/Public/UCD/latest/ucd/DerivedNormalizationProps.txt",
+            .generatorFn = generateDerivedNormalizationProps,
+        },
+        // Must come after DerivedNormalizationProps: the decomposition
+        // generator reads `ucd/DerivedNormalizationProps.txt` from local
+        // disk to know which canonical decomps are Full_Composition_Exclusion.
+        .{
+            .file_name = "src/unicode/normalization/generated/decomposition.zig",
+            .url = "https://www.unicode.org/Public/UCD/latest/ucd/UnicodeData.txt",
+            .generatorFn = generateDecomposition,
+        },
 
         // ----- Test fixtures (download-only; no Zig source emitted) -----
         // These are parsed at test time by `src/unicode/tests/ucd_conformance.zig`
@@ -1692,23 +2432,11 @@ pub fn main(init: std.process.Init) !void {
             .url = "https://www.unicode.org/Public/UCD/latest/ucd/auxiliary/LineBreakTest.txt",
             .generatorFn = saveUCDFixtureOnly,
         },
-
-        // ----- Tier 2: normalization -----
-        // .{
-        //     .file_name = "src/unicode/normalization/generated/derived_normalization_props.zig",
-        //     .url = "https://www.unicode.org/Public/UCD/latest/ucd/DerivedNormalizationProps.txt",
-        //     .generatorFn = generateDerivedNormalizationProps,
-        // },
-        // .{
-        //     .file_name = "src/unicode/normalization/generated/composition_exclusions.zig",
-        //     .url = "https://www.unicode.org/Public/UCD/latest/ucd/CompositionExclusions.txt",
-        //     .generatorFn = generateCompositionExclusions,
-        // },
-        // .{
-        //     .file_name = "ucd/NormalizationTest.txt", // fixture only, not Zig output
-        //     .url = "https://www.unicode.org/Public/UCD/latest/ucd/NormalizationTest.txt",
-        //     .generatorFn = generateNormalizationTestFixture,
-        // },
+        .{
+            .file_name = "ucd/NormalizationTest.txt", // fixture only, not Zig output
+            .url = "https://www.unicode.org/Public/UCD/latest/ucd/NormalizationTest.txt",
+            .generatorFn = generateNormalizationTestFixture,
+        },
 
         // ----- Tier 3: script & bidi -----
         // .{
