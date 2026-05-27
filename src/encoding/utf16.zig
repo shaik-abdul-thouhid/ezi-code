@@ -43,17 +43,29 @@ pub const UTF16ValidationError = error{
     InvalidHighSurrogate,
     SurrogateCodePoint,
     CodePointTooLarge,
+
+    /// only returns at the place where it is unreachable,
+    /// in case of undefined-behavior
+    Undefined,
 };
 
 pub const UTF16ValidationLossyError = error{
     ZeroLengthUnits,
     IndexOutOfBounds,
+
+    /// only returns at the place where it is unreachable,
+    /// in case of undefined-behavior
+    Undefined,
 };
 
 pub const UTF16EncodeError = error{
     CodePointTooLarge,
     BufferTooSmall,
     SurrogateCodePoint,
+
+    /// only returns at the place where it is unreachable,
+    /// in case of undefined-behavior
+    Undefined,
 };
 
 pub fn isHighSurrogate(c16: u16) bool {
@@ -211,7 +223,7 @@ fn decode(buf: []const u16, offset: usize, len: u2) DecodedCodePoint {
                 @as(CodePoint, buf[offset + 1] - low_surrogate_range_start),
             .len = 2,
         },
-        else => unreachable,
+        else => @panic("invalid code point length"),
     };
 }
 
@@ -352,7 +364,7 @@ pub fn validateAndDecodeU16CodePointLossy(buf: []const u16, offset: usize) UTF16
         return .{ .code_point = INVALID_CODE_POINT, .len = i };
     }
 
-    unreachable;
+    return UTF16ValidationLossyError.Undefined;
 }
 
 pub fn validateAndDecodeU16CodePointReverse(buf: []const u16, end_index: usize) UTF16ValidationError!DecodedCodePoint {
@@ -367,7 +379,7 @@ pub fn validateAndDecodeU16CodePointReverse(buf: []const u16, end_index: usize) 
 }
 
 fn decodeCodePointReverse(buf: []const u16, end_index: usize) DecodedCodePoint {
-    const len = utf16SequenceLenReverseUnchecked(buf, end_index) catch unreachable;
+    const len = utf16SequenceLenReverseUnchecked(buf, end_index) catch @panic("invalid code point reverse unchecked len");
 
     if (len == 1) {
         @branchHint(.likely);
@@ -379,7 +391,7 @@ fn decodeCodePointReverse(buf: []const u16, end_index: usize) DecodedCodePoint {
 }
 
 fn decodeCodePoint(buf: []const u16, offset: usize) DecodedCodePoint {
-    const len = utf16SequenceLen(buf[offset]) catch unreachable;
+    const len = utf16SequenceLen(buf[offset]) catch @panic("invalid code point reverse unchecked len");
 
     if (len == 1) {
         return .{ .code_point = @as(CodePoint, buf[offset]), .len = 1 };
@@ -546,7 +558,7 @@ pub const UTF16LossyIterator = struct {
             return null;
         }
 
-        const decoded = validateAndDecodeU16CodePointLossy(self.data, self.index) catch unreachable;
+        const decoded = validateAndDecodeU16CodePointLossy(self.data, self.index) catch @panic("invalid decode code point lossy");
         std.debug.assert(decoded.len > 0);
         self.index += decoded.len;
         self.curr = decoded.code_point;
@@ -558,7 +570,7 @@ pub const UTF16LossyIterator = struct {
             return null;
         }
 
-        return (validateAndDecodeU16CodePointLossy(self.data, self.index) catch unreachable).code_point;
+        return (validateAndDecodeU16CodePointLossy(self.data, self.index) catch @panic("invalid decode code point lossy")).code_point;
     }
 };
 

@@ -738,9 +738,15 @@ test "generic intSliceToBytesBuffer: u32 variable width big endian" {
     try std.testing.expectEqual(@as(usize, 10), n);
     try std.testing.expectEqualSlices(u8, &.{
         0x7F,
-        0x12, 0x34,
-        0xAB, 0xCD, 0xEF,
-        0x12, 0x34, 0x56, 0x78,
+        0x12,
+        0x34,
+        0xAB,
+        0xCD,
+        0xEF,
+        0x12,
+        0x34,
+        0x56,
+        0x78,
     }, out[0..n]);
 }
 
@@ -762,9 +768,15 @@ test "generic intSliceToBytesBuffer: u32 variable width little endian" {
     try std.testing.expectEqual(@as(usize, 10), n);
     try std.testing.expectEqualSlices(u8, &.{
         0x7F,
-        0x34, 0x12,
-        0xEF, 0xCD, 0xAB,
-        0x78, 0x56, 0x34, 0x12,
+        0x34,
+        0x12,
+        0xEF,
+        0xCD,
+        0xAB,
+        0x78,
+        0x56,
+        0x34,
+        0x12,
     }, out[0..n]);
 }
 
