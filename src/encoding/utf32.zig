@@ -30,17 +30,29 @@ pub const UTF32ValidationError = error{
     IndexOutOfBounds,
     SurrogateCodePoint,
     CodePointTooLarge,
+
+    /// only returns at the place where it is unreachable,
+    /// in case of undefined-behavior
+    Undefined,
 };
 
 pub const UTF32ValidationLossyError = error{
     ZeroLengthUnits,
     IndexOutOfBounds,
+
+    /// only returns at the place where it is unreachable,
+    /// in case of undefined-behavior
+    Undefined,
 };
 
 pub const UTF32EncodeError = error{
     CodePointTooLarge,
     BufferTooSmall,
     SurrogateCodePoint,
+
+    /// only returns at the place where it is unreachable,
+    /// in case of undefined-behavior
+    Undefined,
 };
 
 fn validateScalarValue(code_point: CodePoint) UTF32ValidationError!void {
@@ -158,7 +170,7 @@ pub fn validateAndDecodeU32CodePointReverse(buf: []const u32) UTF32ValidationErr
 }
 
 fn decodeCodePointReverse(buf: []const u32) DecodedCodePoint {
-    const len = utf32SequenceLenReverse(buf) catch unreachable;
+    const len = utf32SequenceLenReverse(buf) catch @panic("invalid point reverse unchecked len");
     const start = buf.len - @as(usize, len);
     return .{
         .code_point = @intCast(buf[start]),
@@ -261,7 +273,7 @@ pub const UTF32LossyIterator = struct {
             return null;
         }
 
-        const decoded = validateAndDecodeU32CodePointLossy(self.data, self.index) catch unreachable;
+        const decoded = validateAndDecodeU32CodePointLossy(self.data, self.index) catch @panic("invalid decode code point lossy");
         std.debug.assert(decoded.len > 0);
         self.index += decoded.len;
         self.curr = decoded.code_point;
@@ -273,7 +285,7 @@ pub const UTF32LossyIterator = struct {
             return null;
         }
 
-        return (validateAndDecodeU32CodePointLossy(self.data, self.index) catch unreachable).code_point;
+        return (validateAndDecodeU32CodePointLossy(self.data, self.index) catch @panic("invalid decode code point lossy")).code_point;
     }
 };
 

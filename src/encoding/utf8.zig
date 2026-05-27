@@ -137,12 +137,20 @@ pub const UTF8ValidationError = error{
     OverlongEncoding,
     SurrogateCodePoint,
     CodePointTooLarge,
+
+    /// only returns at the place where it is unreachable,
+    /// in case of undefined-behavior
+    Undefined,
 };
 
 pub const UTF8ValidationLossyError = error{
     ZeroLengthBytes,
     IndexOutOfBounds,
     InvalidByteSequence,
+
+    /// only returns at the place where it is unreachable,
+    /// in case of undefined-behavior
+    Undefined,
 };
 
 pub const UTF8EncodeError = error{
@@ -150,6 +158,10 @@ pub const UTF8EncodeError = error{
     BufferTooSmall,
     InvalidByteSequence,
     SurrogateCodePoint,
+
+    /// only returns at the place where it is unreachable,
+    /// in case of undefined-behavior
+    Undefined,
 };
 
 pub fn codePointLen(byte: u8) UTF8ValidationError!u3 {
@@ -210,7 +222,7 @@ pub fn utf8EncodeLen(code_point: CodePoint) UTF8EncodeError!u3 {
         min_four_byte_code_point...max_four_byte_code_point => 4,
         min_three_byte_code_point...max_three_byte_code_point => 3,
         min_two_byte_code_point...max_two_byte_code_point => 2,
-        else => unreachable,
+        else => UTF8EncodeError.Undefined,
     };
 }
 
@@ -288,7 +300,7 @@ fn validateAndDecodeNonAscii(bytes: []const u8, offset: usize, len: u3) UTF8Vali
         return .{ .code_point = code_point, .len = 4 };
     }
 
-    unreachable;
+    return UTF8ValidationError.Undefined;
 }
 
 /// Pass entire string with offset to avoid reconstructing slice struct in hot paths.
@@ -406,7 +418,7 @@ fn validateAndDecodeCodePointBytesWithLenLossy(bytes: []const u8, offset: usize,
         return .{ .code_point = INVALID_CODE_POINT, .len = i };
     }
 
-    unreachable;
+    return UTF8ValidationLossyError.Undefined;
 }
 
 pub fn validateAndDecodeCodePointBytesLossy(bytes: []const u8, offset: usize) UTF8ValidationLossyError!DecodedCodePointLossy {
@@ -564,7 +576,7 @@ fn decode(bytes: []const u8, offset: usize, len: u3) DecodedCodePoint {
             .len = 4,
         },
 
-        else => unreachable,
+        else => @panic("unknown code point length"),
     };
 }
 
@@ -638,21 +650,21 @@ pub fn encodeCodePoint(code_point: CodePoint, bytes: []u8) UTF8EncodeError!u3 {
 }
 
 fn decodeCodePointReverse(bytes: []const u8, end_index: usize) DecodedCodePoint {
-    const len = codePointLenReverse(bytes, end_index) catch unreachable;
+    const len = codePointLenReverse(bytes, end_index) catch @panic("invalid decode reverse code point length");
     const start = end_index + 1 - @as(usize, len);
 
     return decode(bytes, start, len);
 }
 
 fn decodeCodePointReverseUnchecked(bytes: []const u8, end_index: usize) DecodedCodePoint {
-    const len = codePointLenReverseUnchecked(bytes, end_index) catch unreachable;
+    const len = codePointLenReverseUnchecked(bytes, end_index) catch @panic("invalid decode reverse unchecked code point length");
     const start = end_index + 1 - @as(usize, len);
 
     return decode(bytes, start, len);
 }
 
 fn bytesToUTF8CodePoint(bytes: []const u8, offset: usize) DecodedCodePoint {
-    const len = codePointLen(bytes[offset]) catch unreachable;
+    const len = codePointLen(bytes[offset]) catch @panic("invalid code point length");
 
     if (len == 1 and bytes[offset] <= max_ascii) {
         return .{ .code_point = @as(CodePoint, bytes[offset]), .len = 1 };
@@ -730,7 +742,7 @@ pub const UTF8View = struct {
                 continue;
             }
 
-            const len = codePointLen(byte) catch unreachable;
+            const len = codePointLen(byte) catch @panic("invalid code point length");
 
             i += @as(usize, len);
             count += 1;
@@ -777,7 +789,7 @@ pub const UTF8View = struct {
             if (byte <= max_ascii) {
                 byte_index += 1;
             } else {
-                const len = codePointLen(byte) catch unreachable;
+                const len = codePointLen(byte) catch @panic("invalid code point length");
                 byte_index += len;
             }
 
@@ -815,7 +827,7 @@ pub const UTF8LossyIterator = struct {
             return null;
         }
 
-        const decoded = validateAndDecodeCodePointBytesLossy(self.data, self.index) catch unreachable;
+        const decoded = validateAndDecodeCodePointBytesLossy(self.data, self.index) catch @panic("invalid decode code point lossy");
         std.debug.assert(decoded.len > 0);
         self.index += decoded.len;
         return decoded.code_point;
@@ -826,7 +838,7 @@ pub const UTF8LossyIterator = struct {
             return null;
         }
 
-        return (validateAndDecodeCodePointBytesLossy(self.data, self.index) catch unreachable).code_point;
+        return (validateAndDecodeCodePointBytesLossy(self.data, self.index) catch @panic("invalid decode code point lossy")).code_point;
     }
 };
 
