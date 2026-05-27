@@ -14,6 +14,7 @@ pub const casing = @import("casing/root.zig");
 pub const segmentation = @import("segmentation/root.zig");
 pub const width = @import("width/root.zig");
 pub const normalization = @import("normalization/root.zig");
+pub const scripts = @import("scripts/root.zig");
 
 // Generated data table re-exports — useful for callers that want raw
 // table-level access rather than the consumer module's higher-level API.
@@ -29,6 +30,8 @@ pub const sentence_break = segmentation.sentence_break;
 pub const line_break = segmentation.line_break;
 pub const east_asian_width = width.generated;
 pub const derived_normalization_props = normalization.derived_normalization_props;
+pub const scripts_data = scripts.generated;
+pub const script_extensions_data = scripts.generated_extensions;
 
 // Widely-used type aliases. Anything more specific belongs in the submodule.
 pub const GeneralCategory = properties.GeneralCategory;
@@ -45,6 +48,10 @@ pub const WordBreakProperty = segmentation.WordBreakProperty;
 pub const SentenceBreakProperty = segmentation.SentenceBreakProperty;
 pub const LineBreak = segmentation.LineBreak;
 pub const EastAsianWidth = width.EastAsianWidth;
+pub const ScriptType = scripts.ScriptType;
+pub const scriptType = scripts.scriptType;
+pub const scriptExtensions = scripts.scriptExtensions;
+pub const hasScriptExtension = scripts.hasScriptExtension;
 pub const GraphemeIterator = segmentation.GraphemeIterator;
 pub const CodePointGraphemeIterator = segmentation.CodePointGraphemeIterator;
 pub const InCB = segmentation.InCB;

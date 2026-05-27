@@ -2231,24 +2231,328 @@ fn saveUCDFixtureOnly(arena: std.mem.Allocator, io: std.Io, data: []const u8, ur
 
 // ----- Tier 3: script & bidi ------------------------------------------------
 
+/// One row of the canonical script catalog: the ISO 15924 abbreviation
+/// (`Latn`), the raw long name as it appears in the UCD (`Latin`), and the
+/// snake_case enum variant we emit (`latin`). The catalog is the single
+/// source of truth shared by both the Scripts.txt and ScriptExtensions.txt
+/// generators so the `ScriptType` enum values line up across the two files.
+const ScriptCatalogEntry = struct {
+    abbrev: []const u8,
+    full_raw: []const u8,
+    normalized: []const u8,
+};
+
+const ScriptCatalog = struct {
+    /// Sorted by abbreviation; an entry's slice index *is* its enum value.
+    entries: []ScriptCatalogEntry,
+    /// `Latn` -> enum value.
+    by_abbrev: std.StringHashMapUnmanaged(u8),
+    /// `Latin` -> enum value (long name exactly as in Scripts.txt).
+    by_full: std.StringHashMapUnmanaged(u8),
+    /// Enum value of `Unknown` (Zzzz) — the default for unassigned codepoints.
+    unknown_index: u8,
+};
+
+/// Parse the `sc ; <abbrev> ; <Long_Name> [; <alias>...]` rows out of
+/// PropertyValueAliases.txt into the shared script catalog. Sorting by
+/// abbreviation gives a deterministic enum ordering independent of hash-map
+/// iteration order, so re-running the generator produces byte-identical
+/// output and both script files agree on every `ScriptType` value.
+fn buildScriptCatalog(arena: std.mem.Allocator, pva_data: []const u8) !ScriptCatalog {
+    var list: std.ArrayList(ScriptCatalogEntry) = .empty;
+    var lines = std.mem.splitScalar(u8, pva_data, '\n');
+    while (lines.next()) |line| {
+        if (line.len == 0 or line[0] == '#') continue;
+        var split_comments = std.mem.splitScalar(u8, line, '#');
+        const body = split_comments.next() orelse continue;
+        var fields = std.mem.splitScalar(u8, body, ';');
+        const prop = std.mem.trim(u8, fields.next() orelse continue, " \t");
+        if (!std.mem.eql(u8, prop, "sc")) continue;
+        const abbrev = std.mem.trim(u8, fields.next() orelse continue, " \t");
+        const full = std.mem.trim(u8, fields.next() orelse continue, " \t");
+        try list.append(arena, .{
+            .abbrev = try arena.dupe(u8, abbrev),
+            .full_raw = try arena.dupe(u8, full),
+            .normalized = try normalizeKey(arena, full),
+        });
+    }
+
+    std.mem.sort(ScriptCatalogEntry, list.items, {}, struct {
+        fn lessThan(_: void, a: ScriptCatalogEntry, b: ScriptCatalogEntry) bool {
+            return std.mem.lessThan(u8, a.abbrev, b.abbrev);
+        }
+    }.lessThan);
+
+    if (list.items.len > 256) @panic("more than 256 scripts: ScriptType no longer fits in u8");
+
+    var by_abbrev: std.StringHashMapUnmanaged(u8) = .empty;
+    var by_full: std.StringHashMapUnmanaged(u8) = .empty;
+    var unknown_index: ?u8 = null;
+    for (list.items, 0..) |entry, i| {
+        try by_abbrev.put(arena, entry.abbrev, @intCast(i));
+        try by_full.put(arena, entry.full_raw, @intCast(i));
+        if (std.mem.eql(u8, entry.normalized, "unknown")) unknown_index = @intCast(i);
+    }
+
+    return .{
+        .entries = list.items,
+        .by_abbrev = by_abbrev,
+        .by_full = by_full,
+        .unknown_index = unknown_index orelse @panic("script catalog missing Unknown (Zzzz)"),
+    };
+}
+
 /// Source: https://www.unicode.org/Public/UCD/latest/ucd/Scripts.txt
+/// Emits the shared `ScriptType` enum (built from PropertyValueAliases.txt so
+/// its values are stable and complete), a deduplicated 2-level page table
+/// mapping each codepoint to its Script property, and `scriptType()`.
+/// Reads `ucd/PropertyValueAliases.txt` saved earlier in the run.
 fn generateScripts(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
-    _ = arena;
-    _ = io;
-    _ = data;
-    _ = url;
-    _ = file_name;
-    @panic("TODO: generateScripts");
+    var dir: std.Io.Dir = .cwd();
+    var file = try dir.createFile(io, file_name, .{ .truncate = true, .permissions = .default_file });
+    defer file.close(io);
+    const buf = try arena.alloc(u8, 4096);
+    var file_writer = file.writer(io, buf);
+    const writer = &file_writer.interface;
+
+    const pva_data = try dir.readFileAlloc(io, "ucd/PropertyValueAliases.txt", arena, .limited(2 * 1024 * 1024));
+    const catalog = try buildScriptCatalog(arena, pva_data);
+
+    // Per-codepoint Script value (enum index). Default Unknown matches the
+    // file's `@missing: 0000..10FFFF; Unknown` line.
+    const values = try arena.alloc(u8, 0x110000);
+    @memset(values, catalog.unknown_index);
+
+    var split_lines = std.mem.splitScalar(u8, data, '\n');
+    line_loop: while (split_lines.next()) |line| {
+        if (line.len == 0 or line[0] == '#') continue :line_loop;
+        var split_comments = std.mem.splitScalar(u8, line, '#');
+        const tokens_raw = split_comments.next() orelse continue :line_loop;
+        var split_tokens = std.mem.splitScalar(u8, tokens_raw, ';');
+        const code_points_raw = split_tokens.next() orelse @panic("code points not found");
+        const script_raw = split_tokens.next() orelse @panic("script not found");
+
+        const script_name = std.mem.trim(u8, script_raw, " \t");
+        const idx = catalog.by_full.get(script_name) orelse {
+            std.debug.print("Scripts.txt: unknown script long name '{s}'\n", .{script_name});
+            @panic("script long name not present in PropertyValueAliases.txt");
+        };
+
+        var split_code_points = std.mem.splitSequence(u8, std.mem.trim(u8, code_points_raw, " \t"), "..");
+        const start = try std.fmt.parseInt(u21, std.mem.trim(u8, split_code_points.next() orelse @panic("start cp"), " \t"), 16);
+        const end = if (split_code_points.next()) |end_raw|
+            try std.fmt.parseInt(u21, std.mem.trim(u8, end_raw, " \t"), 16)
+        else
+            start;
+
+        var cp = start;
+        while (cp <= end) : (cp += 1) values[cp] = idx;
+    }
+
+    const pt = try buildPageTable(u8, arena, values, catalog.unknown_index);
+
+    try writer.writeAll(
+        \\//! This file is auto-generated. Do not edit directly.
+        \\//! To regenerate run `zig build generate` in same level
+        \\//! as `build.zig` file.
+        \\
+        \\const std = @import("std");
+        \\const CodePoint = @import("encoding").CodePoint;
+        \\
+        \\
+    );
+
+    // ScriptType enum — one variant per ISO 15924 script, trailing comment is
+    // the 4-letter abbreviation used by ScriptExtensions.txt.
+    try writer.writeAll("pub const ScriptType = enum(u8) {\n");
+    for (catalog.entries) |entry| {
+        try writer.print("    {s}, // {s}\n", .{ entry.normalized, entry.abbrev });
+    }
+    try writer.writeAll("};\n\n");
+
+    // Parallel table of abbreviations (index == enum value) backing
+    // `fromAbbreviation`, the bridge from ISO 15924 codes to ScriptType.
+    try writer.writeAll("//zig fmt: off\nconst script_abbreviations = [_][]const u8 {");
+    for (catalog.entries, 0..) |entry, n| {
+        if (n % 8 == 0) try writer.writeAll("\n    ");
+        try writer.print("\"{s}\",", .{entry.abbrev});
+        if (n + 1 != catalog.entries.len) try writer.writeAll(" ");
+    }
+    try writer.writeAll("\n};\n//zig fmt: on\n\n");
+
+    try writer.writeAll(
+        \\/// Map an ISO 15924 script abbreviation (e.g. "Latn") to its
+        \\/// ScriptType. Linear scan over a small table — intended for setup /
+        \\/// parsing paths, not per-codepoint hot loops.
+        \\pub fn fromAbbreviation(abbr: []const u8) ?ScriptType {
+        \\    for (script_abbreviations, 0..) |a, i| {
+        \\        if (std.mem.eql(u8, a, abbr)) return @enumFromInt(i);
+        \\    }
+        \\    return null;
+        \\}
+        \\
+        \\
+    );
+
+    try emitLevel1(writer, "script", pt.level1);
+
+    try writer.writeAll("//zig fmt: off\nconst script_level2 = [_][256]ScriptType {\n");
+    for (pt.unique_pages) |page| {
+        try writer.writeAll("    .{\n        ");
+        for (page, 0..) |idx, j| {
+            try writer.print(".{s},", .{catalog.entries[idx].normalized});
+            try writePageItemSep(writer, j, page.len);
+        }
+        try writer.writeAll("\n    },\n");
+    }
+    try writer.writeAll("};\n//zig fmt: on\n\n");
+
+    try writer.print(
+        \\/// The Script property of `cp` (UAX #24). Unassigned codepoints and
+        \\/// anything above U+10FFFF resolve to `.unknown` (Zzzz).
+        \\pub inline fn scriptType(cp: CodePoint) ScriptType {{
+        \\    if (cp > 0x10FFFF) return .{s};
+        \\    const page = script_level1[cp >> 8];
+        \\    return script_level2[page][cp & 0xFF];
+        \\}}
+        \\
+        \\
+    , .{catalog.entries[catalog.unknown_index].normalized});
+
+    try file_writer.flush();
+    try saveUCDFile(arena, io, &dir, data, url, buf);
 }
 
 /// Source: https://www.unicode.org/Public/UCD/latest/ucd/ScriptExtensions.txt
+/// Each codepoint that is commonly used with more than one script gets a set
+/// of scripts. We deduplicate the (~120) distinct sets, store each as a
+/// `[]const ScriptType`, and emit a 2-level page table from codepoint to a
+/// set index. Index 0 is reserved as "not listed"; the consumer module turns
+/// that into the codepoint's plain Script property per the file's `@missing`
+/// rule. Reads `ucd/PropertyValueAliases.txt` to resolve abbreviations and
+/// `scripts/generated/scripts.zig` for the shared `ScriptType` enum.
 fn generateScriptExtensions(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
-    _ = arena;
-    _ = io;
-    _ = data;
-    _ = url;
-    _ = file_name;
-    @panic("TODO: generateScriptExtensions (depends on generateScripts)");
+    var dir: std.Io.Dir = .cwd();
+    var file = try dir.createFile(io, file_name, .{ .truncate = true, .permissions = .default_file });
+    defer file.close(io);
+    const buf = try arena.alloc(u8, 4096);
+    var file_writer = file.writer(io, buf);
+    const writer = &file_writer.interface;
+
+    const pva_data = try dir.readFileAlloc(io, "ucd/PropertyValueAliases.txt", arena, .limited(2 * 1024 * 1024));
+    const catalog = try buildScriptCatalog(arena, pva_data);
+
+    // Unique script-extension sets, canonicalized as ascending enum-index byte
+    // strings so equal sets dedup regardless of source ordering. Index 0 is the
+    // empty "not listed" sentinel.
+    var unique_sets: std.ArrayList([]const u8) = .empty;
+    try unique_sets.append(arena, &.{});
+    var set_map: std.StringHashMapUnmanaged(u8) = .empty;
+
+    // Per-codepoint set index. 0 = not listed (fall back to Script property).
+    const values = try arena.alloc(u8, 0x110000);
+    @memset(values, 0);
+
+    var split_lines = std.mem.splitScalar(u8, data, '\n');
+    line_loop: while (split_lines.next()) |line| {
+        if (line.len == 0 or line[0] == '#') continue :line_loop;
+        var split_comments = std.mem.splitScalar(u8, line, '#');
+        const tokens_raw = split_comments.next() orelse continue :line_loop;
+        var split_tokens = std.mem.splitScalar(u8, tokens_raw, ';');
+        const code_points_raw = split_tokens.next() orelse @panic("code points not found");
+        const scripts_raw = split_tokens.next() orelse @panic("script set not found");
+
+        var indices: std.ArrayList(u8) = .empty;
+        var script_tokens = std.mem.splitScalar(u8, std.mem.trim(u8, scripts_raw, " \t"), ' ');
+        while (script_tokens.next()) |tok| {
+            const abbr = std.mem.trim(u8, tok, " \t");
+            if (abbr.len == 0) continue;
+            const idx = catalog.by_abbrev.get(abbr) orelse {
+                std.debug.print("ScriptExtensions.txt: unknown script abbreviation '{s}'\n", .{abbr});
+                @panic("script abbreviation not present in PropertyValueAliases.txt");
+            };
+            try indices.append(arena, idx);
+        }
+        std.mem.sort(u8, indices.items, {}, std.sort.asc(u8));
+
+        const owned = try arena.dupe(u8, indices.items);
+        const gop = try set_map.getOrPut(arena, owned);
+        if (!gop.found_existing) {
+            if (unique_sets.items.len > 256) @panic("more than 256 distinct Script_Extensions sets");
+            gop.value_ptr.* = @intCast(unique_sets.items.len);
+            try unique_sets.append(arena, owned);
+        }
+        const set_index = gop.value_ptr.*;
+
+        var split_code_points = std.mem.splitSequence(u8, std.mem.trim(u8, code_points_raw, " \t"), "..");
+        const start = try std.fmt.parseInt(u21, std.mem.trim(u8, split_code_points.next() orelse @panic("start cp"), " \t"), 16);
+        const end = if (split_code_points.next()) |end_raw|
+            try std.fmt.parseInt(u21, std.mem.trim(u8, end_raw, " \t"), 16)
+        else
+            start;
+
+        var cp = start;
+        while (cp <= end) : (cp += 1) values[cp] = set_index;
+    }
+
+    const pt = try buildPageTable(u8, arena, values, 0);
+
+    try writer.writeAll(
+        \\//! This file is auto-generated. Do not edit directly.
+        \\//! To regenerate run `zig build generate` in same level
+        \\//! as `build.zig` file.
+        \\
+        \\const CodePoint = @import("encoding").CodePoint;
+        \\const ScriptType = @import("scripts.zig").ScriptType;
+        \\
+        \\
+    );
+
+    // Deduplicated sets. Index 0 is the empty sentinel; the consumer never
+    // reads it (it substitutes the Script property instead).
+    try writer.writeAll("pub const script_extension_sets = [_][]const ScriptType{\n");
+    for (unique_sets.items) |set| {
+        if (set.len == 0) {
+            try writer.writeAll("    &.{},\n");
+            continue;
+        }
+        try writer.writeAll("    &.{ ");
+        for (set, 0..) |idx, j| {
+            try writer.print(".{s}", .{catalog.entries[idx].normalized});
+            if (j + 1 != set.len) try writer.writeAll(", ");
+        }
+        try writer.writeAll(" },\n");
+    }
+    try writer.writeAll("};\n\n");
+
+    try emitLevel1(writer, "script_ext", pt.level1);
+
+    try writer.writeAll("//zig fmt: off\nconst script_ext_level2 = [_][256]u8 {\n");
+    for (pt.unique_pages) |page| {
+        try writer.writeAll("    .{\n        ");
+        for (page, 0..) |val, j| {
+            try writer.print("{d},", .{val});
+            if ((j + 1) % 16 == 0 and (j + 1) != page.len) try writer.writeAll("\n        ");
+        }
+        try writer.writeAll("\n    },\n");
+    }
+    try writer.writeAll("};\n//zig fmt: on\n\n");
+
+    try writer.writeAll(
+        \\/// Index into `script_extension_sets` for `cp`. 0 means the codepoint
+        \\/// has no explicit Script_Extensions — callers must fall back to its
+        \\/// Script property (see scripts/root.zig `scriptExtensions`).
+        \\pub inline fn scriptExtensionIndex(cp: CodePoint) u8 {
+        \\    if (cp > 0x10FFFF) return 0;
+        \\    const page = script_ext_level1[cp >> 8];
+        \\    return script_ext_level2[page][cp & 0xFF];
+        \\}
+        \\
+        \\
+    );
+
+    try file_writer.flush();
+    try saveUCDFile(arena, io, &dir, data, url, buf);
 }
 
 /// Source: https://www.unicode.org/Public/UCD/latest/ucd/BidiBrackets.txt
@@ -2406,6 +2710,25 @@ pub fn main(init: std.process.Init) !void {
             .url = "https://www.unicode.org/Public/UCD/latest/ucd/UnicodeData.txt",
             .generatorFn = generateDecomposition,
         },
+        // Must come before the two script generators: both read
+        // `ucd/PropertyValueAliases.txt` from local disk to map ISO 15924
+        // abbreviations <-> long names and build the shared ScriptType enum.
+        // Download-only — no Zig source emitted.
+        .{
+            .file_name = "ucd/PropertyValueAliases.txt",
+            .url = "https://www.unicode.org/Public/UCD/latest/ucd/PropertyValueAliases.txt",
+            .generatorFn = saveUCDFixtureOnly,
+        },
+        .{
+            .file_name = "src/unicode/scripts/generated/scripts.zig",
+            .url = "https://www.unicode.org/Public/UCD/latest/ucd/Scripts.txt",
+            .generatorFn = generateScripts,
+        },
+        .{
+            .file_name = "src/unicode/scripts/generated/script_extensions.zig",
+            .url = "https://www.unicode.org/Public/UCD/latest/ucd/ScriptExtensions.txt",
+            .generatorFn = generateScriptExtensions,
+        },
 
         // ----- Test fixtures (download-only; no Zig source emitted) -----
         // These are parsed at test time by `src/unicode/tests/ucd_conformance.zig`
@@ -2439,16 +2762,6 @@ pub fn main(init: std.process.Init) !void {
         },
 
         // ----- Tier 3: script & bidi -----
-        // .{
-        //     .file_name = "src/unicode/scripts/generated/scripts.zig",
-        //     .url = "https://www.unicode.org/Public/UCD/latest/ucd/Scripts.txt",
-        //     .generatorFn = generateScripts,
-        // },
-        // .{
-        //     .file_name = "src/unicode/scripts/generated/script_extensions.zig",
-        //     .url = "https://www.unicode.org/Public/UCD/latest/ucd/ScriptExtensions.txt",
-        //     .generatorFn = generateScriptExtensions,
-        // },
         // .{
         //     .file_name = "src/unicode/bidi/generated/bidi_brackets.zig",
         //     .url = "https://www.unicode.org/Public/UCD/latest/ucd/BidiBrackets.txt",

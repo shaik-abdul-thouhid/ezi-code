@@ -17,7 +17,10 @@ const dnp = @import("../normalization/generated/derived_normalization_props.zig"
 const decomposition = @import("../normalization/generated/decomposition.zig");
 const normalization = @import("../normalization/root.zig");
 const segmentation = @import("../segmentation/root.zig");
+const scripts = @import("../scripts/root.zig");
 const unicode_types = @import("../types.zig");
+
+const ScriptType = scripts.ScriptType;
 
 const CodePoint = encoding.CodePoint;
 const testing = std.testing;
@@ -39,6 +42,9 @@ const east_asian_width_path = "ucd/EastAsianWidth.txt";
 const emoji_data_path = "ucd/emoji-data.txt";
 const derived_normalization_props_path = "ucd/DerivedNormalizationProps.txt";
 const normalization_test_path = "ucd/NormalizationTest.txt";
+const property_value_aliases_path = "ucd/PropertyValueAliases.txt";
+const scripts_path = "ucd/Scripts.txt";
+const script_extensions_path = "ucd/ScriptExtensions.txt";
 
 fn cleanData(line: []const u8) []const u8 {
     var comment_split = std.mem.splitScalar(u8, line, '#');
@@ -2120,4 +2126,143 @@ test "ucd: normalize handles edge codepoints (0, 0x10FFFF, 0x110000) without UB"
         defer allocator.free(got);
         try testing.expect(got.len >= input.len);
     }
+}
+
+// ----- UAX #24: Script and Script_Extensions ---------------------------------
+
+/// Build `long name -> ScriptType` from PropertyValueAliases.txt by routing
+/// each `sc` row's abbreviation through the generated `fromAbbreviation`.
+/// Keys borrow from `pva`, so the map is only valid while `pva` is alive.
+fn buildScriptNameMap(allocator: std.mem.Allocator, pva: []const u8) !std.StringHashMap(ScriptType) {
+    var map = std.StringHashMap(ScriptType).init(allocator);
+    errdefer map.deinit();
+    var lines = std.mem.splitScalar(u8, pva, '\n');
+    while (lines.next()) |line| {
+        if (line.len == 0 or line[0] == '#') continue;
+        var comment = std.mem.splitScalar(u8, line, '#');
+        const body = comment.next() orelse continue;
+        var fields = std.mem.splitScalar(u8, body, ';');
+        const prop = std.mem.trim(u8, fields.next() orelse continue, " \t\r");
+        if (!std.mem.eql(u8, prop, "sc")) continue;
+        const abbrev = std.mem.trim(u8, fields.next() orelse continue, " \t\r");
+        const full = std.mem.trim(u8, fields.next() orelse continue, " \t\r");
+        const st = scripts.fromAbbreviation(abbrev) orelse {
+            std.debug.print("PropertyValueAliases.txt: abbreviation '{s}' missing from ScriptType\n", .{abbrev});
+            return error.UnknownScriptAbbreviation;
+        };
+        try map.put(full, st);
+    }
+    return map;
+}
+
+test "ucd hostile: Scripts.txt assigns the same Script to every codepoint as the generated table" {
+    const allocator = testing.allocator;
+
+    const pva = try std.Io.Dir.cwd().readFileAlloc(testing.io, property_value_aliases_path, allocator, .limited(2 * 1024 * 1024));
+    defer allocator.free(pva);
+    var name_map = try buildScriptNameMap(allocator, pva);
+    defer name_map.deinit();
+
+    const txt = try std.Io.Dir.cwd().readFileAlloc(testing.io, scripts_path, allocator, .limited(2 * 1024 * 1024));
+    defer allocator.free(txt);
+
+    // Default Unknown for every codepoint not explicitly listed (@missing).
+    const expected = try allocator.alloc(ScriptType, 0x110000);
+    defer allocator.free(expected);
+    @memset(expected, .unknown);
+
+    var lines = std.mem.splitScalar(u8, txt, '\n');
+    while (lines.next()) |raw_line| {
+        const line = cleanData(raw_line);
+        if (line.len == 0) continue;
+
+        var parts = std.mem.splitScalar(u8, line, ';');
+        const range = try parseRange(parts.next() orelse return error.BadScriptLine);
+        const name = std.mem.trim(u8, parts.next() orelse return error.BadScriptLine, " \t\r");
+        const st = name_map.get(name) orelse {
+            std.debug.print("Scripts.txt: long name '{s}' missing from PropertyValueAliases.txt\n", .{name});
+            return error.UnknownScriptName;
+        };
+        for (@as(usize, range.start)..@as(usize, range.end) + 1) |cp| expected[cp] = st;
+    }
+
+    for (expected, 0..) |want, cp| {
+        try testing.expectEqual(want, scripts.scriptType(@intCast(cp)));
+    }
+
+    // Out of range stays Unknown, never traps.
+    try testing.expectEqual(ScriptType.unknown, scripts.scriptType(0x110000));
+    try testing.expectEqual(ScriptType.unknown, scripts.scriptType(0x1FFFFF));
+}
+
+test "ucd hostile: ScriptExtensions.txt set matches scriptExtensions for every codepoint, with Script fallback" {
+    const allocator = testing.allocator;
+
+    const txt = try std.Io.Dir.cwd().readFileAlloc(testing.io, script_extensions_path, allocator, .limited(2 * 1024 * 1024));
+    defer allocator.free(txt);
+
+    // sets[0] is the empty sentinel; every parsed line appends one set and the
+    // per-codepoint id points into this list. 0 means "not listed".
+    var sets: std.ArrayList([]ScriptType) = .empty;
+    defer {
+        for (sets.items) |s| allocator.free(s);
+        sets.deinit(allocator);
+    }
+    try sets.append(allocator, try allocator.alloc(ScriptType, 0));
+
+    const cp_set = try allocator.alloc(u32, 0x110000);
+    defer allocator.free(cp_set);
+    @memset(cp_set, 0);
+
+    var lines = std.mem.splitScalar(u8, txt, '\n');
+    while (lines.next()) |raw_line| {
+        const line = cleanData(raw_line);
+        if (line.len == 0) continue;
+
+        var parts = std.mem.splitScalar(u8, line, ';');
+        const range = try parseRange(parts.next() orelse return error.BadScriptExtLine);
+        const set_raw = std.mem.trim(u8, parts.next() orelse return error.BadScriptExtLine, " \t\r");
+
+        var list: std.ArrayList(ScriptType) = .empty;
+        defer list.deinit(allocator);
+        var toks = std.mem.splitScalar(u8, set_raw, ' ');
+        while (toks.next()) |tok| {
+            const abbr = std.mem.trim(u8, tok, " \t\r");
+            if (abbr.len == 0) continue;
+            const st = scripts.fromAbbreviation(abbr) orelse {
+                std.debug.print("ScriptExtensions.txt: unknown abbreviation '{s}'\n", .{abbr});
+                return error.UnknownScriptAbbreviation;
+            };
+            try list.append(allocator, st);
+        }
+        // Match the generator's canonical ordering (ascending enum value) so a
+        // plain element-wise comparison suffices.
+        std.mem.sort(ScriptType, list.items, {}, struct {
+            fn lessThan(_: void, a: ScriptType, b: ScriptType) bool {
+                return @intFromEnum(a) < @intFromEnum(b);
+            }
+        }.lessThan);
+
+        const id: u32 = @intCast(sets.items.len);
+        try sets.append(allocator, try allocator.dupe(ScriptType, list.items));
+        for (@as(usize, range.start)..@as(usize, range.end) + 1) |cp| cp_set[cp] = id;
+    }
+
+    for (cp_set, 0..) |id, cp| {
+        const actual = scripts.scriptExtensions(@intCast(cp));
+        if (id == 0) {
+            // No explicit extensions: must be exactly {Script(cp)}.
+            try testing.expectEqual(@as(usize, 1), actual.len);
+            try testing.expectEqual(scripts.scriptType(@intCast(cp)), actual[0]);
+        } else {
+            const want = sets.items[id];
+            try testing.expectEqual(want.len, actual.len);
+            for (want, actual) |w, a| try testing.expectEqual(w, a);
+        }
+    }
+
+    // Out of range: single-element Unknown set (Script fallback), never empty.
+    const oob = scripts.scriptExtensions(0x110000);
+    try testing.expectEqual(@as(usize, 1), oob.len);
+    try testing.expectEqual(ScriptType.unknown, oob[0]);
 }
