@@ -306,7 +306,7 @@ inline fn validateAndDecodeCodePointBytesWithLen(bytes: []const u8, offset: usiz
     return validateAndDecodeNonAscii(bytes, offset, len);
 }
 
-pub inline fn validateAndDecodeCodePointBytes(bytes: []const u8, offset: usize) UTF8ValidationError!DecodedCodePoint {
+pub fn validateAndDecodeCodePointBytes(bytes: []const u8, offset: usize) UTF8ValidationError!DecodedCodePoint {
     if (bytes.len == 0) {
         return UTF8ValidationError.ZeroLengthBytes;
     } else if (offset >= bytes.len) {
