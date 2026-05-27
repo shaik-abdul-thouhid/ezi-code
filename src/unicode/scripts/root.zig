@@ -1,0 +1,196 @@
+//! UAX #24 Script and Script_Extensions properties.
+//!
+//! `scriptType(cp)` is the single Script value (a deduplicated 2-level page
+//! table lives in `generated/scripts.zig`). `scriptExtensions(cp)` is the set
+//! of scripts a codepoint is commonly used with: for the codepoints that carry
+//! an explicit Script_Extensions value it returns the stored set, and for
+//! everything else it falls back to a one-element slice holding the plain
+//! Script property — exactly the `@missing: 0000..10FFFF; <script>` rule from
+//! ScriptExtensions.txt. The fallback slices are a comptime-built table, so
+//! the whole path is two array indexes plus, at most, one branch.
+
+const std = @import("std");
+const encoding = @import("encoding");
+
+const CodePoint = encoding.CodePoint;
+
+pub const generated = @import("generated/scripts.zig");
+pub const generated_extensions = @import("generated/script_extensions.zig");
+
+pub const ScriptType = generated.ScriptType;
+pub const scriptType = generated.scriptType;
+pub const fromAbbreviation = generated.fromAbbreviation;
+pub const script_extension_sets = generated_extensions.script_extension_sets;
+
+/// One single-element set per ScriptType, materialized at comptime. Returning
+/// `&singleton_sets[@intFromEnum(s)]` gives a stable `[]const ScriptType` for
+/// the `@missing` fallback without allocating or pointing at a temporary.
+const singleton_sets = blk: {
+    const fields = @typeInfo(ScriptType).@"enum".fields;
+    var arr: [fields.len][1]ScriptType = undefined;
+    for (&arr, 0..) |*slot, i| slot.* = .{@as(ScriptType, @enumFromInt(i))};
+    break :blk arr;
+};
+
+/// True if `cp` carries an explicit Script_Extensions value in the UCD (i.e.
+/// `scriptExtensions` returns the stored set rather than the Script fallback).
+pub inline fn hasExplicitScriptExtensions(cp: CodePoint) bool {
+    return generated_extensions.scriptExtensionIndex(cp) != 0;
+}
+
+/// Script_Extensions(cp) (UAX #24): the set of scripts `cp` is commonly used
+/// with. Codepoints without an explicit value resolve to a one-element slice
+/// holding their Script property. The returned slice is always non-empty and
+/// has static lifetime; never mutate it.
+pub fn scriptExtensions(cp: CodePoint) []const ScriptType {
+    const idx = generated_extensions.scriptExtensionIndex(cp);
+    if (idx == 0) {
+        const s = scriptType(cp);
+        return singleton_sets[@intFromEnum(s)][0..];
+    }
+    return script_extension_sets[idx];
+}
+
+/// True if `script` is one of `cp`'s Script_Extensions. Handles both the
+/// explicit-set and Script-fallback cases via `scriptExtensions`.
+pub inline fn hasScriptExtension(cp: CodePoint, script: ScriptType) bool {
+    for (scriptExtensions(cp)) |s| {
+        if (s == script) return true;
+    }
+    return false;
+}
+
+// ============================================================================
+// Hostile / edge-case tests
+// ============================================================================
+
+const testing = std.testing;
+
+test "scriptType: representative codepoints across common, latin, inherited, han, greek" {
+    try testing.expectEqual(ScriptType.latin, scriptType('A'));
+    try testing.expectEqual(ScriptType.latin, scriptType('z'));
+    try testing.expectEqual(ScriptType.common, scriptType('0')); // DIGIT ZERO
+    try testing.expectEqual(ScriptType.common, scriptType(' ')); // SPACE
+    try testing.expectEqual(ScriptType.common, scriptType('$')); // DOLLAR SIGN
+    try testing.expectEqual(ScriptType.inherited, scriptType(0x0301)); // COMBINING ACUTE ACCENT
+    try testing.expectEqual(ScriptType.greek, scriptType(0x03B1)); // GREEK SMALL LETTER ALPHA
+    try testing.expectEqual(ScriptType.han, scriptType(0x4E00)); // CJK UNIFIED IDEOGRAPH-4E00
+    try testing.expectEqual(ScriptType.hiragana, scriptType(0x3041)); // HIRAGANA LETTER SMALL A
+    try testing.expectEqual(ScriptType.cyrillic, scriptType(0x0410)); // CYRILLIC CAPITAL LETTER A
+}
+
+test "scriptType: unassigned and out-of-range resolve to unknown, never trap" {
+    try testing.expectEqual(ScriptType.unknown, scriptType(0x0378)); // unassigned in Latin-1 area
+    try testing.expectEqual(ScriptType.unknown, scriptType(0x10FFFF)); // last valid scalar (unassigned)
+    try testing.expectEqual(ScriptType.unknown, scriptType(0x110000)); // first out-of-range
+    try testing.expectEqual(ScriptType.unknown, scriptType(0x1FFFFF)); // deep out-of-range
+}
+
+test "scriptType: every codepoint resolves to a defined enum variant" {
+    var cp: CodePoint = 0;
+    while (cp <= 0x10FFFF) : (cp += 1) {
+        // Round-trips through the integer tag: traps if a page slot held an
+        // out-of-bounds index.
+        const s = scriptType(cp);
+        try testing.expect(@intFromEnum(s) < @typeInfo(ScriptType).@"enum".fields.len);
+    }
+}
+
+test "fromAbbreviation: ISO 15924 codes map back to the same ScriptType" {
+    try testing.expectEqual(ScriptType.latin, fromAbbreviation("Latn").?);
+    try testing.expectEqual(ScriptType.greek, fromAbbreviation("Grek").?);
+    try testing.expectEqual(ScriptType.han, fromAbbreviation("Hani").?);
+    try testing.expectEqual(ScriptType.common, fromAbbreviation("Zyyy").?);
+    try testing.expectEqual(ScriptType.inherited, fromAbbreviation("Zinh").?);
+    try testing.expectEqual(ScriptType.unknown, fromAbbreviation("Zzzz").?);
+    try testing.expectEqual(@as(?ScriptType, null), fromAbbreviation("Xxxx"));
+    try testing.expectEqual(@as(?ScriptType, null), fromAbbreviation(""));
+    try testing.expectEqual(@as(?ScriptType, null), fromAbbreviation("Latnx")); // no prefix match
+}
+
+test "scriptExtensions: codepoint with no explicit value falls back to its Script" {
+    // Plain Latin letter: no explicit Script_Extensions.
+    try testing.expect(!hasExplicitScriptExtensions('A'));
+    const ext_a = scriptExtensions('A');
+    try testing.expectEqual(@as(usize, 1), ext_a.len);
+    try testing.expectEqual(ScriptType.latin, ext_a[0]);
+    try testing.expectEqual(scriptType('A'), ext_a[0]);
+
+    // CJK ideograph: no explicit value, falls back to Han.
+    const ext_han = scriptExtensions(0x4E00);
+    try testing.expectEqual(@as(usize, 1), ext_han.len);
+    try testing.expectEqual(ScriptType.han, ext_han[0]);
+}
+
+test "scriptExtensions: explicit single-script set differs from the Script property" {
+    // U+0342 COMBINING GREEK PERISPOMENI: Script=Inherited but Script_Extensions={Greek}.
+    try testing.expect(hasExplicitScriptExtensions(0x0342));
+    try testing.expectEqual(ScriptType.inherited, scriptType(0x0342));
+    const ext = scriptExtensions(0x0342);
+    try testing.expectEqual(@as(usize, 1), ext.len);
+    try testing.expectEqual(ScriptType.greek, ext[0]);
+    try testing.expect(hasScriptExtension(0x0342, .greek));
+    try testing.expect(!hasScriptExtension(0x0342, .inherited));
+
+    // U+0363..U+036F COMBINING LATIN SMALL LETTER A..X: Inherited, ext={Latin}.
+    try testing.expect(hasExplicitScriptExtensions(0x0363));
+    try testing.expectEqual(ScriptType.inherited, scriptType(0x0363));
+    const ext_latn = scriptExtensions(0x0363);
+    try testing.expectEqual(@as(usize, 1), ext_latn.len);
+    try testing.expectEqual(ScriptType.latin, ext_latn[0]);
+}
+
+test "scriptExtensions: explicit multi-script set contains all of its members" {
+    // U+00B7 MIDDLE DOT — used across a long list of scripts.
+    try testing.expect(hasExplicitScriptExtensions(0x00B7));
+    const ext = scriptExtensions(0x00B7);
+    try testing.expect(ext.len > 1);
+    try testing.expect(hasScriptExtension(0x00B7, .latin));
+    try testing.expect(hasScriptExtension(0x00B7, .greek));
+    try testing.expect(hasScriptExtension(0x00B7, .han));
+    try testing.expect(hasScriptExtension(0x00B7, .coptic));
+    // A script that is not in the set.
+    try testing.expect(!hasScriptExtension(0x00B7, .hiragana));
+
+    // U+0300 COMBINING GRAVE ACCENT — {Cher Copt Cyrl Grek Latn Perm Sunu Tale}.
+    try testing.expect(hasScriptExtension(0x0300, .cyrillic));
+    try testing.expect(hasScriptExtension(0x0300, .latin));
+    try testing.expect(hasScriptExtension(0x0300, .greek));
+}
+
+test "scriptExtensions: out-of-range falls back to a single-element unknown set" {
+    const ext = scriptExtensions(0x110000);
+    try testing.expectEqual(@as(usize, 1), ext.len);
+    try testing.expectEqual(ScriptType.unknown, ext[0]);
+    try testing.expect(hasScriptExtension(0x110000, .unknown));
+    try testing.expect(!hasScriptExtension(0x110000, .latin));
+}
+
+test "scriptExtensions: never returns an empty slice for any codepoint" {
+    var cp: CodePoint = 0;
+    while (cp <= 0x10FFFF) : (cp += 1) {
+        try testing.expect(scriptExtensions(cp).len >= 1);
+    }
+}
+
+test "scriptExtensions: membership is consistent with the returned slice" {
+    // For a scattering of codepoints, hasScriptExtension must agree with a
+    // manual scan of the slice for every script value.
+    const samples = [_]CodePoint{ 'A', 0x00B7, 0x0300, 0x0342, 0x4E00, 0x0660, 0x10FFFF };
+    for (samples) |cp| {
+        const set = scriptExtensions(cp);
+        var s: u16 = 0;
+        while (s < @typeInfo(ScriptType).@"enum".fields.len) : (s += 1) {
+            const script: ScriptType = @enumFromInt(s);
+            var in_set = false;
+            for (set) |member| {
+                if (member == script) in_set = true;
+            }
+            try testing.expectEqual(in_set, hasScriptExtension(cp, script));
+        }
+    }
+}
+
+test {
+    testing.refAllDecls(@This());
+}
