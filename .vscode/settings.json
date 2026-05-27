@@ -1,10 +1,13 @@
 {
     "cSpell.words": [
+        "Casefold",
         "Casefolded",
         "Casemapped",
         "codepoint",
         "codepoints",
         "hoehrmann",
+        "nfkc",
+        "nfkd",
         "nukta",
         "Titlecase",
         "Titlecased",
