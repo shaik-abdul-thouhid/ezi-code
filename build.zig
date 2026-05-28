@@ -247,54 +247,26 @@ pub fn build(b: *std.Build) !void {
     const bench_step = b.step("bench", "Run Benchmarks");
     bench_step.dependOn(&run_bench.step);
 
-    const transcoding_fuzz_exe = b.addExecutable(.{
-        .name = "transcoding_fuzz",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/fuzz/transcoding.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{root},
-        }),
-    });
-
-    const utf32_fuzz_exe = b.addExecutable(.{
-        .name = "utf32_fuzz",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/fuzz/utf32.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{root},
-        }),
-    });
-
-    const utf16_fuzz_exe = b.addExecutable(.{
-        .name = "utf16_fuzz",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/fuzz/utf16.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{root},
-        }),
-    });
-
-    const utf8_fuzz_exe = b.addExecutable(.{
-        .name = "utf8_fuzz",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/fuzz/utf8.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{root},
-        }),
-    });
-
-    const transcoding_fuzz = b.addRunArtifact(transcoding_fuzz_exe);
-    const utf32_fuzz = b.addRunArtifact(utf32_fuzz_exe);
-    const utf16_fuzz = b.addRunArtifact(utf16_fuzz_exe);
-    const utf8_fuzz = b.addRunArtifact(utf8_fuzz_exe);
-
     const fuzz_step = b.step("fuzz", "Run all fuzz in tests/fuzz directory");
-    fuzz_step.dependOn(&transcoding_fuzz.step);
-    fuzz_step.dependOn(&utf32_fuzz.step);
-    fuzz_step.dependOn(&utf16_fuzz.step);
-    fuzz_step.dependOn(&utf8_fuzz.step);
+
+    for ([_]struct { name: []const u8, path: []const u8 }{
+        .{ .name = "transcoding_fuzz", .path = "tests/fuzz/transcoding.zig" },
+        .{ .name = "utf32_fuzz", .path = "tests/fuzz/utf32.zig" },
+        .{ .name = "utf16_fuzz", .path = "tests/fuzz/utf16.zig" },
+        .{ .name = "utf8_fuzz", .path = "tests/fuzz/utf8.zig" },
+    }) |item| {
+        const fuzz_exe = b.addExecutable(.{
+            .name = item.name,
+            .root_module = b.createModule(.{
+                .root_source_file = b.path(item.path),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{root},
+            }),
+        });
+
+        const fuzz_artifact = b.addRunArtifact(fuzz_exe);
+
+        fuzz_step.dependOn(&fuzz_artifact.step);
+    }
 }
