@@ -2644,62 +2644,62 @@ pub fn main(init: std.process.Init) !void {
     }{
         .{
             .file_name = "src/unicode/generated/unicode_data.zig",
-            .url = "https://www.unicode.org/Public/UCD/latest/ucd/UnicodeData.txt",
+            .url = "https://www.unicode.org/Public/17.0.0/ucd/UnicodeData.txt",
             .generatorFn = generateUnicodeData,
         },
         .{
             .file_name = "src/unicode/properties/generated/derived_core_properties.zig",
-            .url = "https://www.unicode.org/Public/UCD/latest/ucd/DerivedCoreProperties.txt",
+            .url = "https://www.unicode.org/Public/17.0.0/ucd/DerivedCoreProperties.txt",
             .generatorFn = generateDerivedCoreProperty,
         },
         .{
             .file_name = "src/unicode/casing/generated/case_folding.zig",
-            .url = "https://www.unicode.org/Public/UCD/latest/ucd/CaseFolding.txt",
+            .url = "https://www.unicode.org/Public/17.0.0/ucd/CaseFolding.txt",
             .generatorFn = generateCaseFolding,
         },
         .{
             .file_name = "src/unicode/casing/generated/special_casing.zig",
-            .url = "https://www.unicode.org/Public/UCD/latest/ucd/SpecialCasing.txt",
+            .url = "https://www.unicode.org/Public/17.0.0/ucd/SpecialCasing.txt",
             .generatorFn = generateSpecialCasing,
         },
         .{
             .file_name = "src/unicode/properties/generated/prop_list.zig",
-            .url = "https://www.unicode.org/Public/UCD/latest/ucd/PropList.txt",
+            .url = "https://www.unicode.org/Public/17.0.0/ucd/PropList.txt",
             .generatorFn = generatePropList,
         },
         .{
             .file_name = "src/unicode/segmentation/generated/grapheme_break.zig",
-            .url = "https://www.unicode.org/Public/UCD/latest/ucd/auxiliary/GraphemeBreakProperty.txt",
+            .url = "https://www.unicode.org/Public/17.0.0/ucd/auxiliary/GraphemeBreakProperty.txt",
             .generatorFn = generateGraphemeBreakProperty,
         },
         .{
             .file_name = "src/unicode/segmentation/generated/emoji_data.zig",
-            .url = "https://www.unicode.org/Public/UCD/latest/ucd/emoji/emoji-data.txt",
+            .url = "https://www.unicode.org/Public/17.0.0/ucd/emoji/emoji-data.txt",
             .generatorFn = generateEmojiData,
         },
         .{
             .file_name = "src/unicode/segmentation/generated/word_break.zig",
-            .url = "https://www.unicode.org/Public/UCD/latest/ucd/auxiliary/WordBreakProperty.txt",
+            .url = "https://www.unicode.org/Public/17.0.0/ucd/auxiliary/WordBreakProperty.txt",
             .generatorFn = generateWordBreakProperty,
         },
         .{
             .file_name = "src/unicode/segmentation/generated/sentence_break.zig",
-            .url = "https://www.unicode.org/Public/UCD/latest/ucd/auxiliary/SentenceBreakProperty.txt",
+            .url = "https://www.unicode.org/Public/17.0.0/ucd/auxiliary/SentenceBreakProperty.txt",
             .generatorFn = generateSentenceBreakProperty,
         },
         .{
             .file_name = "src/unicode/segmentation/generated/line_break.zig",
-            .url = "https://www.unicode.org/Public/UCD/latest/ucd/LineBreak.txt",
+            .url = "https://www.unicode.org/Public/17.0.0/ucd/LineBreak.txt",
             .generatorFn = generateLineBreak,
         },
         .{
             .file_name = "src/unicode/width/generated/east_asian_width.zig",
-            .url = "https://www.unicode.org/Public/UCD/latest/ucd/EastAsianWidth.txt",
+            .url = "https://www.unicode.org/Public/17.0.0/ucd/EastAsianWidth.txt",
             .generatorFn = generateEastAsianWidth,
         },
         .{
             .file_name = "src/unicode/normalization/generated/derived_normalization_props.zig",
-            .url = "https://www.unicode.org/Public/UCD/latest/ucd/DerivedNormalizationProps.txt",
+            .url = "https://www.unicode.org/Public/17.0.0/ucd/DerivedNormalizationProps.txt",
             .generatorFn = generateDerivedNormalizationProps,
         },
         // Must come after DerivedNormalizationProps: the decomposition
@@ -2707,7 +2707,7 @@ pub fn main(init: std.process.Init) !void {
         // disk to know which canonical decomps are Full_Composition_Exclusion.
         .{
             .file_name = "src/unicode/normalization/generated/decomposition.zig",
-            .url = "https://www.unicode.org/Public/UCD/latest/ucd/UnicodeData.txt",
+            .url = "https://www.unicode.org/Public/17.0.0/ucd/UnicodeData.txt",
             .generatorFn = generateDecomposition,
         },
         // Must come before the two script generators: both read
@@ -2716,17 +2716,17 @@ pub fn main(init: std.process.Init) !void {
         // Download-only — no Zig source emitted.
         .{
             .file_name = "ucd/PropertyValueAliases.txt",
-            .url = "https://www.unicode.org/Public/UCD/latest/ucd/PropertyValueAliases.txt",
+            .url = "https://www.unicode.org/Public/17.0.0/ucd/PropertyValueAliases.txt",
             .generatorFn = saveUCDFixtureOnly,
         },
         .{
             .file_name = "src/unicode/scripts/generated/scripts.zig",
-            .url = "https://www.unicode.org/Public/UCD/latest/ucd/Scripts.txt",
+            .url = "https://www.unicode.org/Public/17.0.0/ucd/Scripts.txt",
             .generatorFn = generateScripts,
         },
         .{
             .file_name = "src/unicode/scripts/generated/script_extensions.zig",
-            .url = "https://www.unicode.org/Public/UCD/latest/ucd/ScriptExtensions.txt",
+            .url = "https://www.unicode.org/Public/17.0.0/ucd/ScriptExtensions.txt",
             .generatorFn = generateScriptExtensions,
         },
 
@@ -2737,66 +2737,66 @@ pub fn main(init: std.process.Init) !void {
         // for these — the saved location is always `ucd/<basename-of-url>`.
         .{
             .file_name = "ucd/GraphemeBreakTest.txt",
-            .url = "https://www.unicode.org/Public/UCD/latest/ucd/auxiliary/GraphemeBreakTest.txt",
+            .url = "https://www.unicode.org/Public/17.0.0/ucd/auxiliary/GraphemeBreakTest.txt",
             .generatorFn = saveUCDFixtureOnly,
         },
         .{
             .file_name = "ucd/WordBreakTest.txt",
-            .url = "https://www.unicode.org/Public/UCD/latest/ucd/auxiliary/WordBreakTest.txt",
+            .url = "https://www.unicode.org/Public/17.0.0/ucd/auxiliary/WordBreakTest.txt",
             .generatorFn = saveUCDFixtureOnly,
         },
         .{
             .file_name = "ucd/SentenceBreakTest.txt",
-            .url = "https://www.unicode.org/Public/UCD/latest/ucd/auxiliary/SentenceBreakTest.txt",
+            .url = "https://www.unicode.org/Public/17.0.0/ucd/auxiliary/SentenceBreakTest.txt",
             .generatorFn = saveUCDFixtureOnly,
         },
         .{
             .file_name = "ucd/LineBreakTest.txt",
-            .url = "https://www.unicode.org/Public/UCD/latest/ucd/auxiliary/LineBreakTest.txt",
+            .url = "https://www.unicode.org/Public/17.0.0/ucd/auxiliary/LineBreakTest.txt",
             .generatorFn = saveUCDFixtureOnly,
         },
         .{
             .file_name = "ucd/NormalizationTest.txt", // fixture only, not Zig output
-            .url = "https://www.unicode.org/Public/UCD/latest/ucd/NormalizationTest.txt",
+            .url = "https://www.unicode.org/Public/17.0.0/ucd/NormalizationTest.txt",
             .generatorFn = generateNormalizationTestFixture,
         },
 
         // ----- Tier 3: script & bidi -----
         // .{
         //     .file_name = "src/unicode/bidi/generated/bidi_brackets.zig",
-        //     .url = "https://www.unicode.org/Public/UCD/latest/ucd/BidiBrackets.txt",
+        //     .url = "https://www.unicode.org/Public/17.0.0/ucd/BidiBrackets.txt",
         //     .generatorFn = generateBidiBrackets,
         // },
         // .{
         //     .file_name = "src/unicode/bidi/generated/bidi_mirroring.zig",
-        //     .url = "https://www.unicode.org/Public/UCD/latest/ucd/BidiMirroring.txt",
+        //     .url = "https://www.unicode.org/Public/17.0.0/ucd/BidiMirroring.txt",
         //     .generatorFn = generateBidiMirroring,
         // },
 
         // ----- Tier 4: numeric & metadata -----
         // .{
         //     .file_name = "src/unicode/numeric/generated/numeric_type.zig",
-        //     .url = "https://www.unicode.org/Public/UCD/latest/ucd/extracted/DerivedNumericType.txt",
+        //     .url = "https://www.unicode.org/Public/17.0.0/ucd/extracted/DerivedNumericType.txt",
         //     .generatorFn = generateDerivedNumericType,
         // },
         // .{
         //     .file_name = "src/unicode/numeric/generated/numeric_values.zig",
-        //     .url = "https://www.unicode.org/Public/UCD/latest/ucd/extracted/DerivedNumericValues.txt",
+        //     .url = "https://www.unicode.org/Public/17.0.0/ucd/extracted/DerivedNumericValues.txt",
         //     .generatorFn = generateDerivedNumericValues,
         // },
         // .{
         //     .file_name = "src/unicode/blocks/generated/blocks.zig",
-        //     .url = "https://www.unicode.org/Public/UCD/latest/ucd/Blocks.txt",
+        //     .url = "https://www.unicode.org/Public/17.0.0/ucd/Blocks.txt",
         //     .generatorFn = generateBlocks,
         // },
         // .{
         //     .file_name = "src/unicode/hangul/generated/hangul_syllable_type.zig",
-        //     .url = "https://www.unicode.org/Public/UCD/latest/ucd/HangulSyllableType.txt",
+        //     .url = "https://www.unicode.org/Public/17.0.0/ucd/HangulSyllableType.txt",
         //     .generatorFn = generateHangulSyllableType,
         // },
         // .{
         //     .file_name = "src/unicode/age/generated/derived_age.zig",
-        //     .url = "https://www.unicode.org/Public/UCD/latest/ucd/DerivedAge.txt",
+        //     .url = "https://www.unicode.org/Public/17.0.0/ucd/DerivedAge.txt",
         //     .generatorFn = generateDerivedAge,
         // },
     };
