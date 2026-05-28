@@ -6,6 +6,7 @@ pub const search = @import("search.zig");
 
 pub const isInRange = helpers.isInRange;
 pub const every = helpers.every;
+pub const some = helpers.some;
 
 pub const bytesToU16Slice = slices.bytesToU16Slice;
 pub const bytesToU16SliceComptime = slices.bytesToU16SliceComptime;

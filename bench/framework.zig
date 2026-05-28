@@ -11,7 +11,6 @@ const timer = @import("timer.zig");
 const TrackAllocator = @import("track_allocator.zig").TrackAllocator;
 const report = @import("report.zig");
 
-pub const sample_runs: usize = 7;
 pub const warmup_runs: usize = 1;
 
 /// Shared input data passed to every case in a suite.
@@ -77,7 +76,7 @@ const Stats = struct {
     max: f64,
 };
 
-fn computeStats(values: []const f64) Stats {
+fn computeStats(allocator: std.mem.Allocator, sample_runs: usize, values: []const f64) Stats {
     std.debug.assert(values.len > 0);
     var sum: f64 = 0;
     var mn = std.math.inf(f64);
@@ -97,7 +96,9 @@ fn computeStats(values: []const f64) Stats {
     }
     const stddev = @sqrt(sq / n);
 
-    var sorted: [sample_runs]f64 = undefined;
+    var sorted = allocator.alloc(f64, sample_runs) catch @panic("unable to alloc sorted");
+    defer allocator.free(sorted);
+
     for (values, 0..) |v, i| sorted[i] = v;
     std.mem.sort(f64, sorted[0..values.len], {}, std.sort.asc(f64));
     const mid = values.len / 2;
@@ -144,16 +145,23 @@ fn runOneSample(case: Case, ctx: *Context, sample: *Sample) anyerror!void {
     };
 }
 
-fn printCorpusRow(corpus_name: []const u8, samples: []const Sample) void {
-    var ns_vals: [sample_runs]f64 = undefined;
-    var peak_vals: [sample_runs]usize = undefined;
-    var tot_vals: [sample_runs]usize = undefined;
+fn printCorpusRow(allocator: std.mem.Allocator, sample_runs: usize, corpus_name: []const u8, samples: []const Sample) void {
+    var ns_vals = allocator.alloc(f64, sample_runs) catch @panic("unable to allocate ns_vals");
+    var peak_vals = allocator.alloc(usize, sample_runs) catch @panic("unable to allocate peak_vals");
+    var tot_vals = allocator.alloc(usize, sample_runs) catch @panic("unable to allocate tot_vals");
+
+    defer {
+        allocator.free(ns_vals);
+        allocator.free(peak_vals);
+        allocator.free(tot_vals);
+    }
+
     for (samples, 0..) |s, i| {
         ns_vals[i] = s.ns;
         peak_vals[i] = s.peak_bytes;
         tot_vals[i] = s.total_alloc_bytes;
     }
-    const time_stats = computeStats(ns_vals[0..samples.len]);
+    const time_stats = computeStats(allocator, sample_runs, ns_vals[0..samples.len]);
     const peak_mean = meanU(peak_vals[0..samples.len]);
     const tot_mean = meanU(tot_vals[0..samples.len]);
 
@@ -193,7 +201,7 @@ fn printCorpusRow(corpus_name: []const u8, samples: []const Sample) void {
     );
 }
 
-fn runCaseOnCorpus(case: Case, base_allocator: std.mem.Allocator, corpus: *const Corpus) ?[sample_runs]Sample {
+fn runCaseOnCorpus(case: Case, base_allocator: std.mem.Allocator, sample_runs: usize, corpus: *const Corpus) ?[]Sample {
     var ctx: Context = .{ .allocator = base_allocator, .corpus = corpus };
 
     if (case.setup) |setup| {
@@ -218,7 +226,8 @@ fn runCaseOnCorpus(case: Case, base_allocator: std.mem.Allocator, corpus: *const
         };
     }
 
-    var samples: [sample_runs]Sample = undefined;
+    var samples = base_allocator.alloc(Sample, sample_runs) catch @panic("unable to allocate samples");
+
     var i: usize = 0;
     while (i < sample_runs) : (i += 1) {
         runOneSample(case, &ctx, &samples[i]) catch |err| {
@@ -229,7 +238,7 @@ fn runCaseOnCorpus(case: Case, base_allocator: std.mem.Allocator, corpus: *const
     return samples;
 }
 
-pub fn runSuite(suite: Suite, allocator: std.mem.Allocator, corpora: []const Corpus) void {
+pub fn runSuite(suite: Suite, allocator: std.mem.Allocator, sample_runs: usize, corpora: []const Corpus) void {
     std.debug.print("\n## {s}\n", .{suite.module_name});
     if (suite.description.len > 0) {
         std.debug.print("   {s}\n", .{suite.description});
@@ -247,8 +256,9 @@ pub fn runSuite(suite: Suite, allocator: std.mem.Allocator, corpora: []const Cor
         std.debug.print("\n", .{});
 
         for (corpora) |c| {
-            const samples = runCaseOnCorpus(case, allocator, &c) orelse continue;
-            printCorpusRow(c.name, &samples);
+            const samples = runCaseOnCorpus(case, allocator, sample_runs, &c) orelse continue;
+            printCorpusRow(allocator, sample_runs, c.name, samples);
+            allocator.free(samples);
         }
     }
 }

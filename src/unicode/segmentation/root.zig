@@ -1534,13 +1534,7 @@ pub fn lineStepBytes(state: LineStepState, bytes: []const u8, byte_pos: usize) L
 /// Shared rule body. Caller has already decided that the current codepoint
 /// is NOT LB9-attached and has applied LB10 to produce `cur_res`. The
 /// `lookahead` pair gives the next up-to-two effective entries forward.
-fn lineStepRules(
-    state: LineStepState,
-    cur_cp: CodePoint,
-    cur_raw: LBProp,
-    cur_res: LBProp,
-    lookahead: LineLookaheadPair,
-) LineStepDecision {
+fn lineStepRules(state: LineStepState, cur_cp: CodePoint, cur_raw: LBProp, cur_res: LBProp, lookahead: LineLookaheadPair) LineStepDecision {
     // After `lineStepInit`, every subsequent step has a non-null eff_prev.
     const prev = state.eff_prev.?;
     const prev_cp = state.eff_prev_cp;
@@ -1607,10 +1601,8 @@ fn lineStepRules(
     }
 
     // LB14: OP SP* × — most recent non-SP is OP.
-    if (allow_break) {
-        if (state.last_nonsp) |ns| {
-            if (ns == .op) allow_break = false;
-        }
+    if (allow_break and state.last_nonsp != null and state.last_nonsp.? == .op) {
+        allow_break = false;
     }
 
     // LB15a: armed Pi-QU window (set at the moment the Pi-QU became
@@ -2104,7 +2096,7 @@ pub const LineBreakIterator = struct {
         // just skip past it.
         const first = utf8.validateAndDecodeCodePointBytesLossy(self.bytes, self.pos) catch @panic("invalid code point bytes");
         if (!self.primed) {
-            self.state = LineStepState.init(first.code_point);
+            self.state = .init(first.code_point);
             self.primed = true;
         }
         var cursor = self.pos + first.len;
