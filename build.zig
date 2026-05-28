@@ -52,15 +52,16 @@ pub fn build(b: *std.Build) !void {
         }
     }.predicate));
 
+    const build_option_module: std.Build.Module.Import = .{
+        .name = "build_options",
+        .module = unicode_build_options.createModule(),
+    };
+
     const unicode_module = b.addModule("unicode", .{
         .root_source_file = b.path("src/unicode/root.zig"),
         .target = target,
         .optimize = optimize,
-        .imports = &.{
-            utils,
-            encoding,
-            .{ .name = "build_options", .module = unicode_build_options.createModule() },
-        },
+        .imports = &.{ utils, encoding, build_option_module },
     });
 
     const unicode: std.Build.Module.Import = .{ .name = "unicode", .module = unicode_module };
