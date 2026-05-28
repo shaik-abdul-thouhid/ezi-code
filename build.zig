@@ -68,6 +68,7 @@ pub fn build(b: *std.Build) !void {
     const ezi_code_module = b.addModule("ezi_code", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
+        .optimize = optimize,
         .imports = &.{ utils, encoding, transcoding, unicode },
     });
 
@@ -111,12 +112,6 @@ pub fn build(b: *std.Build) !void {
 
     const generate_unicode_cmd = b.addRunArtifact(generate_unicode_exe);
     generate_unicode_step.dependOn(&generate_unicode_cmd.step);
-
-    run_cmd.step.dependOn(b.getInstallStep());
-
-    if (b.args) |args| {
-        run_cmd.addArgs(args);
-    }
 
     const utils_tests = b.addTest(.{ .root_module = utils_module });
     const encoding_tests = b.addTest(.{ .root_module = encoding_module });
