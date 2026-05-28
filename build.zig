@@ -1,8 +1,24 @@
 const std = @import("std");
+const some = @import("src/utils/root.zig").some;
+
+const TestEnum = enum {
+    all,
+    encoding,
+    transcoding,
+    unicode,
+    utils,
+    conformance,
+};
 
 pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+
+    const include_tests = b.option(
+        []const TestEnum,
+        "include-test",
+        "Tests to include in the `zig build test` run",
+    ) orelse &[_]TestEnum{.all};
 
     const utils_module = b.addModule("utils", .{
         .root_source_file = b.path("src/utils/root.zig"),
@@ -29,11 +45,22 @@ pub fn build(b: *std.Build) !void {
 
     const transcoding: std.Build.Module.Import = .{ .name = "transcoding", .module = transcoding_module };
 
+    const unicode_build_options = b.addOptions();
+    unicode_build_options.addOption(bool, "include_conformance", some(TestEnum, {}, include_tests, struct {
+        fn predicate(_: void, a: TestEnum, _: usize) bool {
+            return a == .all or a == .conformance;
+        }
+    }.predicate));
+
     const unicode_module = b.addModule("unicode", .{
         .root_source_file = b.path("src/unicode/root.zig"),
         .target = target,
         .optimize = optimize,
-        .imports = &.{ utils, encoding },
+        .imports = &.{
+            utils,
+            encoding,
+            .{ .name = "build_options", .module = unicode_build_options.createModule() },
+        },
     });
 
     const unicode: std.Build.Module.Import = .{ .name = "unicode", .module = unicode_module };
@@ -91,21 +118,11 @@ pub fn build(b: *std.Build) !void {
         run_cmd.addArgs(args);
     }
 
-    const utils_tests = b.addTest(.{
-        .root_module = utils_module,
-    });
-    const encoding_tests = b.addTest(.{
-        .root_module = encoding_module,
-    });
-    const transcoding_tests = b.addTest(.{
-        .root_module = transcoding_module,
-    });
-    const unicode_tests = b.addTest(.{
-        .root_module = unicode_module,
-    });
-    const mod_tests = b.addTest(.{
-        .root_module = ezi_code_module,
-    });
+    const utils_tests = b.addTest(.{ .root_module = utils_module });
+    const encoding_tests = b.addTest(.{ .root_module = encoding_module });
+    const transcoding_tests = b.addTest(.{ .root_module = transcoding_module });
+    const unicode_tests = b.addTest(.{ .root_module = unicode_module });
+    const mod_tests = b.addTest(.{ .root_module = ezi_code_module });
 
     const run_mod_tests = b.addRunArtifact(mod_tests);
     const run_utils_tests = b.addRunArtifact(utils_tests);
@@ -113,18 +130,60 @@ pub fn build(b: *std.Build) !void {
     const run_transcoding_tests = b.addRunArtifact(transcoding_tests);
     const run_unicode_tests = b.addRunArtifact(unicode_tests);
 
-    // const exe_tests = b.addTest(.{
-    //     .root_module = exe.root_module,
-    // });
-
-    // const run_exe_tests = b.addRunArtifact(exe_tests);
-
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_mod_tests.step);
-    test_step.dependOn(&run_utils_tests.step);
-    test_step.dependOn(&run_encoding_tests.step);
-    test_step.dependOn(&run_transcoding_tests.step);
-    test_step.dependOn(&run_unicode_tests.step);
+
+    if (some(
+        TestEnum,
+        {},
+        include_tests,
+        struct {
+            fn predicate(_: void, i: TestEnum, _: usize) bool {
+                return i == .utils or i == .all;
+            }
+        }.predicate,
+    )) {
+        test_step.dependOn(&run_utils_tests.step);
+    }
+
+    if (some(
+        TestEnum,
+        {},
+        include_tests,
+        struct {
+            fn predicate(_: void, i: TestEnum, _: usize) bool {
+                return i == .encoding or i == .all;
+            }
+        }.predicate,
+    )) {
+        test_step.dependOn(&run_encoding_tests.step);
+    }
+
+    if (some(
+        TestEnum,
+        {},
+        include_tests,
+        struct {
+            fn predicate(_: void, i: TestEnum, _: usize) bool {
+                return i == .transcoding or i == .all;
+            }
+        }.predicate,
+    )) {
+        test_step.dependOn(&run_transcoding_tests.step);
+    }
+
+    if (some(
+        TestEnum,
+        {},
+        include_tests,
+        struct {
+            fn predicate(_: void, i: TestEnum, _: usize) bool {
+                return i == .unicode or i == .conformance or i == .all;
+            }
+        }.predicate,
+    )) {
+        test_step.dependOn(&run_unicode_tests.step);
+    }
 
     // Benchmarks need optimization — Debug mode is so slow on the segmentation
     // iterators (table-driven property lookups, per-codepoint lookahead) that

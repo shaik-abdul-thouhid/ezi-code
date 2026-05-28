@@ -52,6 +52,7 @@ fn printUsage() void {
         \\  bench MOD [MOD ...]         run only the listed modules
         \\  bench --list                list registered modules
         \\  bench --size=N              corpus size per type in bytes (default {d})
+        \\  bench --runs=N              number of runs (default: 7)
         \\
         \\Registered modules:
         \\
@@ -82,6 +83,8 @@ pub fn main(init: std.process.Init) !void {
     _ = arg_it.skip(); // argv[0]
 
     var corpus_size: usize = corpus.default_size;
+    var sample_runs: usize = 7;
+
     var selected: std.ArrayList([]const u8) = .empty;
     defer selected.deinit(allocator);
 
@@ -97,6 +100,12 @@ pub fn main(init: std.process.Init) !void {
             const v = a["--size=".len..];
             corpus_size = parseSize(v) orelse {
                 std.debug.print("invalid --size value: '{s}'\n", .{v});
+                return;
+            };
+        } else if (std.mem.startsWith(u8, a, "--runs")) {
+            const v = a["--size=".len..];
+            sample_runs = parseSize(v) orelse {
+                std.debug.print("invalid --runs value: '{s}'\n", .{v});
                 return;
             };
         } else if (std.mem.startsWith(u8, a, "--")) {
@@ -120,7 +129,7 @@ pub fn main(init: std.process.Init) !void {
         \\samples per case: {d} (plus 1 warmup, discarded)
         \\corpus size:      {d} bytes × 3 (ASCII / Multilingual / Pathological)
         \\
-    , .{ framework.sample_runs, corpus_size });
+    , .{ sample_runs, corpus_size });
 
     var ran_any = false;
     for (registry) |s| {
@@ -134,7 +143,7 @@ pub fn main(init: std.process.Init) !void {
             }
             if (!matched) continue;
         }
-        framework.runSuite(s, allocator, &corpora_set.corpora);
+        framework.runSuite(s, allocator, sample_runs, &corpora_set.corpora);
         ran_any = true;
     }
 

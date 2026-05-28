@@ -6,6 +6,8 @@
 //! alongside the code they exercise.
 
 const std = @import("std");
+const build_options = @import("build_options");
+
 const encoding = @import("encoding");
 
 pub const types = @import("types.zig");
@@ -83,5 +85,7 @@ const ucd_conformance_tests = @import("tests/ucd_conformance.zig");
 
 test {
     std.testing.refAllDecls(@This());
-    std.testing.refAllDecls(ucd_conformance_tests);
+    if (build_options.include_conformance) {
+        std.testing.refAllDecls(ucd_conformance_tests);
+    }
 }
