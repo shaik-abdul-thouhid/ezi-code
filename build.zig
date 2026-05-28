@@ -252,7 +252,7 @@ pub fn build(b: *std.Build) !void {
     bench_step.dependOn(&run_bench.step);
 
     const transcoding_fuzz_exe = b.addExecutable(.{
-        .name = "utf16_fuzz",
+        .name = "transcoding_fuzz",
         .root_module = b.createModule(.{
             .root_source_file = b.path("tests/fuzz/transcoding.zig"),
             .target = target,
@@ -262,7 +262,7 @@ pub fn build(b: *std.Build) !void {
     });
 
     const utf32_fuzz_exe = b.addExecutable(.{
-        .name = "utf16_fuzz",
+        .name = "utf32_fuzz",
         .root_module = b.createModule(.{
             .root_source_file = b.path("tests/fuzz/utf32.zig"),
             .target = target,
