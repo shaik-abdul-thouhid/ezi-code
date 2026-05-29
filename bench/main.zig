@@ -27,6 +27,8 @@ const unicode_segmentation = @import("modules/unicode_segmentation.zig");
 const unicode_width = @import("modules/unicode_width.zig");
 const unicode_normalization = @import("modules/unicode_normalization.zig");
 const unicode_scripts = @import("modules/unicode_scripts.zig");
+const unicode_bidi = @import("modules/unicode_bidi.zig");
+const unicode_numeric_metadata = @import("modules/unicode_numeric_metadata.zig");
 const utils_slices = @import("modules/utils_slices.zig");
 const utils_search = @import("modules/utils_search.zig");
 
@@ -41,6 +43,8 @@ const registry: []const framework.Suite = &.{
     unicode_width.suite,
     unicode_normalization.suite,
     unicode_scripts.suite,
+    unicode_bidi.suite,
+    unicode_numeric_metadata.suite,
     utils_slices.suite,
     utils_search.suite,
 };
