@@ -2128,6 +2128,192 @@ test "ucd hostile: every canonical 2-component decomp recomposes (modulo Full_Co
     }
 }
 
+// ----- Hostile: decomposition tables match a recursive expansion of UnicodeData.txt -----
+//
+// `canonicalDecomposeRaw` / `compatibilityDecomposeRaw` are *fully recursively
+// expanded and canonically reordered* at generation time, so we can't compare
+// them to UnicodeData.txt field 5 one-step mappings directly. This test
+// independently reproduces that expansion + reorder from the source data and
+// verifies both tables at every codepoint — the same algorithm the generator
+// runs, written from scratch here so a bug in one wouldn't hide a bug in the
+// other.
+
+const DecompRow = struct { is_compat: bool, components: []const CodePoint };
+
+/// Dense CCC array from UnicodeData.txt field 3. First/Last ranges all carry
+/// CCC 0, so per-line assignment is sufficient (the default is already 0).
+fn parseDecompCcc(allocator: std.mem.Allocator, data: []const u8) ![]u8 {
+    const ccc = try allocator.alloc(u8, 0x110000);
+    @memset(ccc, 0);
+    var lines = std.mem.splitScalar(u8, data, '\n');
+    while (lines.next()) |line| {
+        if (line.len == 0) continue;
+        var fields = std.mem.splitScalar(u8, line, ';');
+        const cp_raw = fields.next() orelse continue;
+        const cp = std.fmt.parseInt(CodePoint, std.mem.trim(u8, cp_raw, " \t\r"), 16) catch continue;
+        _ = fields.next(); // name
+        _ = fields.next(); // category
+        const ccc_raw = fields.next() orelse continue;
+        ccc[cp] = std.fmt.parseInt(u8, std.mem.trim(u8, ccc_raw, " \t\r"), 10) catch 0;
+    }
+    return ccc;
+}
+
+/// One-step decomposition map from UnicodeData.txt field 5 (`<tag>` ⇒ compat).
+fn parseRawDecompMap(allocator: std.mem.Allocator, data: []const u8) !std.AutoHashMapUnmanaged(CodePoint, DecompRow) {
+    var raw: std.AutoHashMapUnmanaged(CodePoint, DecompRow) = .empty;
+    var lines = std.mem.splitScalar(u8, data, '\n');
+    while (lines.next()) |line| {
+        if (line.len == 0) continue;
+        var fields = std.mem.splitScalar(u8, line, ';');
+        const cp_raw = fields.next() orelse continue;
+        const cp = std.fmt.parseInt(CodePoint, std.mem.trim(u8, cp_raw, " \t\r"), 16) catch continue;
+        _ = fields.next(); // name
+        _ = fields.next(); // category
+        _ = fields.next(); // ccc
+        _ = fields.next(); // bidi
+        const decomp_raw = fields.next() orelse continue;
+        const decomp = std.mem.trim(u8, decomp_raw, " \t\r");
+        if (decomp.len == 0) continue;
+
+        var is_compat = false;
+        var to_parse = decomp;
+        if (decomp[0] == '<') {
+            const close = std.mem.indexOfScalar(u8, decomp, '>') orelse continue;
+            is_compat = true;
+            to_parse = std.mem.trim(u8, decomp[close + 1 ..], " \t");
+        }
+
+        var comps: std.ArrayList(CodePoint) = .empty;
+        var tok = std.mem.tokenizeAny(u8, to_parse, " \t");
+        while (tok.next()) |t| try comps.append(allocator, try std.fmt.parseInt(CodePoint, t, 16));
+        try raw.put(allocator, cp, .{ .is_compat = is_compat, .components = try comps.toOwnedSlice(allocator) });
+    }
+    return raw;
+}
+
+/// Recursively expand `cp`. In canonical mode (`compat == false`) a component
+/// whose own row is compat-tagged is left as-is. Mirrors the generator's
+/// `expandDecomposition`.
+fn expandDecomp(
+    allocator: std.mem.Allocator,
+    raw: *const std.AutoHashMapUnmanaged(CodePoint, DecompRow),
+    cache: *std.AutoHashMapUnmanaged(CodePoint, []const CodePoint),
+    cp: CodePoint,
+    compat: bool,
+    depth: u8,
+) ![]const CodePoint {
+    if (depth > 32) return error.DecompositionCycle;
+    if (cache.get(cp)) |cached| return cached;
+
+    const self_singleton = blk: {
+        const out = try allocator.alloc(CodePoint, 1);
+        out[0] = cp;
+        break :blk out;
+    };
+
+    const rd = raw.get(cp) orelse {
+        try cache.put(allocator, cp, self_singleton);
+        return self_singleton;
+    };
+    if (!compat and rd.is_compat) {
+        try cache.put(allocator, cp, self_singleton);
+        return self_singleton;
+    }
+
+    var buf: std.ArrayList(CodePoint) = .empty;
+    for (rd.components) |comp| {
+        try buf.appendSlice(allocator, try expandDecomp(allocator, raw, cache, comp, compat, depth + 1));
+    }
+    const out = try buf.toOwnedSlice(allocator);
+    try cache.put(allocator, cp, out);
+    return out;
+}
+
+/// Stable per-run sort by CCC; CCC-0 codepoints are barriers (UAX #15 D109).
+/// Mirrors the generator's `canonicalReorder`.
+fn canonicalReorderSeq(ccc: []const u8, seq: []CodePoint) void {
+    if (seq.len < 2) return;
+    var i: usize = 0;
+    while (i < seq.len) {
+        if (ccc[seq[i]] == 0) {
+            i += 1;
+            continue;
+        }
+        var j = i + 1;
+        while (j < seq.len and ccc[seq[j]] != 0) j += 1;
+        var k: usize = i + 1;
+        while (k < j) : (k += 1) {
+            const v = seq[k];
+            const vc = ccc[v];
+            var m = k;
+            while (m > i and ccc[seq[m - 1]] > vc) : (m -= 1) seq[m] = seq[m - 1];
+            seq[m] = v;
+        }
+        i = j;
+    }
+}
+
+test "ucd hostile: decomposition tables (canonical + compatibility) match a full recursive expansion of UnicodeData.txt" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const txt = try std.Io.Dir.cwd().readFileAlloc(testing.io, unicode_data_path, testing.allocator, .limited(8 * 1024 * 1024));
+    defer testing.allocator.free(txt);
+
+    const ccc = try parseDecompCcc(arena, txt);
+    var raw = try parseRawDecompMap(arena, txt);
+
+    var canon_cache: std.AutoHashMapUnmanaged(CodePoint, []const CodePoint) = .empty;
+    var compat_cache: std.AutoHashMapUnmanaged(CodePoint, []const CodePoint) = .empty;
+    var present: std.AutoHashMapUnmanaged(CodePoint, void) = .empty;
+
+    // Phase A: every codepoint that has a one-step decomposition.
+    var it = raw.iterator();
+    while (it.next()) |e| {
+        const cp = e.key_ptr.*;
+        const rd = e.value_ptr.*;
+        try present.put(arena, cp, {});
+
+        // Canonical: present iff the row is untagged; otherwise null.
+        if (!rd.is_compat) {
+            const seq = try arena.dupe(CodePoint, try expandDecomp(arena, &raw, &canon_cache, cp, false, 0));
+            canonicalReorderSeq(ccc, seq);
+            const got = decomposition.canonicalDecomposeRaw(cp) orelse {
+                std.debug.print("U+{X}: canonicalDecomposeRaw returned null, expected a mapping\n", .{cp});
+                return error.CanonicalDecompMissing;
+            };
+            try expectCodePointSlices(seq, got);
+        } else {
+            try testing.expectEqual(@as(?[]const CodePoint, null), decomposition.canonicalDecomposeRaw(cp));
+        }
+
+        // Compatibility: present for every row unless the full expansion is a
+        // no-op `[cp]` (the generator drops those).
+        const cseq = try arena.dupe(CodePoint, try expandDecomp(arena, &raw, &compat_cache, cp, true, 0));
+        canonicalReorderSeq(ccc, cseq);
+        if (cseq.len == 1 and cseq[0] == cp) {
+            try testing.expectEqual(@as(?[]const CodePoint, null), decomposition.compatibilityDecomposeRaw(cp));
+        } else {
+            const cgot = decomposition.compatibilityDecomposeRaw(cp) orelse {
+                std.debug.print("U+{X}: compatibilityDecomposeRaw returned null, expected a mapping\n", .{cp});
+                return error.CompatDecompMissing;
+            };
+            try expectCodePointSlices(cseq, cgot);
+        }
+    }
+
+    // Phase B: codepoints with no one-step decomposition must return null from
+    // both raw tables (Hangul is handled by the wrapper, not these tables).
+    var cp: CodePoint = 0;
+    while (cp <= 0x10FFFF) : (cp += 1) {
+        if (present.contains(cp)) continue;
+        try testing.expectEqual(@as(?[]const CodePoint, null), decomposition.canonicalDecomposeRaw(cp));
+        try testing.expectEqual(@as(?[]const CodePoint, null), decomposition.compatibilityDecomposeRaw(cp));
+    }
+}
+
 // ----- Sanity: out-of-range codepoints pass through the API safely -----
 
 test "ucd: normalize handles edge codepoints (0, 0x10FFFF, 0x110000) without UB" {
