@@ -5,6 +5,7 @@
         "Casemapped",
         "codepoint",
         "codepoints",
+        "Decomp",
         "hoehrmann",
         "nfkc",
         "nfkd",
