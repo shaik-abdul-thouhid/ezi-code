@@ -18,6 +18,11 @@ const decomposition = @import("../normalization/generated/decomposition.zig");
 const normalization = @import("../normalization/root.zig");
 const segmentation = @import("../segmentation/root.zig");
 const scripts = @import("../scripts/root.zig");
+const bidi_props = @import("../bidi/root.zig");
+const numeric_props = @import("../numeric/root.zig");
+const blocks_props = @import("../blocks/root.zig");
+const hangul_props = @import("../hangul/root.zig");
+const age_props = @import("../age/root.zig");
 const unicode_types = @import("../types.zig");
 
 const ScriptType = scripts.ScriptType;
@@ -45,6 +50,13 @@ const normalization_test_path = "ucd/NormalizationTest.txt";
 const property_value_aliases_path = "ucd/PropertyValueAliases.txt";
 const scripts_path = "ucd/Scripts.txt";
 const script_extensions_path = "ucd/ScriptExtensions.txt";
+const bidi_brackets_path = "ucd/BidiBrackets.txt";
+const bidi_mirroring_path = "ucd/BidiMirroring.txt";
+const numeric_type_path = "ucd/DerivedNumericType.txt";
+const numeric_values_path = "ucd/DerivedNumericValues.txt";
+const blocks_path = "ucd/Blocks.txt";
+const hangul_syllable_type_path = "ucd/HangulSyllableType.txt";
+const derived_age_path = "ucd/DerivedAge.txt";
 
 fn cleanData(line: []const u8) []const u8 {
     var comment_split = std.mem.splitScalar(u8, line, '#');
@@ -2265,4 +2277,254 @@ test "ucd hostile: ScriptExtensions.txt set matches scriptExtensions for every c
     const oob = scripts.scriptExtensions(0x110000);
     try testing.expectEqual(@as(usize, 1), oob.len);
     try testing.expectEqual(ScriptType.unknown, oob[0]);
+}
+
+test "ucd hostile: BidiMirroring.txt maps every codepoint identically to the generated table" {
+    const allocator = testing.allocator;
+
+    const txt = try std.Io.Dir.cwd().readFileAlloc(testing.io, bidi_mirroring_path, allocator, .limited(1024 * 1024));
+    defer allocator.free(txt);
+
+    // Default <none> (0 sentinel here means null) for every unlisted codepoint.
+    const expected = try allocator.alloc(?CodePoint, 0x110000);
+    defer allocator.free(expected);
+    @memset(expected, null);
+
+    var lines = std.mem.splitScalar(u8, txt, '\n');
+    while (lines.next()) |raw_line| {
+        const line = cleanData(raw_line);
+        if (line.len == 0) continue;
+
+        var parts = std.mem.splitScalar(u8, line, ';');
+        const cp = try parseCodePoint(parts.next() orelse return error.BadMirrorLine);
+        const mirror = try parseCodePoint(parts.next() orelse return error.BadMirrorLine);
+        expected[cp] = mirror;
+    }
+
+    for (expected, 0..) |want, cp| {
+        try testing.expectEqual(want, bidi_props.bidiMirroringGlyph(@intCast(cp)));
+    }
+
+    // Out of range stays null, never traps.
+    try testing.expectEqual(@as(?CodePoint, null), bidi_props.bidiMirroringGlyph(0x110000));
+    try testing.expectEqual(@as(?CodePoint, null), bidi_props.bidiMirroringGlyph(0x1FFFFF));
+}
+
+test "ucd hostile: BidiBrackets.txt assigns the same type and pairing to every codepoint as the generated tables" {
+    const allocator = testing.allocator;
+
+    const txt = try std.Io.Dir.cwd().readFileAlloc(testing.io, bidi_brackets_path, allocator, .limited(1024 * 1024));
+    defer allocator.free(txt);
+
+    const expected_type = try allocator.alloc(bidi_props.BidiPairedBracketType, 0x110000);
+    defer allocator.free(expected_type);
+    @memset(expected_type, .none);
+
+    const expected_pair = try allocator.alloc(?CodePoint, 0x110000);
+    defer allocator.free(expected_pair);
+    @memset(expected_pair, null);
+
+    var lines = std.mem.splitScalar(u8, txt, '\n');
+    while (lines.next()) |raw_line| {
+        const line = cleanData(raw_line);
+        if (line.len == 0) continue;
+
+        var parts = std.mem.splitScalar(u8, line, ';');
+        const cp = try parseCodePoint(parts.next() orelse return error.BadBracketLine);
+        const pair_raw = std.mem.trim(u8, parts.next() orelse return error.BadBracketLine, " \t\r");
+        const type_raw = std.mem.trim(u8, parts.next() orelse return error.BadBracketLine, " \t\r");
+
+        expected_type[cp] = if (std.mem.eql(u8, type_raw, "o"))
+            .open
+        else if (std.mem.eql(u8, type_raw, "c"))
+            .close
+        else
+            .none;
+
+        if (!std.mem.eql(u8, pair_raw, "<none>")) {
+            expected_pair[cp] = try parseCodePoint(pair_raw);
+        }
+    }
+
+    for (0..0x110000) |cp| {
+        try testing.expectEqual(expected_type[cp], bidi_props.bidiPairedBracketType(@intCast(cp)));
+        try testing.expectEqual(expected_pair[cp], bidi_props.bidiPairedBracket(@intCast(cp)));
+    }
+
+    // Out of range never traps.
+    try testing.expectEqual(bidi_props.BidiPairedBracketType.none, bidi_props.bidiPairedBracketType(0x110000));
+    try testing.expectEqual(@as(?CodePoint, null), bidi_props.bidiPairedBracket(0x1FFFFF));
+}
+
+test "ucd hostile: DerivedNumericType.txt assigns the same Numeric_Type to every codepoint" {
+    const allocator = testing.allocator;
+
+    const txt = try std.Io.Dir.cwd().readFileAlloc(testing.io, numeric_type_path, allocator, .limited(2 * 1024 * 1024));
+    defer allocator.free(txt);
+
+    const NumericType = numeric_props.NumericType;
+    const expected = try allocator.alloc(NumericType, 0x110000);
+    defer allocator.free(expected);
+    @memset(expected, .none);
+
+    var lines = std.mem.splitScalar(u8, txt, '\n');
+    while (lines.next()) |raw_line| {
+        const line = cleanData(raw_line);
+        if (line.len == 0) continue;
+
+        var parts = std.mem.splitScalar(u8, line, ';');
+        const range = try parseRange(parts.next() orelse return error.BadNumericTypeLine);
+        const name = std.mem.trim(u8, parts.next() orelse return error.BadNumericTypeLine, " \t\r");
+        const nt: NumericType = if (std.mem.eql(u8, name, "Decimal"))
+            .decimal
+        else if (std.mem.eql(u8, name, "Digit"))
+            .digit
+        else if (std.mem.eql(u8, name, "Numeric"))
+            .numeric
+        else
+            return error.UnknownNumericType;
+        for (@as(usize, range.start)..@as(usize, range.end) + 1) |cp| expected[cp] = nt;
+    }
+
+    for (expected, 0..) |want, cp| {
+        try testing.expectEqual(want, numeric_props.numericType(@intCast(cp)));
+    }
+    try testing.expectEqual(NumericType.none, numeric_props.numericType(0x110000));
+}
+
+test "ucd hostile: DerivedNumericValues.txt assigns the same Numeric_Value to every codepoint" {
+    const allocator = testing.allocator;
+
+    const txt = try std.Io.Dir.cwd().readFileAlloc(testing.io, numeric_values_path, allocator, .limited(4 * 1024 * 1024));
+    defer allocator.free(txt);
+
+    const NumericValue = numeric_props.NumericValue;
+    const expected = try allocator.alloc(?NumericValue, 0x110000);
+    defer allocator.free(expected);
+    @memset(expected, null);
+
+    var lines = std.mem.splitScalar(u8, txt, '\n');
+    while (lines.next()) |raw_line| {
+        const line = cleanData(raw_line);
+        if (line.len == 0) continue;
+
+        var parts = std.mem.splitScalar(u8, line, ';');
+        const range = try parseRange(parts.next() orelse return error.BadNumericValueLine);
+        _ = parts.next(); // decimal field (lossy)
+        _ = parts.next(); // empty field
+        const rational = std.mem.trim(u8, parts.next() orelse return error.BadNumericValueLine, " \t\r");
+
+        var frac = std.mem.splitScalar(u8, rational, '/');
+        const numerator = try std.fmt.parseInt(i64, std.mem.trim(u8, frac.next() orelse return error.BadNumericValueLine, " \t\r"), 10);
+        const denominator = if (frac.next()) |d| try std.fmt.parseInt(i64, std.mem.trim(u8, d, " \t\r"), 10) else 1;
+        const v: NumericValue = .{ .numerator = numerator, .denominator = denominator };
+        for (@as(usize, range.start)..@as(usize, range.end) + 1) |cp| expected[cp] = v;
+    }
+
+    for (expected, 0..) |want, cp| {
+        try testing.expectEqual(want, numeric_props.numericValue(@intCast(cp)));
+    }
+    try testing.expectEqual(@as(?NumericValue, null), numeric_props.numericValue(0x110000));
+}
+
+test "ucd hostile: Blocks.txt assigns the same Block to every codepoint" {
+    const allocator = testing.allocator;
+
+    const txt = try std.Io.Dir.cwd().readFileAlloc(testing.io, blocks_path, allocator, .limited(1024 * 1024));
+    defer allocator.free(txt);
+
+    // Expected canonical block name per codepoint; default "No_Block" (@missing).
+    const expected_name = try allocator.alloc([]const u8, 0x110000);
+    defer allocator.free(expected_name);
+    @memset(expected_name, "No_Block");
+
+    var lines = std.mem.splitScalar(u8, txt, '\n');
+    while (lines.next()) |raw_line| {
+        const line = cleanData(raw_line);
+        if (line.len == 0) continue;
+
+        var parts = std.mem.splitScalar(u8, line, ';');
+        const range = try parseRange(parts.next() orelse return error.BadBlockLine);
+        const name = std.mem.trim(u8, parts.next() orelse return error.BadBlockLine, " \t\r");
+        for (@as(usize, range.start)..@as(usize, range.end) + 1) |cp| expected_name[cp] = name;
+    }
+
+    for (expected_name, 0..) |want, cp| {
+        try testing.expectEqualStrings(want, blocks_props.blockName(blocks_props.block(@intCast(cp))));
+    }
+    try testing.expectEqual(blocks_props.Block.no_block, blocks_props.block(0x110000));
+}
+
+test "ucd hostile: HangulSyllableType.txt assigns the same type to every codepoint" {
+    const allocator = testing.allocator;
+
+    const txt = try std.Io.Dir.cwd().readFileAlloc(testing.io, hangul_syllable_type_path, allocator, .limited(1024 * 1024));
+    defer allocator.free(txt);
+
+    const HST = hangul_props.HangulSyllableType;
+    const expected = try allocator.alloc(HST, 0x110000);
+    defer allocator.free(expected);
+    @memset(expected, .not_applicable);
+
+    var lines = std.mem.splitScalar(u8, txt, '\n');
+    while (lines.next()) |raw_line| {
+        const line = cleanData(raw_line);
+        if (line.len == 0) continue;
+
+        var parts = std.mem.splitScalar(u8, line, ';');
+        const range = try parseRange(parts.next() orelse return error.BadHangulLine);
+        const code = std.mem.trim(u8, parts.next() orelse return error.BadHangulLine, " \t\r");
+        const hst: HST = if (std.mem.eql(u8, code, "L"))
+            .l
+        else if (std.mem.eql(u8, code, "V"))
+            .v
+        else if (std.mem.eql(u8, code, "T"))
+            .t
+        else if (std.mem.eql(u8, code, "LV"))
+            .lv
+        else if (std.mem.eql(u8, code, "LVT"))
+            .lvt
+        else
+            return error.UnknownHangulType;
+        for (@as(usize, range.start)..@as(usize, range.end) + 1) |cp| expected[cp] = hst;
+    }
+
+    for (expected, 0..) |want, cp| {
+        try testing.expectEqual(want, hangul_props.hangulSyllableType(@intCast(cp)));
+    }
+    try testing.expectEqual(HST.not_applicable, hangul_props.hangulSyllableType(0x110000));
+}
+
+test "ucd hostile: DerivedAge.txt assigns the same version to every codepoint" {
+    const allocator = testing.allocator;
+
+    const txt = try std.Io.Dir.cwd().readFileAlloc(testing.io, derived_age_path, allocator, .limited(2 * 1024 * 1024));
+    defer allocator.free(txt);
+
+    const Version = age_props.Version;
+    // null == unassigned (@missing) for every codepoint not explicitly listed.
+    const expected = try allocator.alloc(?Version, 0x110000);
+    defer allocator.free(expected);
+    @memset(expected, null);
+
+    var lines = std.mem.splitScalar(u8, txt, '\n');
+    while (lines.next()) |raw_line| {
+        const line = cleanData(raw_line);
+        if (line.len == 0) continue;
+
+        var parts = std.mem.splitScalar(u8, line, ';');
+        const range = try parseRange(parts.next() orelse return error.BadAgeLine);
+        const ver = std.mem.trim(u8, parts.next() orelse return error.BadAgeLine, " \t\r");
+        var vi = std.mem.splitScalar(u8, ver, '.');
+        const major = try std.fmt.parseInt(u16, std.mem.trim(u8, vi.next() orelse return error.BadAgeLine, " \t\r"), 10);
+        const minor = try std.fmt.parseInt(u16, std.mem.trim(u8, vi.next() orelse "0", " \t\r"), 10);
+        const v: Version = .{ .major = major, .minor = minor };
+        for (@as(usize, range.start)..@as(usize, range.end) + 1) |cp| expected[cp] = v;
+    }
+
+    for (expected, 0..) |want, cp| {
+        try testing.expectEqual(want, age_props.assignedIn(@intCast(cp)));
+    }
+    try testing.expectEqual(age_props.Age.unassigned, age_props.age(0x110000));
+    try testing.expectEqual(@as(?Version, null), age_props.assignedIn(0x1FFFFF));
 }

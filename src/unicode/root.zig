@@ -17,6 +17,11 @@ pub const segmentation = @import("segmentation/root.zig");
 pub const width = @import("width/root.zig");
 pub const normalization = @import("normalization/root.zig");
 pub const scripts = @import("scripts/root.zig");
+pub const bidi = @import("bidi/root.zig");
+pub const numeric = @import("numeric/root.zig");
+pub const blocks = @import("blocks/root.zig");
+pub const hangul = @import("hangul/root.zig");
+pub const age = @import("age/root.zig");
 
 // Generated data table re-exports — useful for callers that want raw
 // table-level access rather than the consumer module's higher-level API.
@@ -34,6 +39,13 @@ pub const east_asian_width = width.generated;
 pub const derived_normalization_props = normalization.derived_normalization_props;
 pub const scripts_data = scripts.generated;
 pub const script_extensions_data = scripts.generated_extensions;
+pub const bidi_mirroring_data = bidi.generated_mirroring;
+pub const bidi_brackets_data = bidi.generated_brackets;
+pub const numeric_type_data = numeric.generated_type;
+pub const numeric_values_data = numeric.generated_values;
+pub const blocks_data = blocks.generated;
+pub const hangul_syllable_type_data = hangul.generated;
+pub const derived_age_data = age.generated;
 
 // Widely-used type aliases. Anything more specific belongs in the submodule.
 pub const GeneralCategory = properties.GeneralCategory;
@@ -54,6 +66,22 @@ pub const ScriptType = scripts.ScriptType;
 pub const scriptType = scripts.scriptType;
 pub const scriptExtensions = scripts.scriptExtensions;
 pub const hasScriptExtension = scripts.hasScriptExtension;
+pub const BidiPairedBracketType = bidi.BidiPairedBracketType;
+pub const bidiMirroringGlyph = bidi.bidiMirroringGlyph;
+pub const bidiPairedBracketType = bidi.bidiPairedBracketType;
+pub const bidiPairedBracket = bidi.bidiPairedBracket;
+pub const NumericType = numeric.NumericType;
+pub const NumericValue = numeric.NumericValue;
+pub const numericType = numeric.numericType;
+pub const numericValue = numeric.numericValue;
+pub const Block = blocks.Block;
+pub const block = blocks.block;
+pub const blockName = blocks.blockName;
+pub const HangulSyllableType = hangul.HangulSyllableType;
+pub const hangulSyllableType = hangul.hangulSyllableType;
+pub const Age = age.Age;
+pub const Version = age.Version;
+pub const codePointAge = age.age;
 pub const GraphemeIterator = segmentation.GraphemeIterator;
 pub const CodePointGraphemeIterator = segmentation.CodePointGraphemeIterator;
 pub const InCB = segmentation.InCB;
