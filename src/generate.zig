@@ -12,8 +12,6 @@ const QuickCheck = unicode_types.QuickCheck;
 // HTTP / file IO
 // ============================================================================
 
-const ucd_folder = "ucd";
-
 fn downloadFileToPath(allocator: std.mem.Allocator, io: std.Io, writer: *std.Io.Writer, url: []const u8) !void {
     var client: std.http.Client = .{ .allocator = allocator, .io = io };
     defer client.deinit();
