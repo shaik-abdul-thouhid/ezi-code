@@ -632,14 +632,14 @@ pub const UTF8SliceError = error{
 
 const UTF8ViewIterator = struct {
     index: usize = 0,
-    view: *const UTF8View,
+    data: []const u8,
 
     pub fn next(self: *UTF8ViewIterator) ?CodePoint {
-        if (self.index >= self.view.data.len) {
+        if (self.index >= self.data.len) {
             return null;
         }
 
-        const code_point = bytesToUTF8CodePoint(self.view.data, self.index);
+        const code_point = bytesToUTF8CodePoint(self.data, self.index);
 
         self.index += @as(usize, code_point.len);
 
@@ -651,11 +651,11 @@ const UTF8ViewIterator = struct {
     }
 
     pub fn peek(self: *const UTF8ViewIterator) ?CodePoint {
-        if (self.index >= self.view.data.len) {
+        if (self.index >= self.data.len) {
             return null;
         }
 
-        return bytesToUTF8CodePoint(self.view.data, self.index).code_point;
+        return bytesToUTF8CodePoint(self.data, self.index).code_point;
     }
 
     pub fn previous(self: *UTF8ViewIterator) ?CodePoint {
@@ -663,7 +663,7 @@ const UTF8ViewIterator = struct {
             return null;
         }
 
-        const code_point = decodeCodePointReverseUnchecked(self.view.data, self.index - 1);
+        const code_point = decodeCodePointReverseUnchecked(self.data, self.index - 1);
 
         self.index -= @as(usize, code_point.len);
         return code_point.code_point;
@@ -674,7 +674,7 @@ const UTF8ViewIterator = struct {
             return null;
         }
 
-        return decodeCodePointReverseUnchecked(self.view.data, self.index - 1).code_point;
+        return decodeCodePointReverseUnchecked(self.data, self.index - 1).code_point;
     }
 };
 
@@ -766,7 +766,7 @@ const UTF8View = struct {
     }
 
     pub fn iter(self: *const UTF8View) UTF8ViewIterator {
-        return .{ .view = self };
+        return .{ .data = self.data };
     }
 };
 
