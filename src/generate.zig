@@ -883,8 +883,8 @@ fn generateCaseFolding(arena: std.mem.Allocator, io: std.Io, data: []const u8, u
 
         var mapping_buf = std.ArrayList(u21).empty;
         var mapping_split = std.mem.splitScalar(u8, mapping_str, ' ');
-        while (mapping_split.next()) |cpstr| {
-            const cp_trim = std.mem.trim(u8, cpstr, " \t");
+        while (mapping_split.next()) |cp_str| {
+            const cp_trim = std.mem.trim(u8, cp_str, " \t");
             if (cp_trim.len == 0) continue;
             try mapping_buf.append(arena, try std.fmt.parseInt(u21, cp_trim, 16));
         }
@@ -1833,8 +1833,8 @@ fn parseFullCompositionExclusion(arena: std.mem.Allocator, dnp_data: []const u8)
     var lines = std.mem.splitScalar(u8, dnp_data, '\n');
     while (lines.next()) |raw_line| {
         if (raw_line.len == 0 or raw_line[0] == '#') continue;
-        var hashsplit = std.mem.splitScalar(u8, raw_line, '#');
-        const data_part = std.mem.trim(u8, hashsplit.next() orelse continue, " \t\r");
+        var hash_split = std.mem.splitScalar(u8, raw_line, '#');
+        const data_part = std.mem.trim(u8, hash_split.next() orelse continue, " \t\r");
         if (data_part.len == 0) continue;
 
         var fields = std.mem.splitScalar(u8, data_part, ';');
@@ -2347,7 +2347,7 @@ fn generateScriptExtensions(arena: std.mem.Allocator, io: std.Io, data: []const 
     const catalog = try buildScriptCatalog(arena, pva_data);
 
     // Unique script-extension sets, canonicalized as ascending enum-index byte
-    // strings so equal sets dedup regardless of source ordering. Index 0 is the
+    // strings so equal sets de-dup regardless of source ordering. Index 0 is the
     // empty "not listed" sentinel.
     var unique_sets: std.ArrayList([]const u8) = .empty;
     try unique_sets.append(arena, &.{});
@@ -3050,7 +3050,7 @@ pub fn main(init: std.process.Init) !void {
         },
         // Must come after DerivedNormalizationProps: the decomposition
         // generator reads `ucd/DerivedNormalizationProps.txt` from local
-        // disk to know which canonical decomps are Full_Composition_Exclusion.
+        // disk to know which canonical de-comps are Full_Composition_Exclusion.
         .{
             .file_name = "src/unicode/normalization/generated/decomposition.zig",
             .url = "https://www.unicode.org/Public/17.0.0/ucd/UnicodeData.txt",
