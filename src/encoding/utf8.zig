@@ -90,31 +90,6 @@ inline fn decodeByte(state: *u32, code_point: *CodePoint, byte: u8) DecodeResult
         else => .incomplete,
     };
 }
-
-inline fn validateCodePoint(bytes: []const u8, offset: usize) !DecodedCodePoint {
-    if (bytes.len <= offset) {
-        return UTF8ValidationError.IndexOutOfBounds;
-    }
-
-    var i: usize = 0;
-
-    var state: u32 = UTF8_ACCEPT;
-    var code_point: CodePoint = 0;
-
-    for (bytes[offset..]) |b| {
-        const decoded = decodeByte(&state, &code_point, b);
-        i += 1;
-
-        if (decoded == .accept) {
-            return .{ .code_point = @as(CodePoint, code_point), .len = @as(u3, @intCast(i)) };
-        } else if (decoded == .reject) {
-            return UTF8ValidationError.InvalidByteSequence;
-        }
-    }
-
-    return UTF8ValidationError.InvalidByteSequence;
-}
-
 inline fn countScalars(bytes: []const u8) !usize {
     var state: u32 = UTF8_ACCEPT;
     var code_point: CodePoint = 0;
@@ -1067,84 +1042,6 @@ test "decodeByte: orphan continuation byte rejects" {
     const r = decodeByte(&state, &cp, 0x80);
 
     try std.testing.expectEqual(DecodeResult.reject, r);
-}
-
-test "validateCodePoint: ascii" {
-    const d = try validateCodePoint("A", 0);
-
-    try std.testing.expectEqual(
-        @as(CodePoint, 'A'),
-        d.code_point,
-    );
-
-    try std.testing.expectEqual(
-        @as(u3, 1),
-        d.len,
-    );
-}
-
-test "validateCodePoint: multibyte scalar" {
-    const d = try validateCodePoint("€", 0);
-
-    try std.testing.expectEqual(
-        @as(CodePoint, 0x20AC),
-        d.code_point,
-    );
-
-    try std.testing.expectEqual(
-        @as(u3, 3),
-        d.len,
-    );
-}
-
-test "validateCodePoint: emoji" {
-    const d = try validateCodePoint("😀", 0);
-
-    try std.testing.expectEqual(
-        @as(CodePoint, 0x1F600),
-        d.code_point,
-    );
-
-    try std.testing.expectEqual(
-        @as(u3, 4),
-        d.len,
-    );
-}
-
-test "validateCodePoint: malformed rejects" {
-    try std.testing.expectError(
-        UTF8ValidationError.InvalidByteSequence,
-        validateCodePoint(
-            &.{ 0xF0, 0x28, 0x8C, 0x28 },
-            0,
-        ),
-    );
-}
-
-test "validateCodePoint: truncated sequence rejects" {
-    try std.testing.expectError(
-        UTF8ValidationError.InvalidByteSequence,
-        validateCodePoint(
-            &.{ 0xE2, 0x82 },
-            0,
-        ),
-    );
-}
-
-test "validateCodePoint: offset works correctly" {
-    const s = "a😀b";
-
-    const d = try validateCodePoint(s, 1);
-
-    try std.testing.expectEqual(
-        @as(CodePoint, 0x1F600),
-        d.code_point,
-    );
-
-    try std.testing.expectEqual(
-        @as(u3, 4),
-        d.len,
-    );
 }
 
 test "codePointLen: ASCII and classification edge bytes" {
