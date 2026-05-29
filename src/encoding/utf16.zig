@@ -5,7 +5,7 @@ const encoding = @import("root.zig");
 const CodePoint = encoding.CodePoint;
 const INVALID_CODE_POINT = encoding.INVALID_CODE_POINT;
 
-const max_ascii = encoding.max_ascii;
+const MAX_ASCII = encoding.MAX_ASCII;
 
 const encoding_range_end = 0x10FFFF;
 const supplementary_offset: CodePoint = 0x10000;
@@ -87,7 +87,7 @@ fn validateDecodedScalar(code_point: CodePoint) UTF16ValidationError!void {
 }
 
 pub fn utf16SequenceLen(c16: u16) UTF16ValidationError!u2 {
-    if (c16 <= max_ascii) {
+    if (c16 <= MAX_ASCII) {
         return 1;
     }
 
@@ -104,7 +104,7 @@ pub fn utf16SequenceLen(c16: u16) UTF16ValidationError!u2 {
 
 /// Returns `0` for any invalid optimistic sequence
 fn utf16SequenceLenLossy(c16: u16) u2 {
-    if (c16 <= max_ascii) {
+    if (c16 <= MAX_ASCII) {
         return 1;
     }
 
@@ -135,7 +135,7 @@ pub fn utf16SequenceLenReverse(buf: []const u16, end_index: usize) UTF16Validati
         return error.IndexOutOfBounds;
     }
 
-    if (buf[end_index] <= max_ascii) {
+    if (buf[end_index] <= MAX_ASCII) {
         return 1;
     }
 
@@ -160,7 +160,7 @@ fn utf16SequenceLenReverseUnchecked(buf: []const u16, end_index: usize) UTF16Val
         return error.ZeroLengthUnits;
     }
 
-    if (buf[end_index] <= max_ascii) {
+    if (buf[end_index] <= MAX_ASCII) {
         return 1;
     }
 
@@ -234,7 +234,7 @@ pub fn validateU16CodePoint(buf: []const u16, offset: usize) UTF16ValidationErro
         return error.IndexOutOfBounds;
     }
 
-    if (buf[offset] <= max_ascii) {
+    if (buf[offset] <= MAX_ASCII) {
         return 1;
     }
 
@@ -258,7 +258,7 @@ pub fn validateU16CodePointReverse(buf: []const u16) UTF16ValidationError!u2 {
         return error.ZeroLengthUnits;
     }
 
-    if (buf[buf.len - 1] <= max_ascii) {
+    if (buf[buf.len - 1] <= MAX_ASCII) {
         @branchHint(.likely);
         return 1;
     }
@@ -319,7 +319,7 @@ pub fn validateAndDecodeU16CodePointLossy(buf: []const u16, offset: usize) UTF16
         return UTF16ValidationLossyError.IndexOutOfBounds;
     }
 
-    if (buf[offset] <= max_ascii) {
+    if (buf[offset] <= MAX_ASCII) {
         return .{ .code_point = @as(CodePoint, buf[offset]), .len = 1 };
     }
 

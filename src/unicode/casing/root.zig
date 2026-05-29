@@ -235,7 +235,7 @@ pub fn equalFoldBytes(comptime mode: EqualFoldMode, s1: []const u8, s2: []const 
 
         while (s1_i < s1.len and s2_i < s2.len) {
             // ASCII fast path: both bytes are ASCII => one codepoint each on this step.
-            if (s1[s1_i] <= encoding.max_ascii and s2[s2_i] <= encoding.max_ascii) {
+            if (s1[s1_i] <= encoding.MAX_ASCII and s2[s2_i] <= encoding.MAX_ASCII) {
                 if (!asciiFoldEqual(s1[s1_i], s2[s2_i])) return false;
                 s1_i += 1;
                 s2_i += 1;
@@ -272,7 +272,7 @@ pub fn equalFoldBytes(comptime mode: EqualFoldMode, s1: []const u8, s2: []const 
     while (true) {
         if (buf1_pos >= buf1_len) {
             if (s1_i >= s1.len) break;
-            if (s1[s1_i] <= encoding.max_ascii) {
+            if (s1[s1_i] <= encoding.MAX_ASCII) {
                 buf1[0] = asciiFoldLower(s1[s1_i]);
                 buf1_len = 1;
                 s1_i += 1;
@@ -289,7 +289,7 @@ pub fn equalFoldBytes(comptime mode: EqualFoldMode, s1: []const u8, s2: []const 
 
         if (buf2_pos >= buf2_len) {
             if (s2_i >= s2.len) break;
-            if (s2[s2_i] <= encoding.max_ascii) {
+            if (s2[s2_i] <= encoding.MAX_ASCII) {
                 buf2[0] = asciiFoldLower(s2[s2_i]);
                 buf2_len = 1;
                 s2_i += 1;
@@ -318,7 +318,7 @@ pub fn equalFoldBytesLossy(comptime mode: EqualFoldMode, s1: []const u8, s2: []c
         var s2_i: usize = 0;
 
         while (s1_i < s1.len and s2_i < s2.len) {
-            if (s1[s1_i] <= encoding.max_ascii and s2[s2_i] <= encoding.max_ascii) {
+            if (s1[s1_i] <= encoding.MAX_ASCII and s2[s2_i] <= encoding.MAX_ASCII) {
                 if (!asciiFoldEqual(s1[s1_i], s2[s2_i])) return false;
                 s1_i += 1;
                 s2_i += 1;
@@ -352,7 +352,7 @@ pub fn equalFoldBytesLossy(comptime mode: EqualFoldMode, s1: []const u8, s2: []c
     while (true) {
         if (buf1_pos >= buf1_len) {
             if (s1_i >= s1.len) break;
-            if (s1[s1_i] <= encoding.max_ascii) {
+            if (s1[s1_i] <= encoding.MAX_ASCII) {
                 buf1[0] = asciiFoldLower(s1[s1_i]);
                 buf1_len = 1;
                 s1_i += 1;
@@ -369,7 +369,7 @@ pub fn equalFoldBytesLossy(comptime mode: EqualFoldMode, s1: []const u8, s2: []c
 
         if (buf2_pos >= buf2_len) {
             if (s2_i >= s2.len) break;
-            if (s2[s2_i] <= encoding.max_ascii) {
+            if (s2[s2_i] <= encoding.MAX_ASCII) {
                 buf2[0] = asciiFoldLower(s2[s2_i]);
                 buf2_len = 1;
                 s2_i += 1;

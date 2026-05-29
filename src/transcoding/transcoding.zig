@@ -59,7 +59,7 @@ pub fn utf16ToUtf8Len(units: []const u16) (utf16.UTF16ValidationError || utf8.UT
 
     while (i < units.len) {
         const decoded = try utf16.validateAndDecodeU16CodePoint(units, i);
-        out_len += utf8.utf8EncodeLen(decoded.code_point) catch @panic("invalid code point");
+        out_len += utf8.utf8EncodeLen(decoded.code_point);
         i += decoded.len;
     }
 
@@ -133,7 +133,7 @@ pub fn utf32ToUtf8Len(units: []const u32) (utf32.UTF32ValidationError || utf8.UT
 
     while (i < units.len) {
         const decoded = try utf32.validateAndDecodeU32CodePoint(units, i);
-        out_len += utf8.utf8EncodeLen(decoded.code_point) catch @panic("invalid code point");
+        out_len += utf8.utf8EncodeLen(decoded.code_point);
         i += decoded.len;
     }
 
@@ -276,7 +276,7 @@ pub fn utf16ToUtf8LossyLen(units: []const u16) TranscodingError!usize {
     var iter = utf16.lossyIterator(units);
 
     while (iter.next()) |code_point| {
-        out_len += utf8.utf8EncodeLen(code_point) catch @panic("invalid code point");
+        out_len += utf8.utf8EncodeLen(code_point);
     }
 
     return out_len;
@@ -311,7 +311,7 @@ pub fn utf32ToUtf8LossyLen(units: []const u32) TranscodingError!usize {
     var iter = utf32.lossyIterator(units);
 
     while (iter.next()) |code_point| {
-        out_len += utf8.utf8EncodeLen(code_point) catch @panic("invalid code point");
+        out_len += utf8.utf8EncodeLen(code_point);
     }
 
     return out_len;
