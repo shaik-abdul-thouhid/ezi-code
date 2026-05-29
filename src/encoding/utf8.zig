@@ -1,3 +1,14 @@
+//! This file contains APIs for encoding and decoding utf8 codepoints from
+//! `[]const u8`. Contains functions for validating, Optimistic lengths,
+//! traversal, decoding, encoding, and converting to []CodePoint slice.
+//!
+//! - "Optimistic length" returned by `xxxLen(...)` functions is the
+//!   expected number of bytes to consume to decode a valid CodePoint.
+//!   It reflects the length claimed by the lead byte; continuation bytes
+//!   have not been validated yet.
+//! - Lossy `xxxLen(...)` variants return 0 when the byte is invalid or
+//!   the expected length cannot be inferred from it.
+
 const std = @import("std");
 const encoding = @import("root.zig");
 
@@ -7,7 +18,7 @@ const INVALID_CODE_POINT = encoding.INVALID_CODE_POINT;
 const encoding_range_start = 0x0000;
 const encoding_range_end = 0x10FFFF;
 
-const max_ascii = encoding.max_ascii;
+const MAX_ASCII = encoding.MAX_ASCII;
 
 // Surrogate range
 const surrogate_range_start = 0xD800;
@@ -17,28 +28,22 @@ const surrogate_range_end = 0xDFFF;
 const continuation_sequence = 0b1000_0000;
 const continuation_sequence_mask = 0b1100_0000;
 const continuation_payload_mask = 0b0011_1111;
-const continuation_mask_inverse = 0b0011_1111;
 
 // 2-byte sequence
 const two_byte_start_sequence_range_start = 0xC2;
 const two_byte_start_sequence_range_end = 0xDF;
 const two_byte_lead_byte_prefix = 0b1100_0000;
 const two_byte_payload_mask = 0b0001_1111;
-const two_byte_mask_inverse = 0b0001_1111;
 
 // 3-byte sequence
 const three_byte_start_sequence_range_start = 0xE0;
 const three_byte_start_sequence_range_end = 0xEF;
 const three_byte_payload_mask = 0b0000_1111;
-const three_byte_mask_inverse = 0b0000_1111;
 
 // 4-byte sequence
 const four_byte_start_sequence_range_start = 0xF0;
 const four_byte_start_sequence_range_end = 0xF4;
 const four_byte_payload_mask = 0b0000_0111;
-const four_byte_mask_inverse = 0b0000_0111;
-const four_byte_range_start = 0x10000;
-const four_byte_range_end = 0x10FFFF;
 
 const min_two_byte_code_point = 0x80;
 const max_two_byte_code_point = 0x7FF;
@@ -137,20 +142,12 @@ pub const UTF8ValidationError = error{
     OverlongEncoding,
     SurrogateCodePoint,
     CodePointTooLarge,
-
-    /// only returns at the place where it is unreachable,
-    /// in case of undefined-behavior
-    Undefined,
 };
 
 pub const UTF8ValidationLossyError = error{
     ZeroLengthBytes,
     IndexOutOfBounds,
     InvalidByteSequence,
-
-    /// only returns at the place where it is unreachable,
-    /// in case of undefined-behavior
-    Undefined,
 };
 
 pub const UTF8EncodeError = error{
@@ -158,80 +155,139 @@ pub const UTF8EncodeError = error{
     BufferTooSmall,
     InvalidByteSequence,
     SurrogateCodePoint,
-
-    /// only returns at the place where it is unreachable,
-    /// in case of undefined-behavior
-    Undefined,
 };
 
+inline fn isOverlong(comptime len: u3, bytes: []const u8, offset: usize) bool {
+    if (len == 3) {
+        return bytes[offset] == 0xE0 and bytes[offset + 1] < 0xA0;
+    }
+
+    if (len == 4) {
+        return bytes[offset] == 0xF0 and bytes[offset + 1] < 0x90;
+    }
+
+    @compileError("invalid length");
+}
+
+inline fn isSurrogateSequence(comptime len: u3, bytes: []const u8, offset: usize) bool {
+    if (len == 3) {
+        return bytes[offset] == 0xED and bytes[offset + 1] >= 0xA0;
+    }
+
+    @compileError("invalid length");
+}
+
+inline fn isCodePointTooLong(comptime len: u3, bytes: []const u8, offset: usize) bool {
+    if (len == 4) {
+        return bytes[offset] == 0xF4 and bytes[offset + 1] > 0x8F;
+    }
+
+    @compileError("invalid length");
+}
+
+inline fn codePointFromLen(comptime len: u3, bytes: []const u8, offset: usize) DecodedCodePoint {
+    if (len < 1 or len > 4) {
+        @panic("invalid length");
+    }
+
+    if (len == 1) {
+        return .{ .code_point = @as(CodePoint, bytes[offset]), .len = len };
+    }
+
+    const mask = switch (len) {
+        2 => two_byte_payload_mask,
+        3 => three_byte_payload_mask,
+        4 => four_byte_payload_mask,
+        else => @compileError("invalid length"),
+    };
+
+    var code_point = (@as(CodePoint, bytes[offset] & mask) << (6 * @as(u5, len - 1)));
+
+    inline for (1..len) |i| {
+        code_point |= (@as(CodePoint, bytes[offset + i] & continuation_payload_mask) << (6 * (len - i - 1)));
+    }
+
+    return .{ .code_point = code_point, .len = len };
+}
+
+inline fn codePointFromLenLossy(comptime len: u3, bytes: []const u8, offset: usize) DecodedCodePointLossy {
+    return .{ .len = len, .code_point = codePointFromLen(len, bytes, offset).code_point };
+}
+
+/// Returns optimistic length for the given byte, or returns error
+/// if an invalid byte is passed. The code point decode
+/// should be handled by either `validateAndDecodeCodePointBytes`
+/// or `validateAndDecodeCodePointBytesLossy`
+///
+/// @stable-since: v0.1.0
 pub fn codePointLen(byte: u8) UTF8ValidationError!u3 {
-    if (byte <= max_ascii) {
-        @branchHint(.likely);
-        return 1;
-    } else if (byte >= two_byte_start_sequence_range_start and
-        byte <= two_byte_start_sequence_range_end)
-    {
-        return 2;
-    } else if (byte >= three_byte_start_sequence_range_start and
-        byte <= three_byte_start_sequence_range_end)
-    {
-        return 3;
-    } else if (byte >= four_byte_start_sequence_range_start and
-        byte <= four_byte_start_sequence_range_end)
-    {
-        return 4;
-    } else return error.InvalidByteSequence;
-}
-
-/// Returns `0` for any incompatible sequence including the
-/// continuation byte sequence.
-pub fn codePointLenLossy(byte: u8) u3 {
-    if (byte <= max_ascii) {
-        @branchHint(.likely);
-        return 1;
-    } else if (byte >= two_byte_start_sequence_range_start and
-        byte <= two_byte_start_sequence_range_end)
-    {
-        return 2;
-    } else if (byte >= three_byte_start_sequence_range_start and
-        byte <= three_byte_start_sequence_range_end)
-    {
-        return 3;
-    } else if (byte >= four_byte_start_sequence_range_start and
-        byte <= four_byte_start_sequence_range_end)
-    {
-        return 4;
-    } else return 0;
-}
-
-pub fn utf8EncodeLen(code_point: CodePoint) UTF8EncodeError!u3 {
-    if (code_point > encoding_range_end) {
-        return error.CodePointTooLarge;
-    }
-
-    if (code_point >= surrogate_range_start and code_point <= surrogate_range_end) {
-        return error.SurrogateCodePoint;
-    }
-
-    if (code_point <= max_ascii) {
-        @branchHint(.likely);
-        return 1;
-    }
-
-    return switch (code_point) {
-        min_four_byte_code_point...max_four_byte_code_point => 4,
-        min_three_byte_code_point...max_three_byte_code_point => 3,
-        min_two_byte_code_point...max_two_byte_code_point => 2,
-        else => UTF8EncodeError.Undefined,
+    return switch (byte) {
+        // byte is more likely to be ascii
+        0...MAX_ASCII => blk: {
+            @branchHint(.likely);
+            break :blk 1;
+        },
+        two_byte_start_sequence_range_start...two_byte_start_sequence_range_end => 2,
+        three_byte_start_sequence_range_start...three_byte_start_sequence_range_end => 3,
+        four_byte_start_sequence_range_start...four_byte_start_sequence_range_end => 4,
+        else => error.InvalidByteSequence,
     };
 }
 
-inline fn isContinuationByte(byte: u8) bool {
+/// The function returns an optimistic length from the given byte, return value
+/// is in range 0...4.
+/// `0` is for the invalid byte. The code point decode
+/// should be handled by either `validateAndDecodeCodePointBytes`
+/// or `validateAndDecodeCodePointBytesLossy`
+///
+/// @stable-since: v0.1.0
+pub fn codePointLenLossy(byte: u8) u3 {
+    return switch (byte) {
+        // byte is more likely to be ascii
+        0...MAX_ASCII => blk: {
+            @branchHint(.likely);
+            break :blk 1;
+        },
+        two_byte_start_sequence_range_start...two_byte_start_sequence_range_end => 2,
+        three_byte_start_sequence_range_start...three_byte_start_sequence_range_end => 3,
+        four_byte_start_sequence_range_start...four_byte_start_sequence_range_end => 4,
+        else => 0,
+    };
+}
+
+/// The `code_point` argument is expected to be a valid utf8 codepoint.
+/// No checks are done to the codepoint.
+/// The caller needs to make sure a valid code point is
+/// passed as an argument.
+///
+/// - code_point > 0x10FFFF -> triggers unreachable (UB in ReleaseFast)
+/// - code_point in surrogate range (0xD800-0xDFFF) -> silently returns 3, no unreachable
+///
+/// @stable-since: v0.1.0
+pub fn utf8EncodeLen(code_point: CodePoint) u3 {
+    return switch (code_point) {
+        0...MAX_ASCII => blk: {
+            @branchHint(.likely);
+            break :blk 1;
+        },
+        min_four_byte_code_point...max_four_byte_code_point => 4,
+        min_three_byte_code_point...max_three_byte_code_point => 3,
+        min_two_byte_code_point...max_two_byte_code_point => 2,
+        else => unreachable,
+    };
+}
+
+/// Returns `true` if the given byte is `10xxxxxx`
+///
+/// @stable-since: v0.1.0
+pub inline fn isContinuationByte(byte: u8) bool {
     return (byte & continuation_sequence_mask) == continuation_sequence;
 }
 
-// Any sequence that is not leader
-// like `11111101` `11111000`
+/// Returns `true` if the byte is either `110xxxxx`, or
+/// `1110xxxx` or `11110xxx`, else `false` ASCII bytes (0x00-0x7F) or any other byte
+///
+/// @stable-since: v0.1.0
 pub fn isLeaderByte(byte: u8) bool {
     return switch (byte) {
         two_byte_start_sequence_range_start...two_byte_start_sequence_range_end,
@@ -248,62 +304,41 @@ fn validateAndDecodeNonAscii(bytes: []const u8, offset: usize, len: u3) UTF8Vali
     }
 
     // Validate continuation bytes
-    if (!isContinuationByte(bytes[offset + 1])) {
-        return UTF8ValidationError.InvalidContinuationByte;
-    }
-
-    if (len >= 3 and !isContinuationByte(bytes[offset + 2])) {
-        return UTF8ValidationError.InvalidContinuationByte;
-    }
-
-    if (len == 4 and !isContinuationByte(bytes[offset + 3])) {
+    if (!isContinuationByte(bytes[offset + 1]) or
+        (len >= 3 and !isContinuationByte(bytes[offset + 2])) or
+        (len == 4 and !isContinuationByte(bytes[offset + 3])))
+    {
         return UTF8ValidationError.InvalidContinuationByte;
     }
 
     // Structural UTF-8 legality constraints
 
-    var code_point: CodePoint = undefined;
-
     if (len == 2) {
-        code_point = (@as(CodePoint, bytes[offset] & two_byte_payload_mask) << 6) |
-            (@as(CodePoint, bytes[offset + 1] & continuation_payload_mask));
+        return codePointFromLen(2, bytes, offset);
+    }
 
-        return .{ .code_point = code_point, .len = 2 };
+    if ((len == 3 and isOverlong(3, bytes, offset)) or
+        (len == 4 and isOverlong(4, bytes, offset)))
+    {
+        return UTF8ValidationError.OverlongEncoding;
     }
 
     if (len == 3) {
-        if (bytes[offset] == 0xE0 and bytes[offset + 1] < 0xA0) {
-            return UTF8ValidationError.OverlongEncoding;
-        } else if (bytes[offset] == 0xED and bytes[offset + 1] >= 0xA0) {
+        if (isSurrogateSequence(3, bytes, offset)) {
             return UTF8ValidationError.SurrogateCodePoint;
         }
 
-        code_point = (@as(CodePoint, bytes[offset] & three_byte_payload_mask) << 12) |
-            (@as(CodePoint, bytes[offset + 1] & continuation_payload_mask) << 6) |
-            (@as(CodePoint, bytes[offset + 2] & continuation_payload_mask));
-
-        return .{ .code_point = code_point, .len = 3 };
+        return codePointFromLen(3, bytes, offset);
     }
 
-    if (len == 4) {
-        if (bytes[offset] == 0xF0 and bytes[offset + 1] < 0x90) {
-            return UTF8ValidationError.OverlongEncoding;
-        } else if (bytes[offset] == 0xF4 and bytes[offset + 1] > 0x8F) {
-            return UTF8ValidationError.CodePointTooLarge;
-        }
-
-        code_point = (@as(CodePoint, bytes[offset] & four_byte_payload_mask) << 18) |
-            (@as(CodePoint, bytes[offset + 1] & continuation_payload_mask) << 12) |
-            (@as(CodePoint, bytes[offset + 2] & continuation_payload_mask) << 6) |
-            (@as(CodePoint, bytes[offset + 3] & continuation_payload_mask));
-
-        return .{ .code_point = code_point, .len = 4 };
+    // the invariant is preserved in this internal api
+    if (isCodePointTooLong(4, bytes, offset)) {
+        return UTF8ValidationError.CodePointTooLarge;
     }
 
-    return UTF8ValidationError.Undefined;
+    return codePointFromLen(4, bytes, offset);
 }
 
-/// Pass entire string with offset to avoid reconstructing slice struct in hot paths.
 inline fn validateAndDecodeCodePointBytesWithLen(bytes: []const u8, offset: usize, len: u3) UTF8ValidationError!DecodedCodePoint {
     if (bytes.len - offset < @as(usize, len)) {
         return UTF8ValidationError.IndexOutOfBounds;
@@ -312,12 +347,18 @@ inline fn validateAndDecodeCodePointBytesWithLen(bytes: []const u8, offset: usiz
     // ASCII fast path
     if (len == 1) {
         @branchHint(.likely);
-        return .{ .code_point = bytes[offset], .len = 1 };
+        return codePointFromLen(1, bytes, offset);
     }
 
     return validateAndDecodeNonAscii(bytes, offset, len);
 }
 
+/// This function validates and returns a struct containing the validated code point
+/// and the length the code point consumed from the buffer passed.
+/// It is a strict decoder variant. Use `validateAndDecodeCodePointBytesLossy` if
+/// want to recover the buffer.
+///
+/// @stable-since: v0.1.0
 pub fn validateAndDecodeCodePointBytes(bytes: []const u8, offset: usize) UTF8ValidationError!DecodedCodePoint {
     if (bytes.len == 0) {
         return UTF8ValidationError.ZeroLengthBytes;
@@ -327,17 +368,16 @@ pub fn validateAndDecodeCodePointBytes(bytes: []const u8, offset: usize) UTF8Val
 
     const b = bytes[offset];
 
-    if (b <= max_ascii) {
+    if (b <= MAX_ASCII) {
         @branchHint(.likely);
-        return .{ .code_point = @as(CodePoint, b), .len = 1 };
+        return codePointFromLen(1, bytes, offset);
     }
 
-    const len = try codePointLen(bytes[offset]);
+    const len = try codePointLen(b);
 
     return validateAndDecodeNonAscii(bytes, offset, len);
 }
 
-/// the len argument expects an optimistic len of the code point
 fn validateAndDecodeCodePointBytesWithLenLossy(bytes: []const u8, offset: usize, len: u3) UTF8ValidationLossyError!DecodedCodePointLossy {
     const remaining = bytes.len - offset;
 
@@ -346,52 +386,28 @@ fn validateAndDecodeCodePointBytesWithLenLossy(bytes: []const u8, offset: usize,
         if (remaining < 2 or !isContinuationByte(bytes[offset + 1])) {
             return .{ .code_point = INVALID_CODE_POINT, .len = 1 };
         } else if (len == 2) {
-            const code_point = (@as(CodePoint, bytes[offset] & two_byte_payload_mask) << 6) |
-                (@as(CodePoint, bytes[offset + 1] & continuation_payload_mask));
-
-            return .{ .code_point = code_point, .len = 2 };
+            return codePointFromLenLossy(2, bytes, offset);
         }
 
         if (remaining < 3 or !isContinuationByte(bytes[offset + 2])) {
             return .{ .code_point = INVALID_CODE_POINT, .len = 2 };
         } else if (len == 3) {
-            if (bytes[offset] == 0xE0 and bytes[offset + 1] < 0xA0) {
-                // overlong character
-                return .{ .code_point = INVALID_CODE_POINT, .len = 3 };
-            } else if (bytes[offset] == 0xED and bytes[offset + 1] >= 0xA0) {
-                // surrogate code point
+            if (isOverlong(3, bytes, offset) or isSurrogateSequence(3, bytes, offset)) {
                 return .{ .code_point = INVALID_CODE_POINT, .len = 3 };
             }
 
-            const code_point = (@as(CodePoint, bytes[offset] & three_byte_payload_mask) << 12) |
-                (@as(CodePoint, bytes[offset + 1] & continuation_payload_mask) << 6) |
-                (@as(CodePoint, bytes[offset + 2] & continuation_payload_mask));
-
-            return .{ .code_point = code_point, .len = 3 };
+            return codePointFromLenLossy(3, bytes, offset);
         }
 
         if (remaining < 4 or !isContinuationByte(bytes[offset + 3])) {
             return .{ .code_point = INVALID_CODE_POINT, .len = 3 };
-        } else {
-            // F0 80-8F = overlong
-            if (bytes[offset] == 0xF0 and bytes[offset + 1] < 0x90) {
-                return .{ .code_point = INVALID_CODE_POINT, .len = 4 };
-            }
-            // F4 90-BF = > U+10FFFF
-            if (bytes[offset] == 0xF4 and bytes[offset + 1] > 0x8F) {
-                return .{ .code_point = INVALID_CODE_POINT, .len = 4 };
-            }
-
-            const code_point = (@as(CodePoint, bytes[offset] & four_byte_payload_mask) << 18) |
-                (@as(CodePoint, bytes[offset + 1] & continuation_payload_mask) << 12) |
-                (@as(CodePoint, bytes[offset + 2] & continuation_payload_mask) << 6) |
-                (@as(CodePoint, bytes[offset + 3] & continuation_payload_mask));
-
-            if (code_point > max_four_byte_code_point) {
-                return .{ .code_point = INVALID_CODE_POINT, .len = 4 };
-            }
-            return .{ .code_point = code_point, .len = 4 };
         }
+
+        if (isOverlong(4, bytes, offset) or isCodePointTooLong(4, bytes, offset)) {
+            return .{ .code_point = INVALID_CODE_POINT, .len = 4 };
+        }
+
+        return codePointFromLenLossy(4, bytes, offset);
     }
 
     // Handle the case where the code_point length
@@ -404,23 +420,23 @@ fn validateAndDecodeCodePointBytesWithLenLossy(bytes: []const u8, offset: usize,
     // into a single invalid code-point until we
     // encounter a [2,3,4]leader byte sequence or
     // an ascii
-    if (len == 0) {
-        var i: usize = 0;
 
-        while (i < remaining) {
-            const byte = bytes[offset + i];
-            if (isLeaderByte(byte) or byte <= max_ascii) {
-                break;
-            }
-            i += 1;
-        }
+    var i: usize = 0;
 
-        return .{ .code_point = INVALID_CODE_POINT, .len = i };
-    }
+    while (i < remaining and !(isLeaderByte(bytes[offset + i]) or bytes[offset + i] <= MAX_ASCII)) : (i += 1) {}
 
-    return UTF8ValidationLossyError.Undefined;
+    return .{ .code_point = INVALID_CODE_POINT, .len = i };
 }
 
+/// This function validates and returns a struct containing the validated code point
+/// and the length the code point consumed from the buffer passed.
+/// It is the lossy variant of decoder. The invalid bytes are consumed and replaced
+/// with Unicode Replacement Character `0xFFFD`. Also this function returns the consumed length in
+/// `usize` unlike it's strict variant which returns `u3`.
+///
+/// Note: **The orphaned continuation bytes are consumed all at once until some other byte is found and replaced into a single Unicode Replacement Character.**
+///
+/// @stable-since: v0.1.0
 pub fn validateAndDecodeCodePointBytesLossy(bytes: []const u8, offset: usize) UTF8ValidationLossyError!DecodedCodePointLossy {
     if (bytes.len == 0) {
         return UTF8ValidationLossyError.ZeroLengthBytes;
@@ -430,15 +446,21 @@ pub fn validateAndDecodeCodePointBytesLossy(bytes: []const u8, offset: usize) UT
 
     const b = bytes[offset];
 
-    if (b <= max_ascii) {
-        return .{ .code_point = @as(CodePoint, b), .len = 1 };
+    if (b <= MAX_ASCII) {
+        return codePointFromLenLossy(1, bytes, offset);
     }
 
-    const len = codePointLenLossy(bytes[offset]);
+    const len = codePointLenLossy(b);
 
     return validateAndDecodeCodePointBytesWithLenLossy(bytes, offset, len);
 }
 
+/// Returns optimistic length of the codepoint from the end_index(inclusive) of the given buffer. It is a strict
+/// variant where all checks are in place. Use unchecked variant `codePointLenReverseUnchecked` if caller
+/// is certain about the bytes validity. To decode and get the len of the bytes consumed, use
+/// `validateAndDecodeCodePointBytesReverse`
+///
+/// @stable-since: v0.1.0
 pub fn codePointLenReverse(bytes: []const u8, end_index: usize) UTF8ValidationError!u3 {
     if (bytes.len == 0) {
         return UTF8ValidationError.ZeroLengthBytes;
@@ -467,6 +489,12 @@ pub fn codePointLenReverse(bytes: []const u8, end_index: usize) UTF8ValidationEr
     return len;
 }
 
+/// Returns optimistic length of the codepoint from the end_index(inclusive) of the given buffer. It is a unchecked
+/// variant where only the bytes length checks are in place. Use checked variant `codePointLenReverse` if caller
+/// is uncertain about the bytes validity. To decode and get the len of the bytes consumed, use
+/// `validateAndDecodeCodePointBytesReverse`
+///
+/// @stable-since: v0.1.0
 pub fn codePointLenReverseUnchecked(bytes: []const u8, end_index: usize) UTF8ValidationError!u3 {
     if (bytes.len == 0) {
         @branchHint(.unlikely);
@@ -485,6 +513,11 @@ pub fn codePointLenReverseUnchecked(bytes: []const u8, end_index: usize) UTF8Val
     return @as(u3, @intCast(end_index - start + 1));
 }
 
+/// Validates and decodes code point from given buffer from end_index(inclusive). It is
+/// strict variant of decode bytes reverse. Use unchecked variant `decodeCodePointReverseUnchecked`
+/// if the caller is certain of the code point validity
+///
+/// @stable-since: v0.1.0
 pub fn validateAndDecodeCodePointBytesReverse(bytes: []const u8, end_index: usize) UTF8ValidationError!DecodedCodePoint {
     if (bytes.len == 0) {
         return UTF8ValidationError.ZeroLengthBytes;
@@ -493,9 +526,9 @@ pub fn validateAndDecodeCodePointBytesReverse(bytes: []const u8, end_index: usiz
     }
 
     // ASCII fast path
-    if (bytes[end_index] <= max_ascii) {
+    if (bytes[end_index] <= MAX_ASCII) {
         @branchHint(.likely);
-        return .{ .code_point = bytes[end_index], .len = 1 };
+        return codePointFromLen(1, bytes, end_index);
     }
 
     const len = try codePointLenReverse(bytes, end_index);
@@ -503,39 +536,6 @@ pub fn validateAndDecodeCodePointBytesReverse(bytes: []const u8, end_index: usiz
     const start = end_index + 1 - @as(usize, len);
 
     return validateAndDecodeCodePointBytesWithLen(bytes, start, len);
-}
-
-fn validateCodePointBytesReverse(bytes: []const u8, end_index: usize) UTF8ValidationError!u3 {
-    if (bytes.len == 0) {
-        return UTF8ValidationError.ZeroLengthBytes;
-    } else if (end_index >= bytes.len) {
-        return UTF8ValidationError.IndexOutOfBounds;
-    }
-
-    if (bytes[end_index] <= max_ascii) {
-        return 1;
-    }
-
-    var start = end_index;
-    var continuation_count: usize = 0;
-
-    while (isContinuationByte(bytes[start])) {
-        continuation_count += 1;
-
-        if (continuation_count > 3 or start == 0)
-            return error.InvalidByteSequence;
-
-        start -= 1;
-    }
-
-    const len = try codePointLen(bytes[start]);
-
-    if (end_index - start + 1 != @as(usize, len)) {
-        return UTF8ValidationError.InvalidByteSequence;
-    }
-
-    const validated = try validateAndDecodeCodePointBytes(bytes, start);
-    return validated.len;
 }
 
 pub const DecodedCodePoint = struct {
@@ -550,42 +550,16 @@ pub const DecodedCodePointLossy = struct {
 
 fn decode(bytes: []const u8, offset: usize, len: u3) DecodedCodePoint {
     return switch (len) {
-        1 => .{
-            .code_point = bytes[offset],
-            .len = 1,
-        },
-
-        2 => .{
-            .code_point = (@as(CodePoint, bytes[offset] & two_byte_payload_mask) << 6) |
-                (@as(CodePoint, bytes[offset + 1] & continuation_payload_mask)),
-            .len = 2,
-        },
-
-        3 => .{
-            .code_point = (@as(CodePoint, bytes[offset] & three_byte_payload_mask) << 12) |
-                (@as(CodePoint, bytes[offset + 1] & continuation_payload_mask) << 6) |
-                (@as(CodePoint, bytes[offset + 2] & continuation_payload_mask)),
-            .len = 3,
-        },
-
-        4 => .{
-            .code_point = (@as(CodePoint, bytes[offset] & four_byte_payload_mask) << 18) |
-                (@as(CodePoint, bytes[offset + 1] & continuation_payload_mask) << 12) |
-                (@as(CodePoint, bytes[offset + 2] & continuation_payload_mask) << 6) |
-                (@as(CodePoint, bytes[offset + 3] & continuation_payload_mask)),
-            .len = 4,
-        },
-
+        1 => codePointFromLen(1, bytes, offset),
+        2 => codePointFromLen(2, bytes, offset),
+        3 => codePointFromLen(3, bytes, offset),
+        4 => codePointFromLen(4, bytes, offset),
         else => @panic("unknown code point length"),
     };
 }
 
 fn encode(code_point: CodePoint, bytes: []u8) UTF8EncodeError!u3 {
-    if (code_point >= surrogate_range_start and code_point <= surrogate_range_end) {
-        return error.SurrogateCodePoint;
-    }
-
-    const len = try utf8EncodeLen(code_point);
+    const len = utf8EncodeLen(code_point);
 
     if (bytes.len < len) {
         return error.BufferTooSmall;
@@ -639,24 +613,27 @@ fn encode(code_point: CodePoint, bytes: []u8) UTF8EncodeError!u3 {
                 continuation_sequence;
         },
 
-        else => return error.InvalidByteSequence,
+        else => unreachable,
     }
 
     return len;
 }
 
+/// The function does not validate the codepoint, caller needs to make sure
+/// to pass a valid codepoint. Only the buffer length is validated
+///
+/// @stable-since: v0.1.0
 pub fn encodeCodePoint(code_point: CodePoint, bytes: []u8) UTF8EncodeError!u3 {
     return encode(code_point, bytes);
 }
 
-fn decodeCodePointReverse(bytes: []const u8, end_index: usize) DecodedCodePoint {
-    const len = codePointLenReverse(bytes, end_index) catch @panic("invalid decode reverse code point length");
-    const start = end_index + 1 - @as(usize, len);
-
-    return decode(bytes, start, len);
-}
-
-fn decodeCodePointReverseUnchecked(bytes: []const u8, end_index: usize) DecodedCodePoint {
+/// This function validates and decodes code point from buffer. This is the unchecked variant
+/// of decode reverse, use strict variant `validateAndDecodeCodePointBytesReverse` if caller is uncertain the bytes are valid.
+///
+/// Note: **this function panics in case the buffer length is zero or end_index > bytes.len**
+///
+/// @stable-since: v0.1.0
+pub fn decodeCodePointReverseUnchecked(bytes: []const u8, end_index: usize) DecodedCodePoint {
     const len = codePointLenReverseUnchecked(bytes, end_index) catch @panic("invalid decode reverse unchecked code point length");
     const start = end_index + 1 - @as(usize, len);
 
@@ -666,7 +643,7 @@ fn decodeCodePointReverseUnchecked(bytes: []const u8, end_index: usize) DecodedC
 fn bytesToUTF8CodePoint(bytes: []const u8, offset: usize) DecodedCodePoint {
     const len = codePointLen(bytes[offset]) catch @panic("invalid code point length");
 
-    if (len == 1 and bytes[offset] <= max_ascii) {
+    if (len == 1 and bytes[offset] <= MAX_ASCII) {
         return .{ .code_point = @as(CodePoint, bytes[offset]), .len = 1 };
     }
 
@@ -678,7 +655,7 @@ pub const UTF8SliceError = error{
     InvalidBoundary,
 };
 
-pub const UTF8ViewIterator = struct {
+const UTF8ViewIterator = struct {
     index: usize = 0,
     view: *const UTF8View,
 
@@ -726,7 +703,7 @@ pub const UTF8ViewIterator = struct {
     }
 };
 
-pub const UTF8View = struct {
+const UTF8View = struct {
     data: []const u8,
 
     pub fn countScalar(self: *const UTF8View) usize {
@@ -736,7 +713,7 @@ pub const UTF8View = struct {
         while (i < self.data.len) {
             const byte = self.data[i];
 
-            if (byte <= max_ascii) {
+            if (byte <= MAX_ASCII) {
                 i += 1;
                 count += 1;
                 continue;
@@ -786,7 +763,7 @@ pub const UTF8View = struct {
 
             const byte = self.data[byte_index];
 
-            if (byte <= max_ascii) {
+            if (byte <= MAX_ASCII) {
                 byte_index += 1;
             } else {
                 const len = codePointLen(byte) catch @panic("invalid code point length");
@@ -818,7 +795,7 @@ pub const UTF8View = struct {
     }
 };
 
-pub const UTF8LossyIterator = struct {
+const UTF8LossyIterator = struct {
     data: []const u8,
     index: usize = 0,
 
@@ -827,7 +804,7 @@ pub const UTF8LossyIterator = struct {
             return null;
         }
 
-        const decoded = validateAndDecodeCodePointBytesLossy(self.data, self.index) catch @panic("invalid decode code point lossy");
+        const decoded = validateAndDecodeCodePointBytesLossy(self.data, self.index) catch unreachable;
         std.debug.assert(decoded.len > 0);
         self.index += decoded.len;
         return decoded.code_point;
@@ -838,25 +815,54 @@ pub const UTF8LossyIterator = struct {
             return null;
         }
 
-        return (validateAndDecodeCodePointBytesLossy(self.data, self.index) catch @panic("invalid decode code point lossy")).code_point;
+        return (validateAndDecodeCodePointBytesLossy(self.data, self.index) catch unreachable).code_point;
     }
 };
 
+/// Takes un-validated bytes and returns an iterator primitive. Any invalid bytes are
+/// consumed and replaced with Unicode Replacement Character.
+///
+/// Note: **The invalid consecutive orphaned continuation bytes are consumed and a single Unicode Replacement Character is returned.**
+///
+/// This is lossy variant to decode bytes to valid CodePoints, for script decoding, see `initUTF8View`
+///
+/// ## Usage
+///
+/// ```zig
+/// var iter = encoding.lossyIterator(bytes_to_decode);
+///
+/// while (iter.next()) |code_point| {
+///     ...
+/// }
+/// ```
+///
+/// @stable-since: v0.1.0
 pub fn lossyIterator(bytes: []const u8) UTF8LossyIterator {
     return .{ .data = bytes };
 }
 
+/// This function returns back the number of code point in the bytes. Invalid bytes
+/// are replaced with Unicode Replacement Character. This is the lossy variant. See `initUTF8View`
+/// for strict variant.
+///
+/// Note: **The invalid consecutive orphaned continuation bytes are consumed and a single Unicode Replacement Character is returned.**
+///
+/// @stable-since: v0.1.0
 pub fn countScalarsLossy(bytes: []const u8) usize {
     var count: usize = 0;
     var iter = lossyIterator(bytes);
 
-    while (iter.next()) |_| {
-        count += 1;
-    }
-
+    while (iter.next()) |_| : (count += 1) {}
     return count;
 }
 
+/// This function writes the valid code points to the mutable CodePoint slice passed as argument.
+/// All the invalid code points are converted to Unicode Replacement Character.
+/// Returns error if mutable CodePoint buffer is small.
+///
+/// Note: **The invalid consecutive orphaned continuation bytes are consumed and a single Unicode Replacement Character is returned.**
+///
+/// @stable-since: v0.1.0
 pub fn bytesToCodePointsLossyBuffer(bytes: []const u8, buf: []CodePoint) error{BufferTooSmall}!usize {
     var i: usize = 0;
     var iter = lossyIterator(bytes);
@@ -872,15 +878,27 @@ pub fn bytesToCodePointsLossyBuffer(bytes: []const u8, buf: []CodePoint) error{B
     return i;
 }
 
-pub fn bytesToCodePointsLossy(allocator: std.mem.Allocator, bytes: []const u8) error{ OutOfMemory, BufferTooSmall }![]CodePoint {
+/// This function allocates and writes the valid CodePoints to the allocated CodePoint slice.
+/// All the invalid code points are converted to Unicode Replacement Character. Caller needs to free
+/// the returned slice.
+///
+/// Note: **The invalid consecutive orphaned continuation bytes are consumed and a single Unicode Replacement Character is returned.**
+///
+/// @stable-since: v0.1.0
+pub fn bytesToCodePointsLossy(allocator: std.mem.Allocator, bytes: []const u8) error{OutOfMemory}![]CodePoint {
     const len = countScalarsLossy(bytes);
     const out = try allocator.alloc(CodePoint, len);
     errdefer allocator.free(out);
 
-    _ = try bytesToCodePointsLossyBuffer(bytes, out);
+    _ = bytesToCodePointsLossyBuffer(bytes, out) catch unreachable;
     return out;
 }
 
+/// This function validates and stores valid buffer and can be used for iterating, counting, peeking,
+/// traversing forward and backward. Expects a mutable usize argument which writes the scalar count
+/// of the validated bytes.
+///
+/// @stable-since: v0.1.0
 pub fn initUTF8View(data: []const u8, resultant_unicode_str_len: *usize) UTF8ValidationError!UTF8View {
     var i: usize = 0;
     var scalar_count: usize = 0;
@@ -895,11 +913,19 @@ pub fn initUTF8View(data: []const u8, resultant_unicode_str_len: *usize) UTF8Val
     return .{ .data = data };
 }
 
+/// This function assumes the bytes passed as argument are valid utf8 codepoints. The bytes
+/// are not validated.
+///
+/// @stable-since: v0.1.0
 pub fn initUTF8ViewUnchecked(data: []const u8) UTF8View {
     return .{ .data = data };
 }
 
-pub fn utf8ViewToUTF8String(view: *const UTF8View, buf: []CodePoint) (UTF8ValidationError || error{BufferTooSmall})!usize {
+/// Writes the valid CodePoints to a mutable CodePoint slice passed by from arguments
+/// Returns error if the writable buffer is small.
+///
+/// @stable-since: v0.1.0
+pub fn utf8ViewToUTF8String(view: *const UTF8View, buf: []CodePoint) error{BufferTooSmall}!usize {
     var i: usize = 0;
     var iter = view.iter();
     while (iter.next()) |code_point| {
@@ -915,6 +941,9 @@ pub fn utf8ViewToUTF8String(view: *const UTF8View, buf: []CodePoint) (UTF8Valida
     return i;
 }
 
+/// Generates a validated comptime CodePoint Slice from given bytes.
+///
+/// @stable-since: v0.1.0
 pub fn bytesToUTF8StringComptime(comptime bytes: []const u8) (UTF8ValidationError || error{BufferTooSmall})![countScalars(bytes) catch {}]CodePoint {
     comptime {
         var unicode_str_len: usize = 0;
@@ -928,6 +957,10 @@ pub fn bytesToUTF8StringComptime(comptime bytes: []const u8) (UTF8ValidationErro
     }
 }
 
+/// validates and writes valid codepoints to an allocated CodePoint slice. The caller needs to
+/// free the returned slice
+///
+/// @stable-since: v0.1.0
 pub fn bytesToUTF8String(allocator: std.mem.Allocator, bytes: []const u8) (UTF8ValidationError || error{ BufferTooSmall, OutOfMemory })![]CodePoint {
     var unicode_str_len: usize = 0;
     const utf8_view = try initUTF8View(bytes, &unicode_str_len);
@@ -1116,7 +1149,7 @@ test "validateCodePoint: offset works correctly" {
 
 test "codePointLen: ASCII and classification edge bytes" {
     try std.testing.expectEqual(@as(u3, 1), try codePointLen(0));
-    try std.testing.expectEqual(@as(u3, 1), try codePointLen(max_ascii));
+    try std.testing.expectEqual(@as(u3, 1), try codePointLen(MAX_ASCII));
     // Continuation-shaped byte is not a lead
     try std.testing.expectError(error.InvalidByteSequence, codePointLen(0x80));
     try std.testing.expectError(error.InvalidByteSequence, codePointLen(0xBF));
@@ -1135,18 +1168,14 @@ test "codePointLen: ASCII and classification edge bytes" {
 }
 
 test "utf8EncodeLen: boundaries, BMP vs supplementary, surrogates, overflow" {
-    try std.testing.expectEqual(@as(u3, 1), try utf8EncodeLen(0));
-    try std.testing.expectEqual(@as(u3, 1), try utf8EncodeLen(max_ascii));
-    try std.testing.expectEqual(@as(u3, 2), try utf8EncodeLen(min_two_byte_code_point));
-    try std.testing.expectEqual(@as(u3, 2), try utf8EncodeLen(max_two_byte_code_point));
-    try std.testing.expectEqual(@as(u3, 3), try utf8EncodeLen(min_three_byte_code_point));
-    try std.testing.expectEqual(@as(u3, 3), try utf8EncodeLen(max_three_byte_code_point));
-    try std.testing.expectEqual(@as(u3, 4), try utf8EncodeLen(min_four_byte_code_point));
-    try std.testing.expectEqual(@as(u3, 4), try utf8EncodeLen(max_four_byte_code_point));
-    try std.testing.expectError(error.SurrogateCodePoint, utf8EncodeLen(surrogate_range_start));
-    try std.testing.expectError(error.SurrogateCodePoint, utf8EncodeLen(surrogate_range_end));
-    try std.testing.expectError(error.SurrogateCodePoint, utf8EncodeLen(0xD800));
-    try std.testing.expectError(error.CodePointTooLarge, utf8EncodeLen(encoding_range_end + 1));
+    try std.testing.expectEqual(@as(u3, 1), utf8EncodeLen(0));
+    try std.testing.expectEqual(@as(u3, 1), utf8EncodeLen(MAX_ASCII));
+    try std.testing.expectEqual(@as(u3, 2), utf8EncodeLen(min_two_byte_code_point));
+    try std.testing.expectEqual(@as(u3, 2), utf8EncodeLen(max_two_byte_code_point));
+    try std.testing.expectEqual(@as(u3, 3), utf8EncodeLen(min_three_byte_code_point));
+    try std.testing.expectEqual(@as(u3, 3), utf8EncodeLen(max_three_byte_code_point));
+    try std.testing.expectEqual(@as(u3, 4), utf8EncodeLen(min_four_byte_code_point));
+    try std.testing.expectEqual(@as(u3, 4), utf8EncodeLen(max_four_byte_code_point));
 }
 
 test "isContinuationByte" {
@@ -1203,16 +1232,16 @@ test "validateCodePointBytes: UTF-16 surrogate encodings and above U+10FFFF" {
     try std.testing.expectEqual(@as(u3, 4), (try validateAndDecodeCodePointBytes(&.{ 0xF4, 0x8F, 0xBF, 0xBF }, 0)).len);
 }
 
-test "codePointLenReverse and validateCodePointBytesReverse" {
+test "codePointLenReverse and validateAndDecodeCodePointBytesReverse" {
     try std.testing.expectError(UTF8ValidationError.ZeroLengthBytes, codePointLenReverse(&.{}, 0));
 
     const one = "x";
     try std.testing.expectEqual(@as(u3, 1), try codePointLenReverse(one, one.len - 1));
-    try std.testing.expectEqual(@as(u3, 1), try validateCodePointBytesReverse(one, one.len - 1));
+    try std.testing.expectEqual(@as(u3, 1), (try validateAndDecodeCodePointBytesReverse(one, one.len - 1)).len);
 
     const four = [_]u8{ 0xF0, 0x90, 0x80, 0x80 };
     try std.testing.expectEqual(@as(u3, 4), try codePointLenReverse(&four, four.len - 1));
-    try std.testing.expectEqual(@as(u3, 4), try validateCodePointBytesReverse(&four, four.len - 1));
+    try std.testing.expectEqual(@as(u3, 4), (try validateAndDecodeCodePointBytesReverse(&four, four.len - 1)).len);
 
     // Too many continuation bytes before lead
     try std.testing.expectError(error.InvalidByteSequence, codePointLenReverse(&.{ 0x80, 0x80, 0x80, 0x80, 0x80 }, 4));
@@ -1236,16 +1265,14 @@ test "encode/decode round-trip representative code points" {
     var buf: [4]u8 = undefined;
     for (cases) |cp| {
         const len = try encode(cp, &buf);
-        try std.testing.expectEqual(try utf8EncodeLen(cp), len);
+        try std.testing.expectEqual(utf8EncodeLen(cp), len);
         const got = decode(&buf, 0, len);
         try std.testing.expectEqual(cp, got.code_point);
     }
 }
 
-test "encode rejects surrogates; buffer too small" {
+test "encode buffer too small" {
     var buf: [4]u8 = undefined;
-    try std.testing.expectError(error.SurrogateCodePoint, encode(surrogate_range_start, &buf));
-    try std.testing.expectError(error.SurrogateCodePoint, encode(surrogate_range_end, &buf));
 
     try std.testing.expectError(error.BufferTooSmall, encode(0x80, buf[0..0]));
     try std.testing.expectError(error.BufferTooSmall, encode(0x0800, buf[0..1]));
@@ -1357,11 +1384,11 @@ test "bytesToUTF8StringComptime" {
     try comptime std.testing.expect(arr[0] == 0x03C0);
 }
 
-test "bytesToUTF8CodePoint and decodeCodePointReverse (unchecked) match expectations" {
+test "bytesToUTF8CodePoint and validateAndDecodeCodePointBytesReverse match expectations" {
     const s = [_]u8{ 0xF0, 0x9F, 0x98, 0x80 }; // 😀
     const d = bytesToUTF8CodePoint(&s, 0);
     try std.testing.expectEqual(@as(CodePoint, 0x1F600), d.code_point);
-    const r = decodeCodePointReverse(&s, 3);
+    const r = try validateAndDecodeCodePointBytesReverse(&s, 3);
     try std.testing.expectEqual(d.code_point, r.code_point);
 }
 
@@ -1369,7 +1396,7 @@ test "hostile: single-byte lead 0x00-0xFF classification smoke" {
     var b: u8 = 0;
     while (true) : (b +%= 1) {
         const r = codePointLen(b);
-        if (b <= max_ascii) {
+        if (b <= MAX_ASCII) {
             try std.testing.expectEqual(@as(u3, 1), r);
         } else if (b >= two_byte_start_sequence_range_start and b <= two_byte_start_sequence_range_end) {
             try std.testing.expectEqual(@as(u3, 2), r);
@@ -1402,8 +1429,8 @@ test "hostile: validate every lead with wrong continuation shapes" {
 
 test "hostile: reverse path on garbage tails" {
     try std.testing.expectError(UTF8ValidationError.InvalidByteSequence, codePointLenReverse(&.{0xC2}, 0));
-    try std.testing.expectError(UTF8ValidationError.InvalidByteSequence, validateCodePointBytesReverse(&.{ 0xE0, 0xA0 }, 1));
-    try std.testing.expectError(UTF8ValidationError.InvalidByteSequence, validateCodePointBytesReverse(&.{0x80}, 0));
+    try std.testing.expectError(UTF8ValidationError.InvalidByteSequence, validateAndDecodeCodePointBytesReverse(&.{ 0xE0, 0xA0 }, 1));
+    try std.testing.expectError(UTF8ValidationError.InvalidByteSequence, validateAndDecodeCodePointBytesReverse(&.{0x80}, 0));
     // orphan continuation only
     try std.testing.expectError(UTF8ValidationError.InvalidByteSequence, codePointLenReverse(&.{0x80}, 0));
 }
@@ -1475,9 +1502,9 @@ test "hostile: utf8ViewToUTF8String buffer too small path" {
     try std.testing.expectError(error.BufferTooSmall, utf8ViewToUTF8String(&view, &tiny));
 }
 
-// --- Hostile error matrix: wrong inputs → exact expected errors ----------------
+// --- error matrix: wrong inputs → exact expected errors ----------------
 
-test "hostile matrix: validateAndDecodeCodePointBytes length contract" {
+test "matrix: validateAndDecodeCodePointBytes length contract" {
     // Empty buffer
     try std.testing.expectError(
         error.ZeroLengthBytes,
@@ -1504,7 +1531,7 @@ test "hostile matrix: validateAndDecodeCodePointBytes length contract" {
     try std.testing.expectEqual(@as(CodePoint, 0x03C0), pi.code_point);
 }
 
-test "hostile matrix: validateAndDecode forwards match bytesToUTF8CodePointChecked" {
+test "matrix: validateAndDecode forwards match bytesToUTF8CodePointChecked" {
     const Case = struct { bytes: []const u8, expect_err: UTF8ValidationError };
     const cases = [_]Case{
         .{ .bytes = &.{ 0xF5, 0x80, 0x80, 0x80 }, .expect_err = error.InvalidByteSequence },
@@ -1538,7 +1565,7 @@ test "hostile matrix: validateAndDecode forwards match bytesToUTF8CodePointCheck
     );
 }
 
-test "hostile matrix: reverse-checked singles — codePointLenReverse vs validateCodePointBytesReverse" {
+test "matrix: reverse-checked singles — codePointLenReverse vs validateAndDecodeCodePointBytesReverse" {
     // Truncated 3-byte lead: both reverse paths reject structural length mismatch
     try std.testing.expectError(
         error.InvalidByteSequence,
@@ -1546,7 +1573,7 @@ test "hostile matrix: reverse-checked singles — codePointLenReverse vs validat
     );
     try std.testing.expectError(
         error.InvalidByteSequence,
-        validateCodePointBytesReverse(&.{ 0xE1, 0x80 }, 1),
+        validateAndDecodeCodePointBytesReverse(&.{ 0xE1, 0x80 }, 1),
     );
 
     try std.testing.expectError(
@@ -1555,11 +1582,11 @@ test "hostile matrix: reverse-checked singles — codePointLenReverse vs validat
     );
     try std.testing.expectError(
         error.InvalidByteSequence,
-        validateCodePointBytesReverse(&.{0xE1}, 0),
+        validateAndDecodeCodePointBytesReverse(&.{0xE1}, 0),
     );
 }
 
-test "hostile matrix: reverse decode API matches forward errors on isolated sequences" {
+test "matrix: reverse decode API matches forward errors on isolated sequences" {
     // Notes: Reverse APIs decode the final scalar only. A buffer ending in legal ASCII peels that
     // byte first (e.g. F0…'(' yields '('), so isomorphism with forward-scan errors requires the
     // slice to encode exactly one malformed or illegal unit end-to-end.
@@ -1584,7 +1611,7 @@ test "hostile matrix: reverse decode API matches forward errors on isolated sequ
     );
 }
 
-test "hostile matrix: reverse last-byte heuristic — orphan lead + ASCII tail" {
+test "matrix: reverse last-byte heuristic — orphan lead + ASCII tail" {
     try std.testing.expectError(
         error.InvalidContinuationByte,
         validateAndDecodeCodePointBytes(&.{ 0xC2, 0x28 }, 0),
@@ -1603,7 +1630,7 @@ test "hostile matrix: reverse last-byte heuristic — orphan lead + ASCII tail" 
     try std.testing.expectEqual(@as(u3, 1), tail.len);
 }
 
-test "hostile matrix: initUTF8View error position and resultant length on success" {
+test "matrix: initUTF8View error position and resultant length on success" {
     var size: usize = undefined;
 
     var z: usize = 0;
@@ -1620,7 +1647,7 @@ test "hostile matrix: initUTF8View error position and resultant length on succes
     try std.testing.expectError(error.CodePointTooLarge, initUTF8View(&.{ 'z', 0xF4, 0x90, 0x80, 0x80 }, &size));
 }
 
-test "hostile matrix: string conversion APIs propagate validation" {
+test "matrix: string conversion APIs propagate validation" {
     var size: usize = 0;
 
     const view_delta = try initUTF8View("Δ", &size);
@@ -1643,7 +1670,7 @@ test "hostile matrix: string conversion APIs propagate validation" {
     );
 }
 
-test "hostile matrix: bytesToUTF8String OutOfMemory propagates from alloc path" {
+test "matrix: bytesToUTF8String OutOfMemory propagates from alloc path" {
     var failing_allocator_state = std.testing.FailingAllocator.init(std.testing.allocator, .{
         .fail_index = 0,
     });
@@ -1654,7 +1681,7 @@ test "hostile matrix: bytesToUTF8String OutOfMemory propagates from alloc path" 
     );
 }
 
-test "hostile matrix: compile-time initUTF8View rejects illegal bytes" {
+test "matrix: compile-time initUTF8View rejects illegal bytes" {
     const invalid_lead = comptime blk: {
         var scalar_count: usize = 0;
         break :blk initUTF8View("\xff", &scalar_count);
@@ -1673,7 +1700,7 @@ test "hostile matrix: compile-time initUTF8View rejects illegal bytes" {
     };
 }
 
-test "hostile matrix: surrogate boundary around ED xx (forward + reverse APIs)" {
+test "matrix: surrogate boundary around ED xx (forward + reverse APIs)" {
     const low = [_]u8{ 0xED, 0x9F, 0xBF };
     try std.testing.expectEqual(@as(u3, 3), (try validateAndDecodeCodePointBytes(&low, 0)).len);
     try std.testing.expectEqual(@as(CodePoint, 0xD7FF), (try validateAndDecodeCodePointBytes(&low, 0)).code_point);
@@ -1690,7 +1717,7 @@ test "hostile matrix: surrogate boundary around ED xx (forward + reverse APIs)" 
     );
 }
 
-test "hostile matrix: F4 second-byte boundary CodePointTooLarge vs legal max" {
+test "matrix: F4 second-byte boundary CodePointTooLarge vs legal max" {
     try std.testing.expectError(
         error.CodePointTooLarge,
         validateAndDecodeCodePointBytes(&.{ 0xF4, 0x90, 0x80, 0x80 }, 0),
@@ -1704,7 +1731,7 @@ test "hostile matrix: F4 second-byte boundary CodePointTooLarge vs legal max" {
     try std.testing.expectEqual(@as(CodePoint, 0x10FFFF), (try validateAndDecodeCodePointBytesReverse(&max_enc, max_enc.len - 1)).code_point);
 }
 
-test "hostile matrix: four trailing continuation bytes before lead is illegal" {
+test "matrix: four trailing continuation bytes before lead is illegal" {
     const tail = [_]u8{ 0x80, 0x80, 0x80, 0x80, 0xC2 };
     try std.testing.expectError(
         error.InvalidByteSequence,
@@ -1712,7 +1739,7 @@ test "hostile matrix: four trailing continuation bytes before lead is illegal" {
     );
     try std.testing.expectError(
         error.InvalidByteSequence,
-        validateCodePointBytesReverse(&tail, tail.len - 1),
+        validateAndDecodeCodePointBytesReverse(&tail, tail.len - 1),
     );
 }
 
@@ -1945,7 +1972,7 @@ test "hostile: encodeCodePoint rejects every undersized output buffer" {
     var backing: [4]u8 = undefined;
 
     for (cases) |code_point| {
-        const len = try utf8EncodeLen(code_point);
+        const len = utf8EncodeLen(code_point);
         var out_len: usize = 0;
         while (out_len < len) : (out_len += 1) {
             try std.testing.expectError(error.BufferTooSmall, encodeCodePoint(code_point, backing[0..out_len]));
