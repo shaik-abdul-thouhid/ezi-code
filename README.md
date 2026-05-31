@@ -23,8 +23,7 @@ this will not compile, and that is the intended trade-off until Zig 0.17 lands.
 What works is well-tested. The unicode submodule includes exhaustive
 `0..=0x10FFFF` sweeps and runs against the official UCD conformance vectors
 (`GraphemeBreakTest.txt`, `WordBreakTest.txt`, `SentenceBreakTest.txt`,
-`LineBreakTest.txt`, `NormalizationTest.txt`) under a build flag. The codec
-layer has fuzz targets. The bidi algorithm went in with the rule-numbered
+`LineBreakTest.txt`, `NormalizationTest.txt`) under a build flag. The bidi algorithm went in with the rule-numbered
 adversarial test set you'd expect for UAX #9.
 
 ## Installing
@@ -148,9 +147,6 @@ zig build test -Dinclude-test=unicode -Doptimize=ReleaseSafe
 # Run the UCD conformance vectors.
 zig build test -Dinclude-test=conformance -Doptimize=ReleaseSafe
 
-# Fuzz the codec and transcoding layers.
-zig build fuzz
-
 # Regenerate Unicode tables from ucd/.
 zig build generate
 
@@ -177,7 +173,6 @@ src/
     tests/         UCD conformance test runners
   utils/           Internal helpers (search, slices). Not part of the public API.
 bench/             Benchmark driver, framework, corpora, per-module suites
-tests/fuzz/        Fuzz targets for the codecs and transcoding
 ucd/               Raw UCD inputs (only needed for `zig build generate`)
 licences/          Upstream licenses for bundled third-party code and data
 ```

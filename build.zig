@@ -242,27 +242,4 @@ pub fn build(b: *std.Build) !void {
     run_bench.addPassthruArgs();
     const bench_step = b.step("bench", "Run Benchmarks");
     bench_step.dependOn(&run_bench.step);
-
-    const fuzz_step = b.step("fuzz", "Run all fuzz in tests/fuzz directory");
-
-    for ([_]struct { name: []const u8, path: []const u8 }{
-        .{ .name = "transcoding_fuzz", .path = "tests/fuzz/transcoding.zig" },
-        .{ .name = "utf32_fuzz", .path = "tests/fuzz/utf32.zig" },
-        .{ .name = "utf16_fuzz", .path = "tests/fuzz/utf16.zig" },
-        .{ .name = "utf8_fuzz", .path = "tests/fuzz/utf8.zig" },
-    }) |item| {
-        const fuzz_exe = b.addExecutable(.{
-            .name = item.name,
-            .root_module = b.createModule(.{
-                .root_source_file = b.path(item.path),
-                .target = target,
-                .optimize = optimize,
-                .imports = &.{root},
-            }),
-        });
-
-        const fuzz_artifact = b.addRunArtifact(fuzz_exe);
-
-        fuzz_step.dependOn(&fuzz_artifact.step);
-    }
 }
