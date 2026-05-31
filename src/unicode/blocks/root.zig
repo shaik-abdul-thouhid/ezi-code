@@ -15,8 +15,14 @@ const encoding = @import("encoding");
 
 const CodePoint = encoding.CodePoint;
 
+/// The generated backing table and lookup routines (`generated/blocks.zig`):
+/// the deduplicated 2-level page table over `u16` block indices, plus the
+/// `Block` enum and the `block`/`blockName` implementations re-exported below.
+/// Prefer the named re-exports in this module; this is exposed for tooling.
 pub const generated = @import("generated/blocks.zig");
 
+/// The set of Unicode blocks, one enum variant per named block in Blocks.txt,
+/// plus `.no_block` for codepoints that fall in no block (the `@missing` value).
 pub const Block = generated.Block;
 
 /// The Block of `cp`. Codepoints in no block (and above U+10FFFF) are `.no_block`.

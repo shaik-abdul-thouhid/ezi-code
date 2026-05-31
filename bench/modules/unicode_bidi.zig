@@ -90,12 +90,43 @@ fn casePairedBracket(ctx: *Context) !RunResult {
     return .{ .bytes_processed = cpBytes(cps) * inner, .ops = ops };
 }
 
+// The reordering pipeline (resolve levels + L2) over a bounded prefix of the
+// corpus. We cap the working set so the O(n) scratch allocations stay modest
+// regardless of the configured corpus size.
+const bidi_work_cap: usize = 1 << 18; // ~256K scalars
+
+fn caseResolveParagraph(ctx: *Context) !RunResult {
+    const cps = state(ctx).code_points;
+    const slice = cps[0..@min(cps.len, bidi_work_cap)];
+    var p = try bidi.resolveParagraph(ctx.allocator, slice, .auto);
+    defer p.deinit();
+    var accum: u64 = 0;
+    for (p.levels) |lv| accum +%= lv;
+    std.mem.doNotOptimizeAway(accum);
+    return .{ .bytes_processed = cpBytes(slice), .ops = @intCast(slice.len) };
+}
+
+fn caseReorderVisual(ctx: *Context) !RunResult {
+    const cps = state(ctx).code_points;
+    const slice = cps[0..@min(cps.len, bidi_work_cap)];
+    var p = try bidi.resolveParagraph(ctx.allocator, slice, .auto);
+    defer p.deinit();
+    const order = try bidi.reorderVisual(ctx.allocator, p.levels);
+    defer ctx.allocator.free(order);
+    var accum: u64 = 0;
+    for (order) |o| accum +%= o;
+    std.mem.doNotOptimizeAway(accum);
+    return .{ .bytes_processed = cpBytes(slice), .ops = @intCast(slice.len) };
+}
+
 pub const suite: framework.Suite = .{
     .module_name = "unicode/bidi",
-    .description = "Bidi_Mirroring_Glyph and Bidi_Paired_Bracket(_Type) lookups (UAX #9).",
+    .description = "Property lookups plus the full UAX #9 pipeline (resolve levels + L2 reorder).",
     .cases = &.{
         .{ .name = "bidiMirroringGlyph()", .run = caseMirroringGlyph, .setup = setup, .teardown = teardown },
         .{ .name = "bidiPairedBracketType()", .run = casePairedBracketType, .setup = setup, .teardown = teardown },
         .{ .name = "bidiPairedBracket()", .run = casePairedBracket, .setup = setup, .teardown = teardown },
+        .{ .name = "resolveParagraph()", .run = caseResolveParagraph, .setup = setup, .teardown = teardown },
+        .{ .name = "reorderVisual()", .run = caseReorderVisual, .setup = setup, .teardown = teardown },
     },
 };

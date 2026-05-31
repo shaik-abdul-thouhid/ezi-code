@@ -101,7 +101,7 @@ fn caseReverseWalk(ctx: *Context) !RunResult {
 
 fn caseViewIterator(ctx: *Context) !RunResult {
     const units = state(ctx).units;
-    const view = utf16.initUTF16ViewUnchecked(units, native_endian);
+    const view = utf16.initUTF16ViewUnchecked(units);
     var sink: u32 = 0;
     var ops: u64 = 0;
     var n: u32 = 0;
@@ -134,7 +134,7 @@ fn caseLossyIterator(ctx: *Context) !RunResult {
 
 fn caseCountScalarUnchecked(ctx: *Context) !RunResult {
     const units = state(ctx).units;
-    const view = utf16.initUTF16ViewUnchecked(units, native_endian);
+    const view = utf16.initUTF16ViewUnchecked(units);
     var total: u64 = 0;
     var n: u32 = 0;
     while (n < inner_view) : (n += 1) {
@@ -150,7 +150,7 @@ fn caseInitUTF16View(ctx: *Context) !RunResult {
     var n: u32 = 0;
     while (n < inner_view) : (n += 1) {
         var len: usize = 0;
-        _ = try utf16.initUTF16View(units, native_endian, &len);
+        _ = try utf16.initUTF16View(units, &len);
         ops += len;
     }
     return .{ .bytes_processed = unitsBytes(units) * inner_view, .ops = ops };
@@ -161,7 +161,7 @@ fn caseBufToUTF16String(ctx: *Context) !RunResult {
     var ops: u64 = 0;
     var n: u32 = 0;
     while (n < inner_alloc) : (n += 1) {
-        const s = try utf16.bufToUTF16String(ctx.allocator, units, native_endian);
+        const s = try utf16.bufToUTF16String(ctx.allocator, units);
         ops += s.len;
         ctx.allocator.free(s);
     }

@@ -94,9 +94,7 @@ pub fn build(b: *std.Build) !void {
 
     run_cmd.step.dependOn(b.getInstallStep());
 
-    if (b.args) |args| {
-        run_cmd.addArgs(args);
-    }
+    run_cmd.addPassthruArgs();
 
     // Unicode table generation step
     const generate_unicode_exe = b.addExecutable(.{
@@ -241,9 +239,7 @@ pub fn build(b: *std.Build) !void {
         }),
     });
     const run_bench = b.addRunArtifact(bench_exe);
-    if (b.args) |args| {
-        run_bench.addArgs(args);
-    }
+    run_bench.addPassthruArgs();
     const bench_step = b.step("bench", "Run Benchmarks");
     bench_step.dependOn(&run_bench.step);
 

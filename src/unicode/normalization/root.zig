@@ -40,15 +40,26 @@ const encoding = @import("encoding");
 const types = @import("../types.zig");
 const unicode_data = @import("../generated/unicode_data.zig");
 
+/// Generated DerivedNormalizationProps tables (Quick_Check values, expansion
+/// flags, casefold maps). Re-exported so callers can do raw set-membership and
+/// QC lookups without routing through the full pipeline.
 pub const derived_normalization_props = @import("generated/derived_normalization_props.zig");
+/// Generated decomposition tables and the canonical-compose map. Backs every
+/// per-codepoint decompose/compose lookup in this module.
 pub const decomposition = @import("generated/decomposition.zig");
 
 const CodePoint = encoding.CodePoint;
 const Allocator = std.mem.Allocator;
 
+/// Three-state Quick_Check result: `.yes`, `.no`, `.maybe` (plus `.unknown`,
+/// treated as `.yes`). See `quickCheckString`.
 pub const QuickCheck = types.QuickCheck;
+/// Selector for which UAX #15 Quick_Check property to consult
+/// (NFC_QC / NFD_QC / NFKC_QC / NFKD_QC).
 pub const QuickCheckForm = types.QuickCheckForm;
+/// Selector for the Expands_On_NF* property family.
 pub const ExpandsForm = types.ExpandsForm;
+/// Selector for which casefold mapping to apply (full vs simple, NFKC-folded).
 pub const CasefoldKind = types.CasefoldKind;
 
 /// Forms that produce a decomposed sequence. NFD walks canonical mappings;
@@ -66,6 +77,8 @@ pub const NormalizationForm = enum {
     nfkd,
     nfkc,
 
+    /// Map this form to its matching Quick_Check property selector.
+    /// @stable-since: v0.1.0
     pub fn quickCheckForm(comptime self: NormalizationForm) QuickCheckForm {
         return switch (self) {
             .nfd => .nfd,
@@ -77,6 +90,7 @@ pub const NormalizationForm = enum {
 
     /// Underlying decomposition flavor — NFC/NFKC need it as their first
     /// pipeline stage; NFD/NFKD ARE that stage.
+    /// @stable-since: v0.1.0
     pub fn decompositionForm(comptime self: NormalizationForm) DecompositionForm {
         return switch (self) {
             .nfd, .nfc => .nfd,
@@ -84,6 +98,9 @@ pub const NormalizationForm = enum {
         };
     }
 
+    /// True for the composing forms (NFC/NFKC), false for the decomposing
+    /// forms (NFD/NFKD).
+    /// @stable-since: v0.1.0
     pub fn isComposing(comptime self: NormalizationForm) bool {
         return self == .nfc or self == .nfkc;
     }
@@ -95,10 +112,14 @@ pub const NormalizationForm = enum {
 
 /// CCC byte for `cp`. Returns 0 (Not_Reordered) for cp > 0x10FFFF — caller
 /// shouldn't be feeding us those, but the table guard makes this safe.
+/// @stable-since: v0.1.0
 pub inline fn ccc(cp: CodePoint) u8 {
     return @intFromEnum(unicode_data.canonicalCombiningClass(cp));
 }
 
+/// True iff `cp` is a starter (CCC 0), i.e. it does not reorder under
+/// canonical ordering and may absorb following combiners.
+/// @stable-since: v0.1.0
 pub inline fn isStarter(cp: CodePoint) bool {
     return ccc(cp) == 0;
 }
@@ -106,6 +127,8 @@ pub inline fn isStarter(cp: CodePoint) bool {
 /// Choose canonical vs compatibility decomposition by comptime form. The
 /// `hangul_buf` is a scratch slot the lookup writes into when `cp` is a
 /// Hangul syllable; the returned slice references it in that case.
+/// Returns null when `cp` has no decomposition (caller should emit `cp` as-is).
+/// @stable-since: v0.1.0
 pub inline fn decomposeOne(
     comptime form: DecompositionForm,
     cp: CodePoint,
@@ -117,6 +140,10 @@ pub inline fn decomposeOne(
     };
 }
 
+/// Primary composite of `starter` + `combiner`, or null if the pair has no
+/// canonical composition (Full_Composition_Exclusions are already pruned from
+/// the generated map). Caller is responsible for D115 blocking checks.
+/// @stable-since: v0.1.0
 pub inline fn canonicalCompose(starter: CodePoint, combiner: CodePoint) ?CodePoint {
     return decomposition.canonicalCompose(starter, combiner);
 }
@@ -130,6 +157,7 @@ pub inline fn canonicalCompose(starter: CodePoint, combiner: CodePoint) ?CodePoi
 /// definitively normalized; `.no` means definitively not; `.maybe` means a
 /// codepoint with a context-sensitive QC value is present and a full
 /// normalize + compare is required for a strict answer.
+/// @stable-since: v0.1.0
 pub fn quickCheckString(comptime form: NormalizationForm, input: []const CodePoint) QuickCheck {
     const qcf = comptime form.quickCheckForm();
     var last_ccc: u8 = 0;
@@ -155,6 +183,7 @@ pub fn quickCheckString(comptime form: NormalizationForm, input: []const CodePoi
 /// allocation-free using the streaming Normalizer, comparing emitted
 /// codepoints to `input` position-by-position and bailing on the first
 /// mismatch.
+/// @stable-since: v0.1.0
 pub fn isNormalized(comptime form: NormalizationForm, input: []const CodePoint) bool {
     switch (quickCheckString(form, input)) {
         .yes => return true,
@@ -216,6 +245,7 @@ fn canonicalReorder(seq: []CodePoint) void {
 /// Decompose `input` to its NFD or NFKD form. The result is allocated; caller
 /// frees with `allocator.free`. Comptime-specialized on `form` — the
 /// canonical vs compatibility selector becomes a direct call.
+/// @stable-since: v0.1.0
 pub fn decompose(
     comptime form: DecompositionForm,
     allocator: Allocator,
@@ -247,6 +277,7 @@ pub fn decompose(
 ///
 /// Comptime-specialized on `form`. The inner decomposition stage uses the
 /// matched canonical/compat selector.
+/// @stable-since: v0.1.0
 pub fn compose(
     comptime form: CompositionForm,
     allocator: Allocator,
@@ -317,7 +348,10 @@ fn composeInPlace(buf: []CodePoint) usize {
 // ----------------------------------------------------------------------------
 
 /// One entry point parameterized on form. Routes to `decompose` for NFD/NFKD
-/// or `compose` for NFC/NFKC.
+/// or `compose` for NFC/NFKC. The result is allocated; caller frees with
+/// `allocator.free`. Already-normalized input is returned as a fresh dupe via
+/// the QC fast path.
+/// @stable-since: v0.1.0
 pub fn normalize(
     comptime form: NormalizationForm,
     allocator: Allocator,
@@ -338,15 +372,23 @@ pub fn normalize(
     };
 }
 
+/// NFD (canonical decomposition) of `input`. Result is allocated; caller frees.
+/// @stable-since: v0.1.0
 pub inline fn nfd(allocator: Allocator, input: []const CodePoint) Allocator.Error![]CodePoint {
     return normalize(.nfd, allocator, input);
 }
+/// NFKD (compatibility decomposition) of `input`. Result is allocated; caller frees.
+/// @stable-since: v0.1.0
 pub inline fn nfkd(allocator: Allocator, input: []const CodePoint) Allocator.Error![]CodePoint {
     return normalize(.nfkd, allocator, input);
 }
+/// NFC (canonical composition) of `input`. Result is allocated; caller frees.
+/// @stable-since: v0.1.0
 pub inline fn nfc(allocator: Allocator, input: []const CodePoint) Allocator.Error![]CodePoint {
     return normalize(.nfc, allocator, input);
 }
+/// NFKC (compatibility composition) of `input`. Result is allocated; caller frees.
+/// @stable-since: v0.1.0
 pub inline fn nfkc(allocator: Allocator, input: []const CodePoint) Allocator.Error![]CodePoint {
     return normalize(.nfkc, allocator, input);
 }
@@ -402,6 +444,7 @@ pub const MAX_DECOMP_LEN: usize = MAX_FEED_OUTPUT;
 /// For starter+starter composition (e.g. Bengali U+09C7 + U+09BE → U+09CB),
 /// the composition is attempted only when no marks intervene — D115 blocks
 /// would catch the case anyway because any intervening mark has CCC >= 0.
+/// @stable-since: v0.1.0
 pub fn Normalizer(comptime form: NormalizationForm) type {
     return struct {
         const Self = @This();
@@ -411,10 +454,17 @@ pub fn Normalizer(comptime form: NormalizationForm) type {
         buf: [MAX_INTERNAL_BUF]CodePoint = undefined,
         len: usize = 0,
 
+        /// Construct an empty normalizer with no pending region.
+        /// @stable-since: v0.1.0
         pub fn init() Self {
             return .{};
         }
 
+        /// Feed one codepoint and emit 0..N normalized codepoints into `out`.
+        /// The returned slice points into `out` and is valid only until the
+        /// next `feed`/`flush`. `out` MUST be a `*[MAX_FEED_OUTPUT]CodePoint`.
+        /// Call `flush` after the last codepoint to drain the trailing region.
+        /// @stable-since: v0.1.0
         pub fn feed(self: *Self, cp: CodePoint, out: *[MAX_FEED_OUTPUT]CodePoint) []const CodePoint {
             var hangul_buf: [3]CodePoint = undefined;
             const decomp = decomposeOne(decomp_form, cp, &hangul_buf) orelse blk: {
@@ -458,6 +508,10 @@ pub fn Normalizer(comptime form: NormalizationForm) type {
             return out[0..emitted];
         }
 
+        /// Drain the final pending region at end-of-input, emitting it into
+        /// `out` and resetting the normalizer. Returns a slice into `out`,
+        /// valid until the next call. `out` MUST be a `*[MAX_FEED_OUTPUT]CodePoint`.
+        /// @stable-since: v0.1.0
         pub fn flush(self: *Self, out: *[MAX_FEED_OUTPUT]CodePoint) []const CodePoint {
             self.finalize();
             const n = self.len;
@@ -514,24 +568,40 @@ pub fn Normalizer(comptime form: NormalizationForm) type {
 // pipeline).
 // ----------------------------------------------------------------------------
 
+/// Raw Quick_Check lookup for a `QuickCheckForm` and codepoint.
 pub const quickCheck = derived_normalization_props.quickCheck;
+/// Raw Expands_On_NF* membership test for an `ExpandsForm` and codepoint.
 pub const isExpandsOn = derived_normalization_props.isExpandsOn;
+/// Raw casefold mapping lookup for a `CasefoldKind` and codepoint.
 pub const casefoldMap = derived_normalization_props.casefoldMap;
 
+/// NFC_QC value for a codepoint.
 pub const nfcQuickCheck = derived_normalization_props.nfcQuickCheck;
+/// NFD_QC value for a codepoint.
 pub const nfdQuickCheck = derived_normalization_props.nfdQuickCheck;
+/// NFKC_QC value for a codepoint.
 pub const nfkcQuickCheck = derived_normalization_props.nfkcQuickCheck;
+/// NFKD_QC value for a codepoint.
 pub const nfkdQuickCheck = derived_normalization_props.nfkdQuickCheck;
 
+/// FC_NFKC closure mapping for a codepoint (used by NFKC_Casefold).
 pub const fcNfkcMap = derived_normalization_props.fcNfkcMap;
+/// NFKC_Casefold mapping for a codepoint.
 pub const nfkcCaseFoldMap = derived_normalization_props.nfkcCaseFoldMap;
+/// NFKC_Simple_Casefold mapping for a codepoint.
 pub const nfkcSimpleCaseFoldMap = derived_normalization_props.nfkcSimpleCaseFoldMap;
 
+/// True iff the codepoint is in Full_Composition_Exclusion.
 pub const isFullCompositionExclusion = derived_normalization_props.isFullCompositionExclusion;
+/// True iff the codepoint is in Changes_When_NFKC_Casefolded.
 pub const isChangesWhenNfkcCasefolded = derived_normalization_props.isChangesWhenNfkcCasefolded;
+/// True iff the codepoint is in Expands_On_NFD.
 pub const isExpandsOnNfd = derived_normalization_props.isExpandsOnNfd;
+/// True iff the codepoint is in Expands_On_NFC.
 pub const isExpandsOnNfc = derived_normalization_props.isExpandsOnNfc;
+/// True iff the codepoint is in Expands_On_NFKD.
 pub const isExpandsOnNfkd = derived_normalization_props.isExpandsOnNfkd;
+/// True iff the codepoint is in Expands_On_NFKC.
 pub const isExpandsOnNfkc = derived_normalization_props.isExpandsOnNfkc;
 
 // ============================================================================

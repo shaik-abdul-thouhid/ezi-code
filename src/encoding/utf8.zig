@@ -1289,7 +1289,7 @@ test "bytesToUTF8CodePoint and validateAndDecodeCodePointBytesReverse match expe
     try std.testing.expectEqual(d.code_point, r.code_point);
 }
 
-test "hostile: single-byte lead 0x00-0xFF classification smoke" {
+test "single-byte lead 0x00-0xFF classification smoke" {
     var b: u8 = 0;
     while (true) : (b +%= 1) {
         const r = codePointLen(b);
@@ -1308,7 +1308,7 @@ test "hostile: single-byte lead 0x00-0xFF classification smoke" {
     }
 }
 
-test "hostile: validate every lead with wrong continuation shapes" {
+test "validate every lead with wrong continuation shapes" {
     // 2-byte leads: bad second (not cont), truncated (solo lead)
     var lead: u8 = two_byte_start_sequence_range_start;
     while (lead <= two_byte_start_sequence_range_end) : (lead += 1) {
@@ -1324,7 +1324,7 @@ test "hostile: validate every lead with wrong continuation shapes" {
     try std.testing.expectError(UTF8ValidationError.IndexOutOfBounds, validateAndDecodeCodePointBytes(&.{ 0xF4, 0x8F, 0xBF }, 0));
 }
 
-test "hostile: reverse path on garbage tails" {
+test "reverse path on garbage tails" {
     try std.testing.expectError(UTF8ValidationError.InvalidByteSequence, codePointLenReverse(&.{0xC2}, 0));
     try std.testing.expectError(UTF8ValidationError.InvalidByteSequence, validateAndDecodeCodePointBytesReverse(&.{ 0xE0, 0xA0 }, 1));
     try std.testing.expectError(UTF8ValidationError.InvalidByteSequence, validateAndDecodeCodePointBytesReverse(&.{0x80}, 0));
@@ -1332,7 +1332,7 @@ test "hostile: reverse path on garbage tails" {
     try std.testing.expectError(UTF8ValidationError.InvalidByteSequence, codePointLenReverse(&.{0x80}, 0));
 }
 
-test "hostile: initUTF8View rejects stitched error bytes" {
+test "initUTF8View rejects stitched error bytes" {
     var size: usize = 0;
     try std.testing.expectError(UTF8ValidationError.OverlongEncoding, initUTF8View(&.{ 0xE0, 0x80, 0x80 }, &size));
     try std.testing.expectError(UTF8ValidationError.InvalidByteSequence, initUTF8View("ok\xFFtrailing", &size));
@@ -1341,7 +1341,7 @@ test "hostile: initUTF8View rejects stitched error bytes" {
     try std.testing.expectError(UTF8ValidationError.SurrogateCodePoint, initUTF8View(&.{ 0xED, 0xA0, 0x80 }, &size));
 }
 
-test "hostile: BMP encode/decode sweep (stride avoids timeout)" {
+test "BMP encode/decode sweep (stride avoids timeout)" {
     var buf: [4]u8 = undefined;
     var cp: u32 = 0;
     while (cp <= 0xFFFF) : (cp += 37) {
@@ -1354,7 +1354,7 @@ test "hostile: BMP encode/decode sweep (stride avoids timeout)" {
     }
 }
 
-test "hostile: supplementary encode/decode sweep" {
+test "supplementary encode/decode sweep" {
     var buf: [4]u8 = undefined;
     var cp: u32 = 0x10000;
     while (cp <= max_four_byte_code_point) : (cp += 7919) {
@@ -1365,7 +1365,7 @@ test "hostile: supplementary encode/decode sweep" {
     }
 }
 
-test "hostile: UTF8View iterator roundtrip on punisher string" {
+test "UTF8View iterator roundtrip on punisher string" {
     const s = "a\u{0080}\u{0800}\u{10000}\u{10FFFF}👨\u{200D}👩\u{200D}👧\u{3030}";
     var size: usize = 0;
     const view = try initUTF8View(s, &size);
@@ -1382,7 +1382,7 @@ test "hostile: UTF8View iterator roundtrip on punisher string" {
     try std.testing.expectEqual(@as(usize, 0), it.index);
 }
 
-test "hostile: sliceScalars on emoji-heavy string" {
+test "sliceScalars on emoji-heavy string" {
     const s = "x\u{1F9FF}\u{200D}\u{2642}\u{FE0F}z";
     var size: usize = 0;
     const v = try initUTF8View(s, &size);
@@ -1392,7 +1392,7 @@ test "hostile: sliceScalars on emoji-heavy string" {
     try std.testing.expectEqualStrings(s, full.data);
 }
 
-test "hostile: utf8ViewToUTF8String buffer too small path" {
+test "utf8ViewToUTF8String buffer too small path" {
     var size: usize = 0;
     const view = try initUTF8View("αβ", &size);
     var tiny: [1]CodePoint = undefined;
@@ -1778,7 +1778,7 @@ test "checked and unchecked decode agree on valid utf8" {
     }
 }
 
-test "hostile: every possible byte in lossy decoder makes progress" {
+test "every possible byte in lossy decoder makes progress" {
     var bytes: [256]u8 = undefined;
     for (&bytes, 0..) |*byte, i| {
         byte.* = @intCast(i);
@@ -1799,7 +1799,7 @@ test "hostile: every possible byte in lossy decoder makes progress" {
     try std.testing.expect(replacements > 0);
 }
 
-test "hostile: invalid continuation matrix for legal UTF-8 leads" {
+test "invalid continuation matrix for legal UTF-8 leads" {
     var lead_u16: u16 = two_byte_start_sequence_range_start;
     while (lead_u16 <= two_byte_start_sequence_range_end) : (lead_u16 += 1) {
         var byte_u16: u16 = 0;
@@ -1833,7 +1833,7 @@ test "hostile: invalid continuation matrix for legal UTF-8 leads" {
     }
 }
 
-test "hostile: every truncated UTF-8 prefix rejects without decoding" {
+test "every truncated UTF-8 prefix rejects without decoding" {
     const cases = [_][]const u8{
         &.{0xC2},
         &.{0xDF},
@@ -1854,7 +1854,7 @@ test "hostile: every truncated UTF-8 prefix rejects without decoding" {
     }
 }
 
-test "hostile: continuation-only reverse tails always reject" {
+test "continuation-only reverse tails always reject" {
     const tail = [_]u8{ 0x80, 0x81, 0x82, 0x83, 0x84, 0xBF, 0x80, 0xBF };
 
     var len: usize = 1;
@@ -1864,7 +1864,7 @@ test "hostile: continuation-only reverse tails always reject" {
     }
 }
 
-test "hostile: encodeCodePoint rejects every undersized output buffer" {
+test "encodeCodePoint rejects every undersized output buffer" {
     const cases = [_]CodePoint{ 0x80, 0x800, 0x10000, 0x10FFFF };
     var backing: [4]u8 = undefined;
 

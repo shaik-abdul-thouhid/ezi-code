@@ -1,18 +1,41 @@
+//! Unicode case conversion and case-insensitive comparison.
+//!
+//! Provides simple (single-codepoint) and full (potentially multi-codepoint)
+//! case mapping — upper, lower, and title — plus case folding and `equalFold`
+//! comparison helpers operating on UTF-8 bytes or decoded codepoints.
+//!
+//! - Simple variants (`toUpperCase`, `caseFoldSimple`, …) map one codepoint to
+//!   exactly one codepoint and never allocate or expand.
+//! - Full variants (`toUpperCaseFull`, `caseFoldFull`, …) honor expansions
+//!   such as U+00DF -> "ss" and return a `CaseMappingResult` whose capacity is
+//!   sized at comptime from the relevant table — prefer these when correct
+//!   Unicode case handling matters.
+//! - Full case mapping is locale- and context-sensitive: pass the appropriate
+//!   `SpecialCaseLocale` (e.g. `.tr` for Turkish) and `SpecialCaseCondition`
+//!   (e.g. `.final_sigma`) to obtain conformant results.
+
 const std = @import("std");
 const encoding = @import("encoding");
 const utils = @import("utils");
 const types = @import("../types.zig");
 const unicode_data = @import("../generated/unicode_data.zig");
 
+/// Case-folding tables and lookup helpers (simple and full, default/Turkic).
 pub const case_folding = @import("case_folding.zig");
+/// Locale- and context-sensitive special-casing tables and lookup helpers.
 pub const special_casing = @import("special_casing.zig");
 
 const CodePoint = encoding.CodePoint;
 
+/// Selects simple vs full case folding behavior.
 pub const CaseFoldingMode = types.CaseFoldingMode;
+/// Selects the case-folding locale: `.default` or `.turkic`.
 pub const CaseFoldingLocale = types.CaseFoldingLocale;
+/// Locale tag for special casing (`.none`, `.tr`, `.az`, `.lt`).
 pub const SpecialCaseLocale = special_casing.Locale;
+/// Contextual condition that gates a special-casing mapping (e.g. `.final_sigma`).
 pub const SpecialCaseCondition = special_casing.Condition;
+/// A special-casing table entry holding the lower/upper/title expansions.
 pub const SpecialCaseMapping = special_casing.Mapping;
 
 const CaseSlot = enum { lower, upper, title };
@@ -52,6 +75,9 @@ fn maxSpecialLen(
     };
 }
 
+/// Returns the worst-case codepoint count produced by full case folding for
+/// `locale`. Use this to size a `CaseMappingResult` buffer at comptime.
+/// @stable-since: v0.1.0
 pub fn caseFoldFullCap(comptime locale: CaseFoldingLocale) usize {
     return switch (locale) {
         .default => maxFoldLen(&case_folding.common_full_table),
@@ -59,6 +85,10 @@ pub fn caseFoldFullCap(comptime locale: CaseFoldingLocale) usize {
     };
 }
 
+/// Returns the worst-case codepoint count produced by full case mapping for
+/// the given `selector` (lower/upper/title), `locale`, and `condition`. Always
+/// at least 1 (the simple-mapping fallback). Use it to size result buffers.
+/// @stable-since: v0.1.0
 pub fn fullCaseMapCap(
     comptime selector: CaseSlot,
     comptime locale: special_casing.Locale,
@@ -78,6 +108,8 @@ pub fn CaseMappingResult(comptime cap: usize) type {
         buf: [cap]CodePoint,
         len: u8,
 
+        /// Returns the populated prefix of the buffer (`buf[0..len]`).
+        /// @stable-since: v0.1.0
         pub fn slice(self: *const Self) []const CodePoint {
             return self.buf[0..self.len];
         }
@@ -108,38 +140,70 @@ fn simpleCaseMap(table: []const unicode_data.CaseMappingRangeEntry, code_point: 
     return @intCast(@as(i32, @intCast(code_point)) + range.delta);
 }
 
+/// Simple uppercase mapping: returns the single-codepoint uppercase form of
+/// `code_point`, or `code_point` unchanged if it has no mapping. Does not
+/// handle expansions (e.g. U+00DF stays U+00DF); use `toUpperCaseFull` for those.
+/// @stable-since: v0.1.0
 pub fn toUpperCase(code_point: CodePoint) CodePoint {
     return simpleCaseMap(&unicode_data.uppercase_range_mapping_table, code_point);
 }
 
+/// Simple lowercase mapping: returns the single-codepoint lowercase form of
+/// `code_point`, or `code_point` unchanged if it has no mapping. For
+/// context-sensitive or expanding mappings use `toLowerCaseFull`.
+/// @stable-since: v0.1.0
 pub fn toLowerCase(code_point: CodePoint) CodePoint {
     return simpleCaseMap(&unicode_data.lowercase_range_mapping_table, code_point);
 }
 
+/// Simple titlecase mapping: returns the single-codepoint titlecase form of
+/// `code_point`, or `code_point` unchanged if it has no mapping. For expanding
+/// mappings use `toTitleCaseFull`.
+/// @stable-since: v0.1.0
 pub fn toTitleCase(code_point: CodePoint) CodePoint {
     return simpleCaseMap(&unicode_data.titlecase_range_mapping_table, code_point);
 }
 
+/// Simple (single-codepoint) case folding for `code_point` under default rules.
+/// Returns `code_point` unchanged when it has no folding. Prefer `caseFoldFull`
+/// when expansions such as U+00DF -> "ss" must be honored.
+/// @stable-since: v0.1.0
 pub fn caseFoldSimple(code_point: CodePoint) CodePoint {
     return case_folding.lookup(.simple, .default, code_point) orelse code_point;
 }
 
+/// Simple case folding using Turkic rules (e.g. dotless-i handling).
+/// Returns `code_point` unchanged when it has no folding.
+/// @stable-since: v0.1.0
 pub fn caseFoldSimpleTurkic(code_point: CodePoint) CodePoint {
     return case_folding.lookup(.simple, .turkic, code_point) orelse code_point;
 }
 
+/// Full case folding for `code_point` under default rules, expanding to multiple
+/// codepoints where required (e.g. U+00DF -> "ss"). Returns a singleton result
+/// holding `code_point` when it has no folding.
+/// @stable-since: v0.1.0
 pub fn caseFoldFull(code_point: CodePoint) CaseMappingResult(caseFoldFullCap(.default)) {
     const cap = comptime caseFoldFullCap(.default);
     if (case_folding.lookup(.full, .default, code_point)) |mapped| return writeResult(cap, mapped);
     return singletonResult(cap, code_point);
 }
 
+/// Full case folding for `code_point` using Turkic rules, expanding to multiple
+/// codepoints where required. Returns a singleton result holding `code_point`
+/// when it has no folding.
+/// @stable-since: v0.1.0
 pub fn caseFoldFullTurkic(code_point: CodePoint) CaseMappingResult(caseFoldFullCap(.turkic)) {
     const cap = comptime caseFoldFullCap(.turkic);
     if (case_folding.lookup(.full, .turkic, code_point)) |mapped| return writeResult(cap, mapped);
     return singletonResult(cap, code_point);
 }
 
+/// Looks up the special-casing mapping for `code_point` under the given
+/// `locale` and contextual `condition`, returning `null` when no entry matches.
+/// The returned mapping carries the lower/upper/title expansions; callers
+/// typically prefer the `toXxxCaseFull` wrappers over calling this directly.
+/// @stable-since: v0.1.0
 pub fn specialCaseMapping(comptime locale: SpecialCaseLocale, comptime condition: SpecialCaseCondition, code_point: CodePoint) ?SpecialCaseMapping {
     return switch (locale) {
         .none => switch (condition) {
@@ -182,6 +246,11 @@ pub fn specialCaseMapping(comptime locale: SpecialCaseLocale, comptime condition
     };
 }
 
+/// Full lowercase mapping for `code_point` under `locale` and `condition`,
+/// honoring multi-codepoint expansions and locale/context rules. Falls back to
+/// the simple lowercase mapping when no special-casing entry applies. Prefer
+/// this over `toLowerCase` when Unicode-conformant casing is required.
+/// @stable-since: v0.1.0
 pub fn toLowerCaseFull(
     code_point: CodePoint,
     comptime locale: SpecialCaseLocale,
@@ -194,6 +263,11 @@ pub fn toLowerCaseFull(
     return singletonResult(cap, toLowerCase(code_point));
 }
 
+/// Full uppercase mapping for `code_point` under `locale` and `condition`,
+/// honoring multi-codepoint expansions and locale/context rules. Falls back to
+/// the simple uppercase mapping when no special-casing entry applies. Prefer
+/// this over `toUpperCase` when Unicode-conformant casing is required.
+/// @stable-since: v0.1.0
 pub fn toUpperCaseFull(
     code_point: CodePoint,
     comptime locale: SpecialCaseLocale,
@@ -206,6 +280,11 @@ pub fn toUpperCaseFull(
     return singletonResult(cap, toUpperCase(code_point));
 }
 
+/// Full titlecase mapping for `code_point` under `locale` and `condition`,
+/// honoring multi-codepoint expansions and locale/context rules. Falls back to
+/// the simple titlecase mapping when no special-casing entry applies. Prefer
+/// this over `toTitleCase` when Unicode-conformant casing is required.
+/// @stable-since: v0.1.0
 pub fn toTitleCaseFull(
     code_point: CodePoint,
     comptime locale: SpecialCaseLocale,
@@ -218,16 +297,27 @@ pub fn toTitleCaseFull(
     return singletonResult(cap, toTitleCase(code_point));
 }
 
+/// Folding strategy for the `equalFold*` helpers: `.simple` compares one
+/// codepoint to one codepoint; `.full` honors expanding folds (e.g. ß -> "ss").
 pub const EqualFoldMode = enum { simple, full };
 
 inline fn asciiFoldLower(byte: u8) u8 {
     return if ('A' <= byte and byte <= 'Z') byte + ('a' - 'A') else byte;
 }
 
+/// Compares two ASCII bytes case-insensitively (A-Z folded to a-z). Bytes
+/// outside A-Z are compared as-is; non-ASCII bytes are not interpreted.
+/// @stable-since: v0.1.0
 pub inline fn asciiFoldEqual(a: u8, b: u8) bool {
     return asciiFoldLower(a) == asciiFoldLower(b);
 }
 
+/// Case-insensitively compares two UTF-8 byte strings via case folding.
+/// `mode` selects simple or full folding. The inputs must be valid UTF-8:
+/// invalid or truncated sequences surface as an error (e.g.
+/// `error.InvalidByteSequence`, `error.IndexOutOfBounds`). Use
+/// `equalFoldBytesLossy` to tolerate malformed input instead.
+/// @stable-since: v0.1.0
 pub fn equalFoldBytes(comptime mode: EqualFoldMode, s1: []const u8, s2: []const u8) !bool {
     if (mode == .simple) {
         var s1_i: usize = 0;
@@ -312,6 +402,11 @@ pub fn equalFoldBytes(comptime mode: EqualFoldMode, s1: []const u8, s2: []const 
     return s1_i == s1.len and s2_i == s2.len and buf1_pos == buf1_len and buf2_pos == buf2_len;
 }
 
+/// Lossy variant of `equalFoldBytes`: invalid UTF-8 is replaced with U+FFFD
+/// and comparison continues rather than erroring. Prefer this when comparing
+/// untrusted or possibly malformed input; prefer `equalFoldBytes` when invalid
+/// bytes should be treated as a hard error.
+/// @stable-since: v0.1.0
 pub fn equalFoldBytesLossy(comptime mode: EqualFoldMode, s1: []const u8, s2: []const u8) encoding.utf8.UTF8ValidationLossyError!bool {
     if (mode == .simple) {
         var s1_i: usize = 0;
@@ -392,6 +487,10 @@ pub fn equalFoldBytesLossy(comptime mode: EqualFoldMode, s1: []const u8, s2: []c
     return s1_i == s1.len and s2_i == s2.len and buf1_pos == buf1_len and buf2_pos == buf2_len;
 }
 
+/// Case-insensitively compares two already-decoded codepoint slices via case
+/// folding. `mode` selects simple or full folding. No validation is performed —
+/// callers supply codepoints directly, so this cannot fail.
+/// @stable-since: v0.1.0
 pub fn equalFoldCodePoints(comptime mode: EqualFoldMode, s1: []const CodePoint, s2: []const CodePoint) bool {
     if (mode == .simple) {
         if (s1.len != s2.len) return false;
@@ -590,7 +689,7 @@ test "edge case: null code point maps to itself under every casing operation" {
     try testing.expectEqual(@as(CodePoint, 0), toTitleCase(0));
 }
 
-test "hostile: case mapping with unusual inputs never produces invalid code points" {
+test "case mapping with unusual inputs never produces invalid code points" {
     for (0x0000..0x10FFFF) |cp_usize| {
         const cp: CodePoint = @intCast(cp_usize);
         if (cp >= 0xD800 and cp <= 0xDFFF) continue; // skip surrogates
