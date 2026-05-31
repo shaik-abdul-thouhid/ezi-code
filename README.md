@@ -29,7 +29,7 @@ adversarial test set you'd expect for UAX #9.
 ## Installing
 
 ```
-zig fetch --save git+https://github.com/shaik-abdul-thouhid/ezi-code
+zig fetch --save git+https://github.com/shaik-abdul-thouhid/ezi-code.git#v0.1.0
 ```
 
 Then in `build.zig`:
