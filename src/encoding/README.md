@@ -100,8 +100,5 @@ specific to the encoding you're working with.
 
 ```
 zig build test -Dinclude-test=encoding                      # Debug
-zig build test -Dinclude-test=encoding -Doptimize=ReleaseSafe
+zig build test -Dinclude-test=encoding -Dinclude-test=unicode -Doptimize=ReleaseSafe
 ```
-
-Fuzz targets live in `tests/fuzz/` (`utf8.zig`, `utf16.zig`, `utf32.zig`); run them
-with `zig build fuzz`.

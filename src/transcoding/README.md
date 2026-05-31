@@ -83,5 +83,3 @@ pull scalars with `nextCodePoint` / `nextCodePointLossy`. The interesting parts:
 zig build test -Dinclude-test=transcoding                      # Debug
 zig build test -Dinclude-test=transcoding -Doptimize=ReleaseSafe
 ```
-
-Fuzz target: `tests/fuzz/transcoding.zig` (`zig build fuzz`).
