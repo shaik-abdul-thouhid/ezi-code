@@ -28,8 +28,16 @@ adversarial test set you'd expect for UAX #9.
 
 ## Installing
 
+Via git ref (resolves the tag at fetch time):
+
 ```
 zig fetch --save git+https://github.com/shaik-abdul-thouhid/ezi-code.git#v0.1.0
+```
+
+Or via plain HTTP tarball (pins the content hash in `build.zig.zon`):
+
+```
+zig fetch --save https://github.com/shaik-abdul-thouhid/ezi-code/archive/refs/tags/v0.1.0.tar.gz
 ```
 
 Then in `build.zig`:
