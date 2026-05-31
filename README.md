@@ -17,7 +17,7 @@ committed, so a normal build doesn't touch the network or the `ucd/` inputs.
 
 Version `0.1.0`. Pre-1.0 in the literal sense: the API is allowed to change.
 Tracks a recent Zig dev build (`0.17.0-dev.263+0add2dfc4` minimum); it does
-not build against stable 0.13. If your toolchain isn't on a current `master`,
+not build against stable 0.16. If your toolchain isn't on a current `master`,
 this will not compile, and that is the intended trade-off until Zig 0.17 lands.
 
 What works is well-tested. The unicode submodule includes exhaustive
