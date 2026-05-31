@@ -13,15 +13,25 @@ const encoding = @import("encoding");
 
 const CodePoint = encoding.CodePoint;
 
+/// The generated backing module: a deduplicated 2-level page table encoding
+/// the Hangul_Syllable_Type property for every codepoint. Prefer the
+/// re-exports below; this is exposed for direct access to the raw table.
 pub const generated = @import("generated/hangul_syllable_type.zig");
 
+/// The Hangul_Syllable_Type enum (`l`, `v`, `t`, `lv`, `lvt`,
+/// `not_applicable`), re-exported from the generated table.
 pub const HangulSyllableType = generated.HangulSyllableType;
 
 /// Hangul_Syllable_Type of `cp` (`.l`, `.v`, `.t`, `.lv`, `.lvt`, or
 /// `.not_applicable`).
+///
+/// Total over all `u21` inputs; out-of-range and non-Hangul codepoints map to
+/// `.not_applicable`, so no validation of `cp` is required.
+/// @stable-since: v0.1.0
 pub const hangulSyllableType = generated.hangulSyllableType;
 
 /// True when `cp` is a conjoining jamo (Leading, Vowel, or Trailing).
+/// @stable-since: v0.1.0
 pub inline fn isConjoiningJamo(cp: CodePoint) bool {
     return switch (hangulSyllableType(cp)) {
         .l, .v, .t => true,
@@ -30,6 +40,7 @@ pub inline fn isConjoiningJamo(cp: CodePoint) bool {
 }
 
 /// True when `cp` is a precomposed Hangul syllable (LV or LVT).
+/// @stable-since: v0.1.0
 pub inline fn isSyllable(cp: CodePoint) bool {
     return switch (hangulSyllableType(cp)) {
         .lv, .lvt => true,

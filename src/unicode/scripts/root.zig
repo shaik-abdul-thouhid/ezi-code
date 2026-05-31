@@ -14,12 +14,27 @@ const encoding = @import("encoding");
 
 const CodePoint = encoding.CodePoint;
 
+/// Generated Script-property tables (the deduplicated 2-level page table and
+/// the `ScriptType` enum). Re-exported so callers can reach the raw tables
+/// without importing the `generated/` path directly.
 pub const generated = @import("generated/scripts.zig");
+/// Generated Script_Extensions tables: the per-codepoint set index lookup and
+/// the interned set storage backing `scriptExtensions`.
 pub const generated_extensions = @import("generated/script_extensions.zig");
 
+/// Enum of every UAX #24 Script value, one variant per script (plus `common`,
+/// `inherited`, and `unknown`). The integer tag matches the page-table layout.
 pub const ScriptType = generated.ScriptType;
+/// Script(cp) (UAX #24): the single Script value of `cp`. Resolves via two
+/// array indexes into the page table; unassigned and out-of-range codepoints
+/// return `.unknown` rather than trapping. Accepts any `CodePoint`, including
+/// values above `0x10FFFF`.
 pub const scriptType = generated.scriptType;
+/// Maps an ISO 15924 script code (e.g. `"Latn"`, `"Grek"`) to its `ScriptType`,
+/// or `null` when the abbreviation is not recognized.
 pub const fromAbbreviation = generated.fromAbbreviation;
+/// Interned table of Script_Extensions sets, indexed by the value returned from
+/// `scriptExtensionIndex`. Index 0 is the empty/no-explicit-value sentinel.
 pub const script_extension_sets = generated_extensions.script_extension_sets;
 
 /// One single-element set per ScriptType, materialized at comptime. Returning
@@ -34,6 +49,7 @@ const singleton_sets = blk: {
 
 /// True if `cp` carries an explicit Script_Extensions value in the UCD (i.e.
 /// `scriptExtensions` returns the stored set rather than the Script fallback).
+/// @stable-since: v0.1.0
 pub inline fn hasExplicitScriptExtensions(cp: CodePoint) bool {
     return generated_extensions.scriptExtensionIndex(cp) != 0;
 }
@@ -42,6 +58,7 @@ pub inline fn hasExplicitScriptExtensions(cp: CodePoint) bool {
 /// with. Codepoints without an explicit value resolve to a one-element slice
 /// holding their Script property. The returned slice is always non-empty and
 /// has static lifetime; never mutate it.
+/// @stable-since: v0.1.0
 pub fn scriptExtensions(cp: CodePoint) []const ScriptType {
     const idx = generated_extensions.scriptExtensionIndex(cp);
     if (idx == 0) {
@@ -53,6 +70,7 @@ pub fn scriptExtensions(cp: CodePoint) []const ScriptType {
 
 /// True if `script` is one of `cp`'s Script_Extensions. Handles both the
 /// explicit-set and Script-fallback cases via `scriptExtensions`.
+/// @stable-since: v0.1.0
 pub inline fn hasScriptExtension(cp: CodePoint, script: ScriptType) bool {
     for (scriptExtensions(cp)) |s| {
         if (s == script) return true;

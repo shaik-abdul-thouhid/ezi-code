@@ -1,33 +1,65 @@
+//! Unicode text segmentation for the ezicode library.
+//!
+//! Implements the UAX #29 grapheme cluster, word, and sentence boundary
+//! algorithms and the UAX #14 line break algorithm. Each algorithm is exposed
+//! in three forms: a one-shot `compute*Boundaries` that fills a boolean (or
+//! `LineBreakKind`) array, an allocation-free iterator over UTF-8 bytes, and an
+//! allocation-free iterator over an explicit `[]const CodePoint`.
+//!
+//! Byte-oriented APIs decode UTF-8 lossily, substituting U+FFFD for invalid
+//! sequences, so they never reject input; pre-validate (see the `encoding`
+//! module) when invalid bytes must be rejected. Returned slices borrow from the
+//! caller's buffer and stay valid only as long as it does.
+
 const std = @import("std");
 const encoding = @import("encoding");
 const utf8 = encoding.utf8;
 
 const CodePoint = encoding.CodePoint;
 
+/// Re-export of the generated grapheme cluster break property tables.
 pub const generated = @import("generated/grapheme_break.zig");
+/// Grapheme_Cluster_Break property enum (UAX #29).
 pub const GraphemeBreakProperty = generated.GraphemeBreakProperty;
+/// Returns the Grapheme_Cluster_Break property of a code point.
 pub const graphemeBreakProperty = generated.graphemeBreakProperty;
 
+/// Re-export of the generated emoji property tables (UTS #51).
 pub const emoji_data = @import("generated/emoji_data.zig");
+/// Re-export of the generated Word_Break property tables (UAX #29).
 pub const word_break = @import("generated/word_break.zig");
+/// Re-export of the generated Sentence_Break property tables (UAX #29).
 pub const sentence_break = @import("generated/sentence_break.zig");
+/// Re-export of the generated Line_Break property tables (UAX #14).
 pub const line_break = @import("generated/line_break.zig");
 
 const east_asian_width = @import("../width/generated/east_asian_width.zig");
 const unicode_data = @import("../generated/unicode_data.zig");
 
+/// Word_Break property enum (UAX #29).
 pub const WordBreakProperty = word_break.WordBreakProperty;
+/// Returns the Word_Break property of a code point.
 pub const wordBreakProperty = word_break.wordBreakProperty;
+/// Sentence_Break property enum (UAX #29).
 pub const SentenceBreakProperty = sentence_break.SentenceBreakProperty;
+/// Returns the Sentence_Break property of a code point.
 pub const sentenceBreakProperty = sentence_break.sentenceBreakProperty;
+/// Line_Break property enum (UAX #14).
 pub const LineBreak = line_break.LineBreak;
+/// Returns the Line_Break property of a code point.
 pub const lineBreak = line_break.lineBreak;
 
+/// Reports whether a code point has the Emoji property (UTS #51).
 pub const isEmoji = emoji_data.isEmoji;
+/// Reports whether a code point has the Emoji_Presentation property.
 pub const isEmojiPresentation = emoji_data.isEmojiPresentation;
+/// Reports whether a code point has the Emoji_Modifier property.
 pub const isEmojiModifier = emoji_data.isEmojiModifier;
+/// Reports whether a code point has the Emoji_Modifier_Base property.
 pub const isEmojiModifierBase = emoji_data.isEmojiModifierBase;
+/// Reports whether a code point has the Emoji_Component property.
 pub const isEmojiComponent = emoji_data.isEmojiComponent;
+/// Reports whether a code point has the Extended_Pictographic property.
 pub const isExtendedPictographic = emoji_data.isExtendedPictographic;
 
 const derived_core_properties = @import("../properties/generated/derived_core_properties.zig");
@@ -37,6 +69,9 @@ const DerivedProperty = derived_core_properties.Property;
 /// Used to implement UAX #29 rule GB9c.
 pub const InCB = enum { none, consonant, linker, extend };
 
+/// Returns the Indic Conjunct Break (InCB) value of a code point, used by the
+/// grapheme rule GB9c. Assumes `cp` is a valid Unicode scalar value.
+/// @stable-since: v0.1.0
 pub inline fn inCB(cp: CodePoint) InCB {
     const mask = derived_core_properties.propertyMask(cp);
     if ((mask & @intFromEnum(DerivedProperty.in_cb_consonant)) != 0) return .consonant;
@@ -63,6 +98,8 @@ pub const BoundaryState = struct {
     ext_pict_active: bool = false,
 };
 
+/// Result of `checkBoundary`: whether to break before the current code point,
+/// paired with the cursor state to carry into the next call.
 pub const BoundaryDecision = struct {
     should_break: bool,
     new_state: BoundaryState,
@@ -72,6 +109,7 @@ pub const BoundaryDecision = struct {
 /// the prior cursor state. Returns the decision and the state to use after
 /// `cur` is consumed. Implements the full UAX #29 extended grapheme cluster
 /// algorithm (GB1–GB9c, GB11, GB12/13, GB999).
+/// @stable-since: v0.1.0
 pub fn checkBoundary(state: BoundaryState, cur: CodePoint) BoundaryDecision {
     const cur_prop = graphemeBreakProperty(cur);
     const cur_incb = inCB(cur);
@@ -170,6 +208,10 @@ pub const GraphemeIterator = struct {
     pos: usize = 0,
     state: BoundaryState = .{},
 
+    /// Returns the next grapheme cluster as a sub-slice of the source bytes,
+    /// or `null` once the input is exhausted. The slice borrows from the
+    /// iterator's backing buffer.
+    /// @stable-since: v0.1.0
     pub fn next(self: *GraphemeIterator) ?[]const u8 {
         if (self.pos >= self.bytes.len) return null;
         const start = self.pos;
@@ -186,17 +228,23 @@ pub const GraphemeIterator = struct {
         return self.bytes[start..self.pos];
     }
 
+    /// Rewinds the iterator to the start of the input and clears boundary state.
+    /// @stable-since: v0.1.0
     pub fn reset(self: *GraphemeIterator) void {
         self.pos = 0;
         self.state = .{};
     }
 
+    /// Returns the next grapheme cluster without advancing the iterator.
+    /// @stable-since: v0.1.0
     pub fn peek(self: *const GraphemeIterator) ?[]const u8 {
         var copy = self.*;
         return copy.next();
     }
 };
 
+/// Creates a `GraphemeIterator` over the UTF-8 bytes `bytes`.
+/// @stable-since: v0.1.0
 pub fn iterator(bytes: []const u8) GraphemeIterator {
     return .{ .bytes = bytes };
 }
@@ -209,6 +257,9 @@ pub const CodePointGraphemeIterator = struct {
     pos: usize = 0,
     state: BoundaryState = .{},
 
+    /// Returns the next grapheme cluster as a slice of the source code points,
+    /// or `null` once the input is exhausted.
+    /// @stable-since: v0.1.0
     pub fn next(self: *CodePointGraphemeIterator) ?[]const CodePoint {
         if (self.pos >= self.code_points.len) return null;
         const start = self.pos;
@@ -224,16 +275,22 @@ pub const CodePointGraphemeIterator = struct {
         return self.code_points[start..self.pos];
     }
 
+    /// Rewinds the iterator to the start of the input and clears boundary state.
+    /// @stable-since: v0.1.0
     pub fn reset(self: *CodePointGraphemeIterator) void {
         self.pos = 0;
         self.state = .{};
     }
 };
 
+/// Creates a `CodePointGraphemeIterator` over `code_points`.
+/// @stable-since: v0.1.0
 pub fn codePointIterator(code_points: []const CodePoint) CodePointGraphemeIterator {
     return .{ .code_points = code_points };
 }
 
+/// Counts the grapheme clusters in the UTF-8 bytes `bytes`.
+/// @stable-since: v0.1.0
 pub fn countGraphemes(bytes: []const u8) usize {
     var it = iterator(bytes);
     var count: usize = 0;
@@ -241,6 +298,8 @@ pub fn countGraphemes(bytes: []const u8) usize {
     return count;
 }
 
+/// Counts the grapheme clusters in the code point slice `code_points`.
+/// @stable-since: v0.1.0
 pub fn countGraphemesFromCodePoints(code_points: []const CodePoint) usize {
     var it = codePointIterator(code_points);
     var count: usize = 0;
@@ -286,6 +345,8 @@ pub const WordStepState = struct {
     /// codepoint. WB3/WB3a/WB3b/WB3c need the literal, not the effective.
     prev_lit: WordProp,
 
+    /// Seeds the step state from the first code point of the input.
+    /// @stable-since: v0.1.0
     pub fn init(first_code_point: CodePoint) WordStepState {
         const p = wordBreakProperty(first_code_point);
         return .{
@@ -297,6 +358,8 @@ pub const WordStepState = struct {
     }
 };
 
+/// Result of `wordStep`: whether a word boundary precedes the current position,
+/// paired with the state to carry into the next step.
 pub const WordStepDecision = struct {
     is_break: bool,
     new_state: WordStepState,
@@ -320,6 +383,7 @@ fn nextEffectiveWordProp(code_points: []const CodePoint, start: usize) ?WordProp
 /// decision and the new state to use after consuming position `i`. The
 /// caller must have invoked `WordStepState.init(code_points[0])` before
 /// calling this for i == 1.
+/// @stable-since: v0.1.0
 pub fn wordStep(state: WordStepState, code_points: []const CodePoint, i: usize) WordStepDecision {
     const curr = wordBreakProperty(code_points[i]);
     const prev_lit = state.prev_lit;
@@ -482,6 +546,7 @@ pub fn wordStep(state: WordStepState, code_points: []const CodePoint, i: usize) 
 /// `code_points[i]`. `out[0]` is sot, `out[n]` is eot; both are always true
 /// per WB1/WB2 (and `out[0]` is true even when `n == 0` to represent the
 /// degenerate empty input).
+/// @stable-since: v0.1.0
 pub fn computeWordBoundaries(allocator: std.mem.Allocator, code_points: []const CodePoint) ![]bool {
     const n = code_points.len;
     const out = try allocator.alloc(bool, n + 1);
@@ -509,6 +574,9 @@ pub const CodePointWordIterator = struct {
     state: WordStepState = undefined,
     primed: bool = false,
 
+    /// Returns the next word as a slice of the source code points, or `null`
+    /// once the input is exhausted.
+    /// @stable-since: v0.1.0
     pub fn next(self: *CodePointWordIterator) ?[]const CodePoint {
         const n = self.code_points.len;
         if (self.pos >= n) return null;
@@ -530,12 +598,16 @@ pub const CodePointWordIterator = struct {
         return self.code_points[start..n];
     }
 
+    /// Rewinds the iterator to the start of the input.
+    /// @stable-since: v0.1.0
     pub fn reset(self: *CodePointWordIterator) void {
         self.pos = 0;
         self.primed = false;
     }
 };
 
+/// Creates a `CodePointWordIterator` over `code_points`.
+/// @stable-since: v0.1.0
 pub fn codePointWordIterator(code_points: []const CodePoint) CodePointWordIterator {
     return .{ .code_points = code_points };
 }
@@ -548,6 +620,9 @@ pub const WordIterator = struct {
     state: WordStepState = undefined,
     primed: bool = false,
 
+    /// Returns the next word as a sub-slice of the source bytes, or `null` once
+    /// the input is exhausted. The slice borrows from the iterator's buffer.
+    /// @stable-since: v0.1.0
     pub fn next(self: *WordIterator) ?[]const u8 {
         const n = self.bytes.len;
         if (self.pos >= n) return null;
@@ -576,12 +651,16 @@ pub const WordIterator = struct {
         return self.bytes[start..n];
     }
 
+    /// Rewinds the iterator to the start of the input.
+    /// @stable-since: v0.1.0
     pub fn reset(self: *WordIterator) void {
         self.pos = 0;
         self.primed = false;
     }
 };
 
+/// Creates a `WordIterator` over the UTF-8 bytes `bytes`.
+/// @stable-since: v0.1.0
 pub fn wordIterator(bytes: []const u8) WordIterator {
     return .{ .bytes = bytes };
 }
@@ -749,6 +828,8 @@ fn nextEffectiveWordPropBytes(bytes: []const u8, start_byte: usize) ?WordProp {
     return null;
 }
 
+/// Counts the words in the UTF-8 bytes `bytes`.
+/// @stable-since: v0.1.0
 pub fn countWords(bytes: []const u8) usize {
     var it = wordIterator(bytes);
     var count: usize = 0;
@@ -756,6 +837,8 @@ pub fn countWords(bytes: []const u8) usize {
     return count;
 }
 
+/// Counts the words in the code point slice `code_points`.
+/// @stable-since: v0.1.0
 pub fn countWordsFromCodePoints(code_points: []const CodePoint) usize {
     var it = codePointWordIterator(code_points);
     var count: usize = 0;
@@ -810,6 +893,8 @@ pub const SentenceStepState = struct {
     /// Raw (literal) property of the previous codepoint, used by SB3/SB4.
     prev_lit: SBProp,
 
+    /// Seeds the step state from the first code point of the input.
+    /// @stable-since: v0.1.0
     pub fn init(first_code_point: CodePoint) SentenceStepState {
         const p = sentenceBreakProperty(first_code_point);
         var ctx: SBContext = .none;
@@ -835,6 +920,8 @@ pub const SentenceStepState = struct {
     }
 };
 
+/// Result of `sentenceStep`: whether a sentence boundary precedes the current
+/// position, paired with the state to carry into the next step.
 pub const SentenceStepDecision = struct {
     is_break: bool,
     new_state: SentenceStepState,
@@ -1064,6 +1151,7 @@ fn sentenceStepInner(state: SentenceStepState, curr: SBProp, lookahead_for_sb8: 
 
 /// Decide whether there is a sentence boundary BEFORE `code_points[i]`,
 /// given the algorithm state derived from positions 0..i-1.
+/// @stable-since: v0.1.0
 pub fn sentenceStep(state: SentenceStepState, code_points: []const CodePoint, i: usize) SentenceStepDecision {
     const curr = sentenceBreakProperty(code_points[i]);
     // SB8's lookahead is only needed when we sit inside an ATerm window. We
@@ -1080,6 +1168,7 @@ pub fn sentenceStep(state: SentenceStepState, code_points: []const CodePoint, i:
 /// implementing the full UAX #29 sentence boundary algorithm
 /// (SB1..SB11 plus SB998/SB999). `out[i]` is true iff there is a sentence
 /// boundary immediately BEFORE `code_points[i]`.
+/// @stable-since: v0.1.0
 pub fn computeSentenceBoundaries(allocator: std.mem.Allocator, code_points: []const CodePoint) ![]bool {
     const n = code_points.len;
     const out = try allocator.alloc(bool, n + 1);
@@ -1107,6 +1196,9 @@ pub const CodePointSentenceIterator = struct {
     state: SentenceStepState = undefined,
     primed: bool = false,
 
+    /// Returns the next sentence as a slice of the source code points, or
+    /// `null` once the input is exhausted.
+    /// @stable-since: v0.1.0
     pub fn next(self: *CodePointSentenceIterator) ?[]const CodePoint {
         const n = self.code_points.len;
         if (self.pos >= n) return null;
@@ -1128,12 +1220,16 @@ pub const CodePointSentenceIterator = struct {
         return self.code_points[start..n];
     }
 
+    /// Rewinds the iterator to the start of the input.
+    /// @stable-since: v0.1.0
     pub fn reset(self: *CodePointSentenceIterator) void {
         self.pos = 0;
         self.primed = false;
     }
 };
 
+/// Creates a `CodePointSentenceIterator` over `code_points`.
+/// @stable-since: v0.1.0
 pub fn codePointSentenceIterator(code_points: []const CodePoint) CodePointSentenceIterator {
     return .{ .code_points = code_points };
 }
@@ -1147,6 +1243,10 @@ pub const SentenceIterator = struct {
     state: SentenceStepState = undefined,
     primed: bool = false,
 
+    /// Returns the next sentence as a sub-slice of the source bytes, or `null`
+    /// once the input is exhausted. The slice borrows from the iterator's
+    /// buffer.
+    /// @stable-since: v0.1.0
     pub fn next(self: *SentenceIterator) ?[]const u8 {
         const n = self.bytes.len;
         if (self.pos >= n) return null;
@@ -1181,16 +1281,22 @@ pub const SentenceIterator = struct {
         return self.bytes[start..n];
     }
 
+    /// Rewinds the iterator to the start of the input.
+    /// @stable-since: v0.1.0
     pub fn reset(self: *SentenceIterator) void {
         self.pos = 0;
         self.primed = false;
     }
 };
 
+/// Creates a `SentenceIterator` over the UTF-8 bytes `bytes`.
+/// @stable-since: v0.1.0
 pub fn sentenceIterator(bytes: []const u8) SentenceIterator {
     return .{ .bytes = bytes };
 }
 
+/// Counts the sentences in the UTF-8 bytes `bytes`.
+/// @stable-since: v0.1.0
 pub fn countSentences(bytes: []const u8) usize {
     var it = sentenceIterator(bytes);
     var count: usize = 0;
@@ -1198,6 +1304,8 @@ pub fn countSentences(bytes: []const u8) usize {
     return count;
 }
 
+/// Counts the sentences in the code point slice `code_points`.
+/// @stable-since: v0.1.0
 pub fn countSentencesFromCodePoints(code_points: []const CodePoint) usize {
     var it = codePointSentenceIterator(code_points);
     var count: usize = 0;
@@ -1442,6 +1550,7 @@ pub const LineStepState = struct {
     /// Initialise state from the first codepoint of the input. LB2 marks
     /// the boundary BEFORE position 0 as `.prohibited`; callers should
     /// emit that themselves, then call `lineStep` for positions ≥ 1.
+    /// @stable-since: v0.1.0
     pub fn init(first_cp: CodePoint) LineStepState {
         const raw = lineBreak(first_cp);
         const res_pre10 = resolveLineBreakProp(raw, first_cp);
@@ -1464,11 +1573,16 @@ pub const LineStepState = struct {
     }
 };
 
+/// Result of `lineStep`: the boundary classification before the current code
+/// point, paired with the state to carry into the next step.
 pub const LineStepDecision = struct {
     kind: LineBreakKind,
     new_state: LineStepState,
 };
 
+/// Result of `lineStepBytes`: like `LineStepDecision` but also reports the byte
+/// length of the code point that was just consumed, so iterators can advance
+/// without re-decoding.
 pub const LineStepByteDecision = struct {
     kind: LineBreakKind,
     new_state: LineStepState,
@@ -1480,6 +1594,7 @@ pub const LineStepByteDecision = struct {
 /// from positions 0..i-1, and return the state to use after consuming
 /// position `i`. Caller must have invoked `LineStepState.init(code_points[0])`
 /// before the first call (with i == 1).
+/// @stable-since: v0.1.0
 pub fn lineStep(state: LineStepState, code_points: []const CodePoint, i: usize) LineStepDecision {
     const cur_cp = code_points[i];
     const cur_raw = lineBreak(cur_cp);
@@ -1510,6 +1625,7 @@ pub fn lineStep(state: LineStepState, code_points: []const CodePoint, i: usize) 
 /// (lossy on invalid UTF-8) and returns the boundary decision plus the
 /// byte length consumed by the stepped codepoint, so iterators can advance
 /// without re-decoding.
+/// @stable-since: v0.1.0
 pub fn lineStepBytes(state: LineStepState, bytes: []const u8, byte_pos: usize) LineStepByteDecision {
     const decoded = utf8.validateAndDecodeCodePointBytesLossy(bytes, byte_pos) catch @panic("invalid code point bytes");
     const cur_cp = decoded.code_point;
@@ -1999,6 +2115,7 @@ fn lb28aMatchesStream(
 /// itself; the algorithm's prior workspace (raw/resolved class arrays,
 /// LB9 attachment table, effective tape) has been replaced with O(1)
 /// state inside `LineStepState`.
+/// @stable-since: v0.1.0
 pub fn computeLineBoundaries(allocator: std.mem.Allocator, code_points: []const CodePoint) ![]LineBreakKind {
     const total = code_points.len;
     const boundaries = try allocator.alloc(LineBreakKind, total + 1);
@@ -2026,6 +2143,7 @@ pub fn computeLineBoundaries(allocator: std.mem.Allocator, code_points: []const 
 /// terminated the segment. Layout engines must honor `.mandatory` and may
 /// take `.opportunity` to fit a line; for the final segment of the input the
 /// kind is `.mandatory` (LB3).
+/// @stable-since: v0.1.0
 pub fn LineSegment(comptime Element: type) type {
     return struct {
         slice: []const Element,
@@ -2044,6 +2162,9 @@ pub const CodePointLineBoundaryIterator = struct {
     state: LineStepState = undefined,
     primed: bool = false,
 
+    /// Returns the next line-break segment (code point slice plus terminating
+    /// `LineBreakKind`), or `null` once the input is exhausted.
+    /// @stable-since: v0.1.0
     pub fn next(self: *CodePointLineBoundaryIterator) ?LineSegment(CodePoint) {
         const n = self.code_points.len;
         if (self.pos >= n) return null;
@@ -2066,12 +2187,16 @@ pub const CodePointLineBoundaryIterator = struct {
         return .{ .slice = self.code_points[start..n], .kind = .mandatory };
     }
 
+    /// Rewinds the iterator to the start of the input.
+    /// @stable-since: v0.1.0
     pub fn reset(self: *CodePointLineBoundaryIterator) void {
         self.pos = 0;
         self.primed = false;
     }
 };
 
+/// Creates a `CodePointLineBoundaryIterator` over `code_points`.
+/// @stable-since: v0.1.0
 pub fn codePointLineBoundaryIterator(code_points: []const CodePoint) CodePointLineBoundaryIterator {
     return .{ .code_points = code_points };
 }
@@ -2086,6 +2211,10 @@ pub const LineBreakIterator = struct {
     state: LineStepState = undefined,
     primed: bool = false,
 
+    /// Returns the next line-break segment (byte slice plus terminating
+    /// `LineBreakKind`), or `null` once the input is exhausted. The slice
+    /// borrows from the iterator's buffer.
+    /// @stable-since: v0.1.0
     pub fn next(self: *LineBreakIterator) ?LineSegment(u8) {
         const n = self.bytes.len;
         if (self.pos >= n) return null;
@@ -2114,17 +2243,22 @@ pub const LineBreakIterator = struct {
         return .{ .slice = self.bytes[start..n], .kind = .mandatory };
     }
 
+    /// Rewinds the iterator to the start of the input.
+    /// @stable-since: v0.1.0
     pub fn reset(self: *LineBreakIterator) void {
         self.pos = 0;
         self.primed = false;
     }
 };
 
+/// Creates a `LineBreakIterator` over the UTF-8 bytes `bytes`.
+/// @stable-since: v0.1.0
 pub fn lineBreakIterator(bytes: []const u8) LineBreakIterator {
     return .{ .bytes = bytes };
 }
 
 /// Count the number of line-break segments in `bytes`. Allocation-free.
+/// @stable-since: v0.1.0
 pub fn countLineSegments(bytes: []const u8) usize {
     var it = lineBreakIterator(bytes);
     var count: usize = 0;
@@ -2132,6 +2266,8 @@ pub fn countLineSegments(bytes: []const u8) usize {
     return count;
 }
 
+/// Counts the line-break segments in the code point slice `code_points`.
+/// @stable-since: v0.1.0
 pub fn countLineSegmentsFromCodePoints(code_points: []const CodePoint) usize {
     var it = codePointLineBoundaryIterator(code_points);
     var count: usize = 0;

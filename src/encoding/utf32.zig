@@ -1,3 +1,16 @@
+//! UTF-32 encoding and decoding over `[]const u32` code units.
+//!
+//! Every Unicode scalar occupies exactly one `u32` code unit, so the
+//! sequence length is always 1. The work here is therefore validation:
+//! rejecting surrogate code points (U+D800..U+DFFF) and units above the
+//! Unicode range (> U+10FFFF). Provides validation, forward and reverse
+//! decoding, encoding, lossy decoding with the replacement scalar,
+//! zero-copy views, and conversion to `[]CodePoint`.
+//!
+//! Prefer the checked `validateAndDecode…` entry points for untrusted
+//! input; the `…Unchecked` and `…Lossy` variants assume or tolerate
+//! malformed units respectively.
+
 const std = @import("std");
 const utils = @import("utils");
 const encoding = @import("root.zig");
@@ -7,24 +20,37 @@ const INVALID_CODE_POINT = encoding.INVALID_CODE_POINT;
 
 const encoding_range_end: CodePoint = 0x10FFFF;
 
+/// Byte order used when interpreting stored UTF-32 code units.
 pub const Endian = utils.Endian;
 
+/// First code point of the surrogate range (U+D800); surrogates are not
+/// valid UTF-32 scalars.
 pub const surrogate_range_start: u32 = 0xD800;
+/// Last code point of the surrogate range (U+DFFF), inclusive.
 pub const surrogate_range_end: u32 = 0xDFFF;
 
+/// Smallest representable Unicode scalar (U+0000).
 pub const min_scalar: CodePoint = 0x0000;
+/// Largest representable Unicode scalar (U+10FFFF).
 pub const max_scalar: CodePoint = 0x10FFFF;
 
+/// A decoded scalar paired with the number of code units it consumed,
+/// produced by the checked decode paths. In UTF-32 `len` is always 1.
 pub const DecodedCodePoint = struct {
     code_point: CodePoint,
     len: u1,
 };
 
+/// A decoded scalar paired with the number of code units consumed,
+/// produced by the lossy decode paths. Invalid units yield the
+/// replacement scalar with `len` still advancing past them.
 pub const DecodedCodePointLossy = struct {
     code_point: CodePoint,
     len: usize,
 };
 
+/// Errors reported by the checked validation and decode paths: empty or
+/// out-of-bounds access, surrogate units, and units above U+10FFFF.
 pub const UTF32ValidationError = error{
     ZeroLengthUnits,
     IndexOutOfBounds,
@@ -36,6 +62,9 @@ pub const UTF32ValidationError = error{
     Undefined,
 };
 
+/// Errors reported by the lossy decode paths. Malformed scalar values
+/// are replaced rather than raised, so only structural errors (empty or
+/// out-of-bounds access) remain.
 pub const UTF32ValidationLossyError = error{
     ZeroLengthUnits,
     IndexOutOfBounds,
@@ -45,6 +74,8 @@ pub const UTF32ValidationLossyError = error{
     Undefined,
 };
 
+/// Errors reported when encoding a code point into a `[]u32` buffer:
+/// surrogate or out-of-range scalars, and an undersized output buffer.
 pub const UTF32EncodeError = error{
     CodePointTooLarge,
     BufferTooSmall,
@@ -75,12 +106,17 @@ fn validateStoredUnit(unit: u32) UTF32ValidationError!CodePoint {
     return code_point;
 }
 
+/// Validate `c32` as a stored UTF-32 unit and return its sequence length
+/// (always 1). Errors on surrogate or out-of-range units.
+/// @stable-since: v0.1.0
 pub fn utf32SequenceLen(c32: u32) UTF32ValidationError!u1 {
     _ = try validateStoredUnit(c32);
     return 1;
 }
 
 /// Buffer must end at the last code unit of the scalar (`buf.len - 1`).
+/// Validates that trailing unit and returns its sequence length (always 1).
+/// @stable-since: v0.1.0
 pub fn utf32SequenceLenReverse(buf: []const u32) UTF32ValidationError!u1 {
     if (buf.len == 0) {
         return error.ZeroLengthUnits;
@@ -89,6 +125,9 @@ pub fn utf32SequenceLenReverse(buf: []const u32) UTF32ValidationError!u1 {
     return 1;
 }
 
+/// Return the number of code units `code_point` would occupy when encoded
+/// (always 1). Errors on surrogate or out-of-range scalars.
+/// @stable-since: v0.1.0
 pub fn utf32EncodeLen(code_point: CodePoint) UTF32EncodeError!u1 {
     if (code_point > encoding_range_end) {
         return error.CodePointTooLarge;
@@ -101,6 +140,9 @@ pub fn utf32EncodeLen(code_point: CodePoint) UTF32EncodeError!u1 {
     return 1;
 }
 
+/// Encode `code_point` into `buf` and return the units written (always 1).
+/// Errors on surrogate or out-of-range scalars, or if `buf` is too small.
+/// @stable-since: v0.1.0
 pub fn encodeCodePoint(code_point: CodePoint, buf: []u32) UTF32EncodeError!u1 {
     const len = try utf32EncodeLen(code_point);
 
@@ -112,6 +154,10 @@ pub fn encodeCodePoint(code_point: CodePoint, buf: []u32) UTF32EncodeError!u1 {
     return len;
 }
 
+/// Validate the unit at `buf[offset]` and return its sequence length
+/// (always 1). Errors on empty input, out-of-bounds offset, or an
+/// illegal unit.
+/// @stable-since: v0.1.0
 pub fn validateU32CodePoint(buf: []const u32, offset: usize) UTF32ValidationError!u1 {
     if (buf.len == 0) {
         return error.ZeroLengthUnits;
@@ -123,6 +169,9 @@ pub fn validateU32CodePoint(buf: []const u32, offset: usize) UTF32ValidationErro
     return 1;
 }
 
+/// Validate the trailing unit of `buf` and return its sequence length
+/// (always 1). Reverse counterpart of `validateU32CodePoint`.
+/// @stable-since: v0.1.0
 pub fn validateU32CodePointReverse(buf: []const u32) UTF32ValidationError!u1 {
     return try utf32SequenceLenReverse(buf);
 }
@@ -147,11 +196,19 @@ fn validateAndDecodeU32CodePointWithLen(buf: []const u32, offset: usize, len: u1
     return .{ .code_point = code_point, .len = 1 };
 }
 
+/// Validate and decode the scalar at `buf[offset]`. Prefer this checked
+/// entry point for untrusted input; it rejects surrogate and out-of-range
+/// units rather than producing them.
+/// @stable-since: v0.1.0
 pub fn validateAndDecodeU32CodePoint(buf: []const u32, offset: usize) UTF32ValidationError!DecodedCodePoint {
     const len = try validateU32CodePoint(buf, offset);
     return validateAndDecodeU32CodePointWithLen(buf, offset, len);
 }
 
+/// Decode the scalar at `buf[offset]`, substituting the replacement scalar
+/// for any surrogate or out-of-range unit. Only structural errors (empty
+/// input, out-of-bounds offset) are raised.
+/// @stable-since: v0.1.0
 pub fn validateAndDecodeU32CodePointLossy(buf: []const u32, offset: usize) UTF32ValidationLossyError!DecodedCodePointLossy {
     if (buf.len == 0) {
         return error.ZeroLengthUnits;
@@ -163,6 +220,10 @@ pub fn validateAndDecodeU32CodePointLossy(buf: []const u32, offset: usize) UTF32
     return .{ .code_point = code_point, .len = 1 };
 }
 
+/// Validate and decode the scalar ending at the last unit of `buf`.
+/// Reverse counterpart of `validateAndDecodeU32CodePoint`, for backward
+/// traversal.
+/// @stable-since: v0.1.0
 pub fn validateAndDecodeU32CodePointReverse(buf: []const u32) UTF32ValidationError!DecodedCodePoint {
     const len = try utf32SequenceLenReverse(buf);
     const start = buf.len - @as(usize, len);
@@ -185,15 +246,20 @@ fn bufToUTF32CodePoint(buf: []const u32, offset: usize) DecodedCodePoint {
     };
 }
 
+/// Error returned when a scalar-index slice request falls outside the view.
 pub const UTF32SliceError = error{
     IndexOutOfBounds,
 };
 
+/// Bidirectional cursor over the scalars of a `UTF32View`. Assumes the
+/// underlying units are already valid (as produced by `initUTF32View`).
 pub const UTF32ViewIterator = struct {
     index: usize = 0,
     view: *const UTF32View,
     curr: ?CodePoint = null,
 
+    /// Advance to and return the next scalar, or `null` at the end.
+    /// @stable-since: v0.1.0
     pub fn next(self: *UTF32ViewIterator) ?CodePoint {
         if (self.index >= self.view.data.len) {
             return null;
@@ -206,6 +272,9 @@ pub const UTF32ViewIterator = struct {
         return self.curr.?;
     }
 
+    /// Return the next scalar without advancing the cursor, or `null` at
+    /// the end.
+    /// @stable-since: v0.1.0
     pub fn peek(self: *const UTF32ViewIterator) ?CodePoint {
         if (self.index >= self.view.data.len) {
             return null;
@@ -214,6 +283,8 @@ pub const UTF32ViewIterator = struct {
         return bufToUTF32CodePoint(self.view.data, self.index).code_point;
     }
 
+    /// Step back to and return the previous scalar, or `null` at the start.
+    /// @stable-since: v0.1.0
     pub fn previous(self: *UTF32ViewIterator) ?CodePoint {
         if (self.index == 0) {
             return null;
@@ -226,6 +297,9 @@ pub const UTF32ViewIterator = struct {
         return self.curr.?;
     }
 
+    /// Return the previous scalar without moving the cursor, or `null` at
+    /// the start.
+    /// @stable-since: v0.1.0
     pub fn peekPrevious(self: *const UTF32ViewIterator) ?CodePoint {
         if (self.index == 0) {
             return null;
@@ -235,18 +309,29 @@ pub const UTF32ViewIterator = struct {
     }
 };
 
+/// Zero-copy view over a `[]const u32` of UTF-32 code units together with
+/// its byte order. Since each scalar is one unit, scalar indices and unit
+/// indices coincide.
 pub const UTF32View = struct {
     data: []const u32,
     endian: Endian,
 
+    /// Return the number of scalars in the view (equal to the unit count).
+    /// @stable-since: v0.1.0
     pub fn countScalar(self: *const UTF32View) usize {
         return self.data.len;
     }
 
+    /// Report whether `index` is a valid scalar boundary, i.e. any offset
+    /// from 0 through the unit count inclusive.
+    /// @stable-since: v0.1.0
     pub fn isBoundary(self: *const UTF32View, index: usize) bool {
         return index <= self.data.len;
     }
 
+    /// Return a sub-view spanning scalars `[start_scalar, end_scalar)`.
+    /// Errors if the range is inverted or runs past the end.
+    /// @stable-since: v0.1.0
     pub fn sliceScalars(self: *const UTF32View, start_scalar: usize, end_scalar: usize) UTF32SliceError!UTF32View {
         if (start_scalar > end_scalar or end_scalar > self.data.len) {
             return error.IndexOutOfBounds;
@@ -258,16 +343,23 @@ pub const UTF32View = struct {
         };
     }
 
+    /// Return a bidirectional iterator positioned at the start of the view.
+    /// @stable-since: v0.1.0
     pub fn iter(self: *const UTF32View) UTF32ViewIterator {
         return .{ .view = self };
     }
 };
 
+/// Forward iterator that decodes raw `[]const u32` units leniently,
+/// yielding the replacement scalar for any surrogate or out-of-range unit.
 pub const UTF32LossyIterator = struct {
     data: []const u32,
     index: usize = 0,
     curr: ?CodePoint = null,
 
+    /// Advance to and return the next scalar (replacement on invalid
+    /// units), or `null` at the end.
+    /// @stable-since: v0.1.0
     pub fn next(self: *UTF32LossyIterator) ?CodePoint {
         if (self.index >= self.data.len) {
             return null;
@@ -280,6 +372,9 @@ pub const UTF32LossyIterator = struct {
         return decoded.code_point;
     }
 
+    /// Return the next scalar without advancing (replacement on invalid
+    /// units), or `null` at the end.
+    /// @stable-since: v0.1.0
     pub fn peek(self: *const UTF32LossyIterator) ?CodePoint {
         if (self.index >= self.data.len) {
             return null;
@@ -289,10 +384,15 @@ pub const UTF32LossyIterator = struct {
     }
 };
 
+/// Create a lossy forward iterator over `units` (see `UTF32LossyIterator`).
+/// @stable-since: v0.1.0
 pub fn lossyIterator(units: []const u32) UTF32LossyIterator {
     return .{ .data = units };
 }
 
+/// Count the scalars produced by lossy decoding `units`, including
+/// replacement scalars for invalid units.
+/// @stable-since: v0.1.0
 pub fn countScalarsLossy(units: []const u32) usize {
     var count: usize = 0;
     var iter = lossyIterator(units);
@@ -304,6 +404,9 @@ pub fn countScalarsLossy(units: []const u32) usize {
     return count;
 }
 
+/// Lossily decode `units` into the caller-supplied `buf`, returning the
+/// number of scalars written. Errors if `buf` cannot hold them all.
+/// @stable-since: v0.1.0
 pub fn bufToCodePointsLossyBuffer(units: []const u32, buf: []CodePoint) error{BufferTooSmall}!usize {
     var i: usize = 0;
     var iter = lossyIterator(units);
@@ -319,6 +422,9 @@ pub fn bufToCodePointsLossyBuffer(units: []const u32, buf: []CodePoint) error{Bu
     return i;
 }
 
+/// Lossily decode `units` into a freshly allocated `[]CodePoint`. The
+/// caller owns and must free the result.
+/// @stable-since: v0.1.0
 pub fn bufToCodePointsLossy(allocator: std.mem.Allocator, units: []const u32) error{ OutOfMemory, BufferTooSmall }![]CodePoint {
     const len = countScalarsLossy(units);
     const out = try allocator.alloc(CodePoint, len);
@@ -328,6 +434,11 @@ pub fn bufToCodePointsLossy(allocator: std.mem.Allocator, units: []const u32) er
     return out;
 }
 
+/// Validate every unit of `data` and return a view over it. Writes the
+/// decoded scalar count to `resultant_unicode_str_len`. Errors on the first
+/// surrogate or out-of-range unit. Prefer this over the unchecked variant
+/// for untrusted input.
+/// @stable-since: v0.1.0
 pub fn initUTF32View(data: []const u32, endian: Endian, resultant_unicode_str_len: *usize) UTF32ValidationError!UTF32View {
     var i: usize = 0;
     var scalar_count: usize = 0;
@@ -343,10 +454,16 @@ pub fn initUTF32View(data: []const u32, endian: Endian, resultant_unicode_str_le
     return .{ .data = data, .endian = endian };
 }
 
+/// Wrap `data` in a view without validating its units. The caller must
+/// guarantee every unit is a valid UTF-32 scalar.
+/// @stable-since: v0.1.0
 pub fn initUTF32ViewUnchecked(data: []const u32, endian: Endian) UTF32View {
     return .{ .data = data, .endian = endian };
 }
 
+/// Copy the scalars of `view` into `buf`, returning the count written.
+/// Errors if `buf` is too small to hold every scalar.
+/// @stable-since: v0.1.0
 pub fn utf32ViewToUTF32String(view: *const UTF32View, buf: []CodePoint) (UTF32ValidationError || error{BufferTooSmall})!usize {
     var i: usize = 0;
     var iter = view.iter();
@@ -363,6 +480,10 @@ pub fn utf32ViewToUTF32String(view: *const UTF32View, buf: []CodePoint) (UTF32Va
     return i;
 }
 
+/// Validate and decode comptime-known `units` into a fixed-size
+/// `[N]CodePoint` array sized to the scalar count. Compile error on any
+/// invalid unit.
+/// @stable-since: v0.1.0
 pub fn bufToUTF32StringComptime(comptime units: []const u32) (UTF32ValidationError || error{BufferTooSmall})![initUTF32ViewUnchecked(units, .little).countScalar()]CodePoint {
     comptime {
         var unicode_str_len: usize = 0;
@@ -373,6 +494,9 @@ pub fn bufToUTF32StringComptime(comptime units: []const u32) (UTF32ValidationErr
     }
 }
 
+/// Validate and decode `buf` into a freshly allocated `[]CodePoint`. Errors
+/// on the first invalid unit. The caller owns and must free the result.
+/// @stable-since: v0.1.0
 pub fn bufToUTF32String(allocator: std.mem.Allocator, buf: []const u32, endian: Endian) (UTF32ValidationError || error{ BufferTooSmall, OutOfMemory })![]CodePoint {
     var unicode_str_len: usize = 0;
     const view = try initUTF32View(buf, endian, &unicode_str_len);
@@ -537,7 +661,7 @@ test "utf32ViewToUTF32String and bufToUTF32String" {
     try std.testing.expectEqual(@as(CodePoint, 'z'), s[0]);
 }
 
-test "hostile: high-bit garbage scalars in buffer" {
+test "high-bit garbage scalars in buffer" {
     const garbage = [_]u32{ 0x80000000, 0x00110000, 0x00FFFFFF, 0xFFFFFFFF };
     for (garbage) |unit| {
         try std.testing.expectError(error.CodePointTooLarge, utf32SequenceLen(unit));
@@ -545,7 +669,7 @@ test "hostile: high-bit garbage scalars in buffer" {
     }
 }
 
-test "hostile: surrogate scalars stored as UTF-32 code units" {
+test "surrogate scalars stored as UTF-32 code units" {
     var cp: u32 = surrogate_range_start;
     while (cp <= surrogate_range_end) : (cp += 0x111) {
         try std.testing.expectError(error.SurrogateCodePoint, utf32SequenceLen(cp));
@@ -553,7 +677,7 @@ test "hostile: surrogate scalars stored as UTF-32 code units" {
     }
 }
 
-test "hostile matrix: reverse decode errors on isolated malformed buffers" {
+test "reverse decode errors on isolated malformed buffers" {
     const Case = struct { units: []const u32, expect_err: UTF32ValidationError };
     const cases = [_]Case{
         .{ .units = &.{surrogate_range_start}, .expect_err = error.SurrogateCodePoint },
@@ -566,20 +690,20 @@ test "hostile matrix: reverse decode errors on isolated malformed buffers" {
     }
 }
 
-test "hostile matrix: supplementary boundary U+10FFFF" {
+test "supplementary boundary U+10FFFF" {
     const max_unit = [_]u32{0x10FFFF};
     try std.testing.expectEqual(@as(CodePoint, 0x10FFFF), (try validateAndDecodeU32CodePointReverse(&max_unit)).code_point);
 
     try std.testing.expectError(error.CodePointTooLarge, validateAndDecodeU32CodePoint(&.{0x110000}, 0));
 }
 
-test "hostile matrix: initUTF32View rejects stitched errors" {
+test "initUTF32View rejects stitched errors" {
     var n: usize = 0;
     try std.testing.expectError(error.SurrogateCodePoint, initUTF32View(&[_]u32{ 'q', surrogate_range_start }, .little, &n));
     try std.testing.expectError(error.CodePointTooLarge, initUTF32View(&[_]u32{ 'z', 0x110000 }, .little, &n));
 }
 
-test "hostile: UTF32View iterator roundtrip on mixed string" {
+test "UTF32View iterator roundtrip on mixed string" {
     const units = [_]u32{ 0x1F600, 0x03B1, 'q' };
     var scalar_count: usize = 0;
     const view = try initUTF32View(&units, .little, &scalar_count);
@@ -596,7 +720,7 @@ test "hostile: UTF32View iterator roundtrip on mixed string" {
     try std.testing.expectEqual(fwd, rev);
 }
 
-test "hostile matrix: string conversion APIs propagate validation" {
+test "string conversion APIs propagate validation" {
     try std.testing.expectError(error.SurrogateCodePoint, bufToUTF32String(std.testing.allocator, &[_]u32{surrogate_range_start}, .little));
     try std.testing.expectError(error.CodePointTooLarge, bufToUTF32String(std.testing.allocator, &[_]u32{0x110000}, .little));
 }
@@ -624,14 +748,14 @@ test "lossy: UTF-32 offset and zero-length errors" {
     try std.testing.expectError(error.ZeroLengthUnits, validateAndDecodeU32CodePointLossy(&.{}, 0));
 }
 
-test "hostile: utf32ViewToUTF32String buffer too small path" {
+test "utf32ViewToUTF32String buffer too small path" {
     var n: usize = 0;
     const view = try initUTF32View(&[_]u32{ 'a', 'b' }, .little, &n);
     var tiny: [1]CodePoint = undefined;
     try std.testing.expectError(error.BufferTooSmall, utf32ViewToUTF32String(&view, &tiny));
 }
 
-test "hostile matrix: validateAndDecodeU32CodePointWithLen length contract" {
+test "validateAndDecodeU32CodePointWithLen length contract" {
     const unit = [_]u32{'x'};
     try std.testing.expectError(error.IndexOutOfBounds, validateAndDecodeU32CodePointWithLen(&unit, 0, 0));
     _ = try validateAndDecodeU32CodePointWithLen(&unit, 0, 1);
@@ -639,7 +763,7 @@ test "hostile matrix: validateAndDecodeU32CodePointWithLen length contract" {
     try std.testing.expectError(error.IndexOutOfBounds, validateAndDecodeU32CodePointWithLen(&unit, 1, 1));
 }
 
-test "hostile matrix: forward APIs agree on prefix walks" {
+test "forward APIs agree on prefix walks" {
     const units = [_]u32{ 'Z', 0x20AC, 0x10348 };
     var i: usize = 0;
     while (i < units.len) {
@@ -651,7 +775,7 @@ test "hostile matrix: forward APIs agree on prefix walks" {
     }
 }
 
-test "hostile: BMP encode/decode sweep (stride avoids timeout)" {
+test "BMP encode/decode sweep (stride avoids timeout)" {
     var buf: [1]u32 = undefined;
     var cp: CodePoint = 0;
     while (cp <= 0xFFFF) : (cp += 0x111) {
@@ -663,7 +787,7 @@ test "hostile: BMP encode/decode sweep (stride avoids timeout)" {
     }
 }
 
-test "hostile: supplementary encode/decode sweep" {
+test "supplementary encode/decode sweep" {
     var buf: [1]u32 = undefined;
     var cp: CodePoint = 0x10000;
     while (cp <= max_scalar) : (cp += 0x11111) {
@@ -674,7 +798,7 @@ test "hostile: supplementary encode/decode sweep" {
     }
 }
 
-test "hostile matrix: compile-time initUTF32View rejects illegal units" {
+test "compile-time initUTF32View rejects illegal units" {
     const surrogate_unit = comptime blk: {
         var scalar_count: usize = 0;
         break :blk initUTF32View(&[_]u32{0xD800}, .little, &scalar_count);
@@ -693,7 +817,7 @@ test "hostile matrix: compile-time initUTF32View rejects illegal units" {
     };
 }
 
-test "hostile: reverse always peels exactly one code unit on valid tail" {
+test "reverse always peels exactly one code unit on valid tail" {
     const units = [_]u32{ 0xD7FF, 0xE000, 0x10FFFF };
     var off = units.len;
     while (off > 0) {
@@ -703,7 +827,7 @@ test "hostile: reverse always peels exactly one code unit on valid tail" {
     }
 }
 
-test "hostile matrix: sliceScalars + utf32ViewToUTF32String on emoji-heavy string" {
+test "sliceScalars + utf32ViewToUTF32String on emoji-heavy string" {
     const units = [_]u32{ 0x1F600, 0x03B1, 'q', 0x10FFFF };
     var n: usize = 0;
     const view = try initUTF32View(&units, .little, &n);
@@ -714,7 +838,7 @@ test "hostile matrix: sliceScalars + utf32ViewToUTF32String on emoji-heavy strin
     try std.testing.expectEqual(@as(CodePoint, 'q'), out[1]);
 }
 
-test "hostile: UTF-32 rejects every surrogate scalar value" {
+test "UTF-32 rejects every surrogate scalar value" {
     var unit: u32 = surrogate_range_start;
     var rejected: usize = 0;
 
@@ -727,7 +851,7 @@ test "hostile: UTF-32 rejects every surrogate scalar value" {
     try std.testing.expectEqual(@as(usize, surrogate_range_end - surrogate_range_start + 1), rejected);
 }
 
-test "hostile: UTF-32 lossy decoder replaces huge and surrogate units" {
+test "UTF-32 lossy decoder replaces huge and surrogate units" {
     const units = [_]u32{
         0,
         surrogate_range_start,
@@ -750,7 +874,7 @@ test "hostile: UTF-32 lossy decoder replaces huge and surrogate units" {
     try std.testing.expectEqual(units.len, seen);
 }
 
-test "hostile: encodeCodePoint rejects undersized UTF-32 output" {
+test "encodeCodePoint rejects undersized UTF-32 output" {
     var empty: [0]u32 = .{};
     try std.testing.expectError(error.BufferTooSmall, encodeCodePoint('A', &empty));
     try std.testing.expectError(error.SurrogateCodePoint, encodeCodePoint(surrogate_range_start, &empty));

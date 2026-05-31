@@ -1,10 +1,31 @@
+//! This file contains APIs for estimating the display width of Unicode
+//! scalar values. It exposes the East Asian Width property (per Unicode
+//! Standard Annex #11) and a terminal-oriented column-width estimator for
+//! laying text out on a monospace cell grid.
+//!
+//! - All public functions accept any `u32` and never trap: out-of-range
+//!   values (above U+10FFFF) and surrogates fall back to a safe default
+//!   rather than erroring.
+//! - The East Asian Width tables are auto-generated from the Unicode
+//!   Character Database; see `generated/east_asian_width.zig`.
+
 const std = @import("std");
 const encoding = @import("encoding");
 
 const CodePoint = encoding.CodePoint;
 
+/// Auto-generated East Asian Width tables and lookup, derived from the
+/// Unicode Character Database. Re-exported so callers can reach the raw
+/// generated declarations; prefer the aliases below for everyday use.
 pub const generated = @import("generated/east_asian_width.zig");
+/// The East Asian Width property values from Unicode Standard Annex #11:
+/// `n` (Neutral), `a` (Ambiguous), `f` (Fullwidth), `h` (Halfwidth),
+/// `na` (Narrow), and `w` (Wide). This enum is exhaustive.
 pub const EastAsianWidth = generated.EastAsianWidth;
+/// Returns the East Asian Width property of `cp`. Accepts any `u32` and
+/// never traps: code points above U+10FFFF resolve to `.n` (Neutral).
+///
+/// @stable-since: v0.1.0
 pub const eastAsianWidth = generated.eastAsianWidth;
 
 const unicode_data = @import("../generated/unicode_data.zig");
@@ -18,6 +39,8 @@ const unicode_data = @import("../generated/unicode_data.zig");
 /// Ambiguous (A) is treated as 1 because it is the safer default in
 /// non-CJK contexts; callers that need East Asian context can switch on
 /// `eastAsianWidth(cp) == .a` directly.
+///
+/// @stable-since: v0.1.0
 pub fn terminalColumnWidth(cp: CodePoint) u2 {
     if (cp > 0x10FFFF) return 1;
     const cat = unicode_data.generalCategory(cp);

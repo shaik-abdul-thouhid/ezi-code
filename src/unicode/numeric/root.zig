@@ -14,10 +14,17 @@ const encoding = @import("encoding");
 
 const CodePoint = encoding.CodePoint;
 
+/// Generated Numeric_Type page tables and lookup (DerivedNumericType.txt).
+/// Exposed for advanced callers; prefer `numericType` for normal use.
 pub const generated_type = @import("generated/numeric_type.zig");
+/// Generated Numeric_Value tables and lookup (DerivedNumericValues.txt).
+/// Exposed for advanced callers; prefer `numericValue` for normal use.
 pub const generated_values = @import("generated/numeric_values.zig");
 
+/// Numeric_Type enum: `.none`, `.decimal`, `.digit`, or `.numeric`.
 pub const NumericType = generated_type.NumericType;
+/// An exact numeric value as a rational `{ numerator: i64, denominator: i64 }`.
+/// The denominator is always positive.
 pub const NumericValue = generated_values.NumericValue;
 
 /// Numeric_Type of `cp` (`.none`, `.decimal`, `.digit`, or `.numeric`).
@@ -26,6 +33,8 @@ pub const numericType = generated_type.numericType;
 /// Numeric_Value of `cp` as an exact rational, or null when `cp` has no
 /// numeric value. Note a value of *zero* (e.g. DIGIT ZERO) is `.{ .numerator
 /// = 0, .denominator = 1 }`, distinct from null.
+///
+/// @stable-since: v0.1.0
 pub inline fn numericValue(cp: CodePoint) ?NumericValue {
     const idx = generated_values.numericValueIndex(cp);
     if (idx == 0) return null;
@@ -33,12 +42,16 @@ pub inline fn numericValue(cp: CodePoint) ?NumericValue {
 }
 
 /// True when `cp` carries a Numeric_Value (equivalently, Numeric_Type != none).
+///
+/// @stable-since: v0.1.0
 pub inline fn hasNumericValue(cp: CodePoint) bool {
     return generated_values.numericValueIndex(cp) != 0;
 }
 
 /// The numeric value of `cp` as an `f64`, or null when it has none. Convenience
 /// for callers that don't need exact rationals; precision is limited by `f64`.
+///
+/// @stable-since: v0.1.0
 pub inline fn numericValueAsFloat(cp: CodePoint) ?f64 {
     const v = numericValue(cp) orelse return null;
     return @as(f64, @floatFromInt(v.numerator)) / @as(f64, @floatFromInt(v.denominator));

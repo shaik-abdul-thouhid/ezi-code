@@ -1,41 +1,79 @@
+//! Unicode character property queries for code points. This module is the
+//! facade over the generated Unicode Character Database tables and exposes
+//! predicate and lookup functions for the properties defined by UnicodeData,
+//! DerivedCoreProperties, and PropList.
+//!
+//! - Every function accepts an arbitrary `CodePoint` (any `u21` value):
+//!   out-of-range, surrogate, and unassigned inputs are handled gracefully and
+//!   simply report the appropriate property value (typically `false` or the
+//!   default category). No input is rejected; there are no error paths.
+//! - Predicates returning `bool` answer a single Unicode property query.
+//!   Lookup functions (`generalCategory`, `bidiClass`,
+//!   `canonicalCombiningClass`) return the enumerated value for the code point.
+
 const std = @import("std");
 const encoding = @import("encoding");
 const utils = @import("utils");
 const types = @import("../types.zig");
 
+/// Generated Unicode Character Database tables and accessors (from UnicodeData).
 pub const unicode_data = @import("../generated/unicode_data.zig");
+/// DerivedCoreProperties accessors (alphabetic, cased, id_start, etc.).
 pub const derived_core_properties = @import("derived_core_properties.zig");
+/// PropList accessors (white space, dash, hyphen, hex digit, etc.).
 pub const prop_list = @import("prop_list.zig");
 
+/// The Unicode General_Category enumeration (Lu, Ll, Nd, Zs, ...).
 pub const GeneralCategory = unicode_data.GeneralCategory;
+/// The Unicode Bidi_Class enumeration used by the bidirectional algorithm.
 pub const BidiClass = unicode_data.BidiClass;
+/// A property of the DerivedCoreProperties set, used with `hasDerivedProperty`.
 pub const DerivedProperty = derived_core_properties.Property;
+/// The Canonical_Combining_Class enumeration used during normalization.
 pub const CanonicalCombiningClass = types.CanonicalCombiningClass;
 
 const CodePoint = encoding.CodePoint;
 
+/// Range-based table mapping code points to their simple lowercase forms.
 pub const lowercase_mapping_table = unicode_data.lowercase_range_mapping_table;
+/// Range-based table mapping code points to their simple uppercase forms.
 pub const uppercase_mapping_table = unicode_data.uppercase_range_mapping_table;
+/// Range-based table mapping code points to their simple titlecase forms.
 pub const titlecase_mapping_table = unicode_data.titlecase_range_mapping_table;
 
+/// Returns the bitmask of all DerivedCoreProperties held by `code_point`.
+/// Prefer this over repeated `hasDerivedProperty` calls when testing several
+/// properties of the same code point.
+/// @stable-since: v0.1.0
 pub fn derivedPropertyMask(code_point: CodePoint) u32 {
     return derived_core_properties.propertyMask(code_point);
 }
 
+/// Returns whether `code_point` carries the given DerivedCoreProperty.
+/// @stable-since: v0.1.0
 pub fn hasDerivedProperty(code_point: CodePoint, property: DerivedProperty) bool {
     return derived_core_properties.codePointProperty(code_point, property);
 }
 
+/// Returns the Canonical_Combining_Class of `code_point` (0 for starters).
 pub const canonicalCombiningClass = unicode_data.canonicalCombiningClass;
 
+/// Returns the General_Category of `code_point`. Returns `.unassigned` for
+/// code points with no assigned category.
+/// @stable-since: v0.1.0
 pub fn generalCategory(code_point: CodePoint) GeneralCategory {
     return unicode_data.generalCategory(code_point);
 }
 
+/// Returns the Bidi_Class of `code_point` used by the bidirectional algorithm.
+/// @stable-since: v0.1.0
 pub fn bidiClass(code_point: CodePoint) BidiClass {
     return unicode_data.bidiClass(code_point);
 }
 
+/// Returns whether `code_point` is a letter (General_Category L*: uppercase,
+/// lowercase, titlecase, modifier, or other letter).
+/// @stable-since: v0.1.0
 pub fn isLetter(code_point: CodePoint) bool {
     const category = generalCategory(code_point);
     return switch (category) {
@@ -44,18 +82,29 @@ pub fn isLetter(code_point: CodePoint) bool {
     };
 }
 
+/// Returns whether `code_point` has the derived Uppercase property. Broader
+/// than the Lu category: also includes Other_Uppercase code points.
+/// @stable-since: v0.1.0
 pub fn isUpperCase(code_point: CodePoint) bool {
     return hasDerivedProperty(code_point, .uppercase);
 }
 
+/// Returns whether `code_point` has the derived Lowercase property. Broader
+/// than the Ll category: also includes Other_Lowercase code points.
+/// @stable-since: v0.1.0
 pub fn isLowerCase(code_point: CodePoint) bool {
     return hasDerivedProperty(code_point, .lowercase);
 }
 
+/// Returns whether `code_point` has the derived Alphabetic property.
+/// @stable-since: v0.1.0
 pub fn isAlphabetic(code_point: CodePoint) bool {
     return hasDerivedProperty(code_point, .alphabetic);
 }
 
+/// Returns whether `code_point` is a number (General_Category N*: decimal,
+/// letter, or other number). Use `isDecimalDigit` for the narrower Nd test.
+/// @stable-since: v0.1.0
 pub fn isNumeric(code_point: CodePoint) bool {
     const category = generalCategory(code_point);
     return switch (category) {
@@ -64,10 +113,15 @@ pub fn isNumeric(code_point: CodePoint) bool {
     };
 }
 
+/// Returns whether `code_point` has the White_Space property (per PropList).
+/// @stable-since: v0.1.0
 pub fn isWhitespace(code_point: CodePoint) bool {
     return prop_list.isWhiteSpace(code_point);
 }
 
+/// Returns whether `code_point` is printable. False for control, format,
+/// surrogate, private-use, and unassigned code points; true otherwise.
+/// @stable-since: v0.1.0
 pub fn isPrintable(code_point: CodePoint) bool {
     const category = generalCategory(code_point);
     return switch (category) {
@@ -76,14 +130,22 @@ pub fn isPrintable(code_point: CodePoint) bool {
     };
 }
 
+/// Returns whether `code_point` is a Unicode scalar value: in range and not a
+/// surrogate. Surrogate code points (U+D800..U+DFFF) are invalid in isolation.
+/// @stable-since: v0.1.0
 pub fn isValidCodePoint(code_point: CodePoint) bool {
     return code_point <= 0x10FFFF and !isSurrogate(code_point);
 }
 
+/// Returns whether `code_point` lies in the surrogate range U+D800..U+DFFF.
+/// @stable-since: v0.1.0
 pub fn isSurrogate(code_point: CodePoint) bool {
     return code_point >= 0xD800 and code_point <= 0xDFFF;
 }
 
+/// Returns whether `code_point` is a combining mark (General_Category M*:
+/// non-spacing, spacing, or enclosing mark).
+/// @stable-since: v0.1.0
 pub fn isMark(code_point: CodePoint) bool {
     const category = generalCategory(code_point);
     return switch (category) {
@@ -92,240 +154,383 @@ pub fn isMark(code_point: CodePoint) bool {
     };
 }
 
+/// Returns whether `code_point` has the derived Math property.
+/// @stable-since: v0.1.0
 pub fn isMath(code_point: CodePoint) bool {
     return hasDerivedProperty(code_point, .math);
 }
 
+/// Returns whether `code_point` has the derived Cased property (it is upper-,
+/// lower-, or titlecase). Useful for case-folding and case-mapping decisions.
+/// @stable-since: v0.1.0
 pub fn isCased(code_point: CodePoint) bool {
     return hasDerivedProperty(code_point, .cased);
 }
 
+/// Returns whether `code_point` is Case_Ignorable, i.e. ignored when
+/// determining the case context of an adjacent code point.
+/// @stable-since: v0.1.0
 pub fn isCaseIgnorable(code_point: CodePoint) bool {
     return hasDerivedProperty(code_point, .case_ignorable);
 }
 
+/// Returns whether `code_point` changes under simple lowercase mapping.
+/// @stable-since: v0.1.0
 pub fn changesWhenLowercased(code_point: CodePoint) bool {
     return hasDerivedProperty(code_point, .changes_when_lowercased);
 }
 
+/// Returns whether `code_point` changes under simple uppercase mapping.
+/// @stable-since: v0.1.0
 pub fn changesWhenUppercased(code_point: CodePoint) bool {
     return hasDerivedProperty(code_point, .changes_when_uppercased);
 }
 
+/// Returns whether `code_point` changes under simple titlecase mapping.
+/// @stable-since: v0.1.0
 pub fn changesWhenTitlecased(code_point: CodePoint) bool {
     return hasDerivedProperty(code_point, .changes_when_titlecased);
 }
 
+/// Returns whether `code_point` changes under case folding.
+/// @stable-since: v0.1.0
 pub fn changesWhenCasefolded(code_point: CodePoint) bool {
     return hasDerivedProperty(code_point, .changes_when_casefolded);
 }
 
+/// Returns whether `code_point` changes under any case mapping.
+/// @stable-since: v0.1.0
 pub fn changesWhenCasemapped(code_point: CodePoint) bool {
     return hasDerivedProperty(code_point, .changes_when_casemapped);
 }
 
+/// Returns whether `code_point` is a decimal digit (General_Category Nd).
+/// Narrower than `isNumeric`; excludes letter and other numbers.
+/// @stable-since: v0.1.0
 pub fn isDecimalDigit(code_point: CodePoint) bool {
     return generalCategory(code_point) == .decimal_number;
 }
 
+/// Returns whether `code_point` is an ASCII hex digit (0-9, a-f, A-F).
+/// For the full Unicode Hex_Digit property use `isHexDigitWide`.
+/// @stable-since: v0.1.0
 pub fn isHexDigit(code_point: CodePoint) bool {
     return prop_list.isAsciiHexDigit(code_point);
 }
 
+/// Returns whether `code_point` has the Hex_Digit property, which includes the
+/// fullwidth forms in addition to the ASCII hex digits.
+/// @stable-since: v0.1.0
 pub fn isHexDigitWide(code_point: CodePoint) bool {
     return prop_list.isHexDigit(code_point);
 }
 
+/// Returns whether `code_point` has the ASCII_Hex_Digit property (0-9, a-f,
+/// A-F). Equivalent to `isHexDigit`.
+/// @stable-since: v0.1.0
 pub fn isAsciiHexDigit(code_point: CodePoint) bool {
     return prop_list.isAsciiHexDigit(code_point);
 }
 
+/// Returns whether `code_point` has the Bidi_Control property.
+/// @stable-since: v0.1.0
 pub fn isBidiControl(code_point: CodePoint) bool {
     return prop_list.isBidiControl(code_point);
 }
 
+/// Returns whether `code_point` has the Join_Control property (ZWJ/ZWNJ).
+/// @stable-since: v0.1.0
 pub fn isJoinControl(code_point: CodePoint) bool {
     return prop_list.isJoinControl(code_point);
 }
 
+/// Returns whether `code_point` has the Dash property.
+/// @stable-since: v0.1.0
 pub fn isDash(code_point: CodePoint) bool {
     return prop_list.isDash(code_point);
 }
 
+/// Returns whether `code_point` has the Hyphen property.
+/// @stable-since: v0.1.0
 pub fn isHyphen(code_point: CodePoint) bool {
     return prop_list.isHyphen(code_point);
 }
 
+/// Returns whether `code_point` has the Quotation_Mark property.
+/// @stable-since: v0.1.0
 pub fn isQuotationMark(code_point: CodePoint) bool {
     return prop_list.isQuotationMark(code_point);
 }
 
+/// Returns whether `code_point` has the Terminal_Punctuation property.
+/// @stable-since: v0.1.0
 pub fn isTerminalPunctuation(code_point: CodePoint) bool {
     return prop_list.isTerminalPunctuation(code_point);
 }
 
+/// Returns whether `code_point` has the Other_Math property (the math code
+/// points not already covered by the Sm category).
+/// @stable-since: v0.1.0
 pub fn isOtherMath(code_point: CodePoint) bool {
     return prop_list.isOtherMath(code_point);
 }
 
+/// Returns whether `code_point` has the Other_Alphabetic property.
+/// @stable-since: v0.1.0
 pub fn isOtherAlphabetic(code_point: CodePoint) bool {
     return prop_list.isOtherAlphabetic(code_point);
 }
 
+/// Returns whether `code_point` has the Ideographic property.
+/// @stable-since: v0.1.0
 pub fn isIdeographic(code_point: CodePoint) bool {
     return prop_list.isIdeographic(code_point);
 }
 
+/// Returns whether `code_point` has the Diacritic property.
+/// @stable-since: v0.1.0
 pub fn isDiacritic(code_point: CodePoint) bool {
     return prop_list.isDiacritic(code_point);
 }
 
+/// Returns whether `code_point` has the Extender property.
+/// @stable-since: v0.1.0
 pub fn isExtender(code_point: CodePoint) bool {
     return prop_list.isExtender(code_point);
 }
 
+/// Returns whether `code_point` has the Other_Lowercase property.
+/// @stable-since: v0.1.0
 pub fn isOtherLowercase(code_point: CodePoint) bool {
     return prop_list.isOtherLowercase(code_point);
 }
 
+/// Returns whether `code_point` has the Other_Uppercase property.
+/// @stable-since: v0.1.0
 pub fn isOtherUppercase(code_point: CodePoint) bool {
     return prop_list.isOtherUppercase(code_point);
 }
 
+/// Returns whether `code_point` is a noncharacter (Noncharacter_Code_Point):
+/// permanently reserved and never assigned a character.
+/// @stable-since: v0.1.0
 pub fn isNoncharacterCodePoint(code_point: CodePoint) bool {
     return prop_list.isNoncharacterCodePoint(code_point);
 }
 
+/// Returns whether `code_point` has the Other_Grapheme_Extend property.
+/// @stable-since: v0.1.0
 pub fn isOtherGraphemeExtend(code_point: CodePoint) bool {
     return prop_list.isOtherGraphemeExtend(code_point);
 }
 
+/// Returns whether `code_point` is an IDS_Binary_Operator (Ideographic
+/// Description Sequence binary operator).
+/// @stable-since: v0.1.0
 pub fn isIdsBinaryOperator(code_point: CodePoint) bool {
     return prop_list.isIdsBinaryOperator(code_point);
 }
 
+/// Returns whether `code_point` is an IDS_Trinary_Operator.
+/// @stable-since: v0.1.0
 pub fn isIdsTrinaryOperator(code_point: CodePoint) bool {
     return prop_list.isIdsTrinaryOperator(code_point);
 }
 
+/// Returns whether `code_point` is an IDS_Unary_Operator.
+/// @stable-since: v0.1.0
 pub fn isIdsUnaryOperator(code_point: CodePoint) bool {
     return prop_list.isIdsUnaryOperator(code_point);
 }
 
+/// Returns whether `code_point` has the Radical property (CJK radical).
+/// @stable-since: v0.1.0
 pub fn isRadical(code_point: CodePoint) bool {
     return prop_list.isRadical(code_point);
 }
 
+/// Returns whether `code_point` has the Unified_Ideograph property.
+/// @stable-since: v0.1.0
 pub fn isUnifiedIdeograph(code_point: CodePoint) bool {
     return prop_list.isUnifiedIdeograph(code_point);
 }
 
+/// Returns whether `code_point` has the Other_Default_Ignorable_Code_Point
+/// property.
+/// @stable-since: v0.1.0
 pub fn isOtherDefaultIgnorableCodePoint(code_point: CodePoint) bool {
     return prop_list.isOtherDefaultIgnorableCodePoint(code_point);
 }
 
+/// Returns whether `code_point` has the Deprecated property.
+/// @stable-since: v0.1.0
 pub fn isDeprecated(code_point: CodePoint) bool {
     return prop_list.isDeprecated(code_point);
 }
 
+/// Returns whether `code_point` has the Soft_Dotted property (its dot is
+/// removed when a combining mark is applied, e.g. lowercase i and j).
+/// @stable-since: v0.1.0
 pub fn isSoftDotted(code_point: CodePoint) bool {
     return prop_list.isSoftDotted(code_point);
 }
 
+/// Returns whether `code_point` has the Logical_Order_Exception property.
+/// @stable-since: v0.1.0
 pub fn isLogicalOrderException(code_point: CodePoint) bool {
     return prop_list.isLogicalOrderException(code_point);
 }
 
+/// Returns whether `code_point` has the Other_ID_Start property.
+/// @stable-since: v0.1.0
 pub fn isOtherIdStart(code_point: CodePoint) bool {
     return prop_list.isOtherIdStart(code_point);
 }
 
+/// Returns whether `code_point` has the Other_ID_Continue property.
+/// @stable-since: v0.1.0
 pub fn isOtherIdContinue(code_point: CodePoint) bool {
     return prop_list.isOtherIdContinue(code_point);
 }
 
+/// Returns whether `code_point` has the Sentence_Terminal property.
+/// @stable-since: v0.1.0
 pub fn isSentenceTerminal(code_point: CodePoint) bool {
     return prop_list.isSentenceTerminal(code_point);
 }
 
+/// Returns whether `code_point` is a Variation_Selector.
+/// @stable-since: v0.1.0
 pub fn isVariationSelector(code_point: CodePoint) bool {
     return prop_list.isVariationSelector(code_point);
 }
 
+/// Returns whether `code_point` has the Pattern_White_Space property, the
+/// stable whitespace set used by syntactic patterns (UAX #31).
+/// @stable-since: v0.1.0
 pub fn isPatternWhiteSpace(code_point: CodePoint) bool {
     return prop_list.isPatternWhiteSpace(code_point);
 }
 
+/// Returns whether `code_point` has the Pattern_Syntax property, the stable
+/// set of code points reserved for syntax in patterns (UAX #31).
+/// @stable-since: v0.1.0
 pub fn isPatternSyntax(code_point: CodePoint) bool {
     return prop_list.isPatternSyntax(code_point);
 }
 
+/// Returns whether `code_point` has the Prepended_Concatenation_Mark property.
+/// @stable-since: v0.1.0
 pub fn isPrependedConcatenationMark(code_point: CodePoint) bool {
     return prop_list.isPrependedConcatenationMark(code_point);
 }
 
+/// Returns whether `code_point` is a Regional_Indicator symbol, used in pairs
+/// to form flag emoji.
+/// @stable-since: v0.1.0
 pub fn isRegionalIndicator(code_point: CodePoint) bool {
     return prop_list.isRegionalIndicator(code_point);
 }
 
+/// Returns whether `code_point` has the Modifier_Combining_Mark property.
+/// @stable-since: v0.1.0
 pub fn isModifierCombiningMark(code_point: CodePoint) bool {
     return prop_list.isModifierCombiningMark(code_point);
 }
 
+/// Returns whether `code_point` has the ID_Compat_Math_Start property.
+/// @stable-since: v0.1.0
 pub fn isIdCompatMathStart(code_point: CodePoint) bool {
     return prop_list.isIdCompatMathStart(code_point);
 }
 
+/// Returns whether `code_point` has the ID_Compat_Math_Continue property.
+/// @stable-since: v0.1.0
 pub fn isIdCompatMathContinue(code_point: CodePoint) bool {
     return prop_list.isIdCompatMathContinue(code_point);
 }
 
+/// Returns whether `code_point` may start a programming identifier: an ID_Start
+/// code point or the ASCII underscore. Use `isIdentifierContinue` for the rest.
+/// @stable-since: v0.1.0
 pub fn isIdentifierStart(code_point: CodePoint) bool {
     if (code_point == '_') return true;
     return isIdStart(code_point);
 }
 
+/// Returns whether `code_point` may continue a programming identifier: an
+/// ID_Continue code point or the ASCII underscore.
+/// @stable-since: v0.1.0
 pub fn isIdentifierContinue(code_point: CodePoint) bool {
     if (code_point == '_') return true;
     return isIdContinue(code_point);
 }
 
+/// Returns whether `code_point` has the ID_Start property (UAX #31). This is
+/// the raw Unicode property; `isIdentifierStart` also admits underscore.
+/// @stable-since: v0.1.0
 pub fn isIdStart(code_point: CodePoint) bool {
     return hasDerivedProperty(code_point, .id_start);
 }
 
+/// Returns whether `code_point` has the ID_Continue property (UAX #31).
+/// @stable-since: v0.1.0
 pub fn isIdContinue(code_point: CodePoint) bool {
     return hasDerivedProperty(code_point, .id_continue);
 }
 
+/// Returns whether `code_point` has the XID_Start property, the
+/// normalization-closed variant of ID_Start recommended by UAX #31.
+/// @stable-since: v0.1.0
 pub fn isXidStart(code_point: CodePoint) bool {
     return hasDerivedProperty(code_point, .xid_start);
 }
 
+/// Returns whether `code_point` has the XID_Continue property, the
+/// normalization-closed variant of ID_Continue.
+/// @stable-since: v0.1.0
 pub fn isXidContinue(code_point: CodePoint) bool {
     return hasDerivedProperty(code_point, .xid_continue);
 }
 
+/// Returns whether `code_point` is a Default_Ignorable_Code_Point, which
+/// renderers should ignore when no glyph is available.
+/// @stable-since: v0.1.0
 pub fn isDefaultIgnorableCodePoint(code_point: CodePoint) bool {
     return hasDerivedProperty(code_point, .default_ignorable_code_point);
 }
 
+/// Returns whether `code_point` has the Grapheme_Extend property (it extends
+/// the preceding grapheme cluster).
+/// @stable-since: v0.1.0
 pub fn isGraphemeExtend(code_point: CodePoint) bool {
     return hasDerivedProperty(code_point, .grapheme_extend);
 }
 
+/// Returns whether `code_point` has the Grapheme_Base property (it can start a
+/// grapheme cluster).
+/// @stable-since: v0.1.0
 pub fn isGraphemeBase(code_point: CodePoint) bool {
     return hasDerivedProperty(code_point, .grapheme_base);
 }
 
+/// Returns whether `code_point` has the Grapheme_Link property.
+/// @stable-since: v0.1.0
 pub fn isGraphemeLink(code_point: CodePoint) bool {
     return hasDerivedProperty(code_point, .grapheme_link);
 }
 
+/// Returns whether `code_point` is a space separator (General_Category Zs).
+/// Narrower than `isWhitespace`; excludes tabs, newlines, and line/paragraph
+/// separators.
+/// @stable-since: v0.1.0
 pub fn isSpaceSeparator(code_point: CodePoint) bool {
     return generalCategory(code_point) == .space_separator;
 }
 
+/// Returns whether `code_point` is punctuation (General_Category P*: connector,
+/// dash, open, close, initial, final, or other punctuation).
+/// @stable-since: v0.1.0
 pub fn isPunctuation(code_point: CodePoint) bool {
     const category = generalCategory(code_point);
     return switch (category) {
@@ -341,6 +546,9 @@ pub fn isPunctuation(code_point: CodePoint) bool {
     };
 }
 
+/// Returns whether `code_point` is a symbol (General_Category S*: math,
+/// currency, modifier, or other symbol).
+/// @stable-since: v0.1.0
 pub fn isSymbol(code_point: CodePoint) bool {
     const category = generalCategory(code_point);
     return switch (category) {
@@ -353,6 +561,8 @@ pub fn isSymbol(code_point: CodePoint) bool {
     };
 }
 
+/// Returns whether `code_point` is in the ASCII range U+0000..U+007F.
+/// @stable-since: v0.1.0
 pub fn isAscii(code_point: CodePoint) bool {
     return code_point <= 0x7F;
 }
@@ -655,7 +865,7 @@ test "edge case: SMP boundaries" {
     try testing.expect(!isSurrogate(0x10000));
 }
 
-test "hostile: all surrogate code points" {
+test "all surrogate code points" {
     for (0xD800..0xE000) |cp_usize| {
         const cp: CodePoint = @intCast(cp_usize);
         try testing.expect(isSurrogate(cp));
@@ -665,7 +875,7 @@ test "hostile: all surrogate code points" {
     }
 }
 
-test "hostile: boundary surrogate values" {
+test "boundary surrogate values" {
     try testing.expect(isSurrogate(0xD800));
     try testing.expect(isSurrogate(0xDBFF));
     try testing.expect(isSurrogate(0xDC00));
@@ -674,7 +884,7 @@ test "hostile: boundary surrogate values" {
     try testing.expect(!isSurrogate(0xE000));
 }
 
-test "hostile: combining class lookup correctness" {
+test "combining class lookup correctness" {
     for (0x0300..0x0370) |cp_usize| {
         const cp: CodePoint = @intCast(cp_usize);
         const cc = canonicalCombiningClass(cp);
@@ -683,7 +893,7 @@ test "hostile: combining class lookup correctness" {
     }
 }
 
-test "hostile: whitespace coverage exhaustive" {
+test "whitespace coverage exhaustive" {
     const all_ws = [_]CodePoint{
         0x0009, 0x000A, 0x000B, 0x000C, 0x000D, 0x0020,
         0x0085, 0x00A0, 0x1680, 0x2000, 0x2001, 0x2002,
@@ -694,7 +904,7 @@ test "hostile: whitespace coverage exhaustive" {
     for (all_ws) |cp| try testing.expect(isWhitespace(cp));
 }
 
-test "hostile: non-whitespace near whitespace" {
+test "non-whitespace near whitespace" {
     const non_ws_near = [_]CodePoint{
         0x0008, 0x000E, 0x0021, 0x0084, 0x009F,
         0x167F, 0x1681, 0x1FFF, 0x200B,

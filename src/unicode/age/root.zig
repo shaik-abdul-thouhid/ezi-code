@@ -11,24 +11,37 @@ const encoding = @import("encoding");
 
 const CodePoint = encoding.CodePoint;
 
+/// The generated Age data: the deduplicated 2-level page table plus the `Age`
+/// enum and `Version` struct it is built around. Imported for re-export; most
+/// callers should use the wrappers below rather than reach in directly.
 pub const generated = @import("generated/derived_age.zig");
 
+/// Enumerates every Unicode release that has assigned code points, as
+/// `v{major}_{minor}` variants ordered by release, plus `.unassigned`. The
+/// value `age(cp)` returns; pair with `version` to recover numeric components.
 pub const Age = generated.Age;
+
+/// A decoded `{ major, minor }` Unicode version number, returned by `version`
+/// and `assignedIn`.
 pub const Version = generated.Version;
 
 /// The Age of `cp`: the Unicode version it was first assigned in, or
 /// `.unassigned` if it is not yet assigned (or above U+10FFFF).
+/// @stable-since: v0.1.0
 pub const age = generated.age;
 
 /// The `{ major, minor }` version a non-`unassigned` `Age` denotes, else null.
+/// @stable-since: v0.1.0
 pub const version = generated.version;
 
 /// The Unicode version `cp` was first assigned in, or null when unassigned.
+/// @stable-since: v0.1.0
 pub inline fn assignedIn(cp: CodePoint) ?Version {
     return version(age(cp));
 }
 
 /// True when `cp` is assigned in the current Unicode version.
+/// @stable-since: v0.1.0
 pub inline fn isAssigned(cp: CodePoint) bool {
     return age(cp) != .unassigned;
 }

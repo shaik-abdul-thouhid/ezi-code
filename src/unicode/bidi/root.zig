@@ -63,7 +63,37 @@ pub inline fn isClosingBracket(cp: CodePoint) bool {
 }
 
 // ============================================================================
-// Hostile / edge-case tests
+// Bidirectional Algorithm (UAX #9)
+// ============================================================================
+// The reordering algorithm proper lives in `algorithm.zig`; its public surface
+// is re-exported here so callers reach it as `unicode.bidi.resolveParagraph`,
+// `unicode.bidi.reorderVisual`, and so on, alongside the property lookups above.
+
+pub const algorithm = @import("algorithm.zig");
+
+pub const Level = algorithm.Level;
+pub const max_depth = algorithm.max_depth;
+pub const BaseDirection = algorithm.BaseDirection;
+pub const Paragraph = algorithm.Paragraph;
+
+/// Resolve the embedding levels of one paragraph (UAX #9 rules P–I).
+pub const resolveParagraph = algorithm.resolveParagraph;
+/// Paragraph embedding level for the given base direction (P2/P3).
+pub const paragraphLevel = algorithm.paragraphLevel;
+/// Visual (display) order of a line from its resolved levels (L2).
+pub const reorderVisual = algorithm.reorderVisual;
+/// One-shot: resolve `cps` as a paragraph and return its visual order (L1+L2).
+pub const reorderParagraph = algorithm.reorderParagraph;
+/// L4 glyph mirroring: the glyph to paint for `cp` at a resolved level.
+pub const mirror = algorithm.mirror;
+
+pub const isIsolateInitiator = algorithm.isIsolateInitiator;
+pub const isRemovedByX9 = algorithm.isRemovedByX9;
+pub const isNeutralOrIsolate = algorithm.isNeutralOrIsolate;
+pub const isStrong = algorithm.isStrong;
+
+// ============================================================================
+// Property-lookup tests (edge cases and exhaustive sweeps)
 // ============================================================================
 
 const testing = std.testing;

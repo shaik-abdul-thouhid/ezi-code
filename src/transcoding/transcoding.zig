@@ -1,3 +1,17 @@
+//! This file contains APIs for transcoding text between the UTF-8, UTF-16, and
+//! UTF-32 encodings. Each conversion comes in three families:
+//!
+//! - `xxxLen(...)` computes the exact number of output units required, so the
+//!   caller can size a buffer up front.
+//! - `xxxBuffer(...)` writes the result into a caller-provided slice and
+//!   returns the number of units written.
+//! - `xxx(...)` allocates and returns an owned, exactly-sized output slice.
+//!
+//! The checked variants validate the source encoding and surface the
+//! underlying validation/encoding errors; prefer them for untrusted input.
+//! The `Lossy` variants instead substitute the Unicode replacement character
+//! (U+FFFD) for any malformed sequence and therefore cannot fail validation.
+
 const std = @import("std");
 const encoding = @import("encoding");
 
@@ -6,6 +20,9 @@ const utf8 = encoding.utf8;
 const utf16 = encoding.utf16;
 const utf32 = encoding.utf32;
 
+/// Errors that can arise from transcoding itself, independent of source
+/// validation. `Overflow` is returned when the computed output length would
+/// exceed `usize`, and is checked before reading the source.
 pub const TranscodingError = error{
     Overflow,
 };
@@ -16,6 +33,10 @@ inline fn ensureMaxExpansion(input_len: usize, comptime max_units_per_input: usi
     }
 }
 
+/// Returns the number of UTF-16 code units required to transcode the validated
+/// UTF-8 `bytes`. Returns a `UTF8ValidationError` when the source is malformed.
+///
+/// @stable-since: v0.1.0
 pub fn utf8ToUtf16Len(bytes: []const u8) utf8.UTF8ValidationError!usize {
     var i: usize = 0;
     var out_len: usize = 0;
@@ -29,6 +50,12 @@ pub fn utf8ToUtf16Len(bytes: []const u8) utf8.UTF8ValidationError!usize {
     return out_len;
 }
 
+/// Transcodes the validated UTF-8 `bytes` into the caller-provided `out` slice
+/// and returns the number of UTF-16 code units written. Returns a
+/// `UTF8ValidationError` for malformed source, or a `UTF16EncodeError` (such as
+/// `BufferTooSmall`) when `out` cannot hold the result.
+///
+/// @stable-since: v0.1.0
 pub fn utf8ToUtf16Buffer(bytes: []const u8, out: []u16) (utf8.UTF8ValidationError || utf16.UTF16EncodeError)!usize {
     var i: usize = 0;
     var o: usize = 0;
@@ -42,6 +69,12 @@ pub fn utf8ToUtf16Buffer(bytes: []const u8, out: []u16) (utf8.UTF8ValidationErro
     return o;
 }
 
+/// Transcodes the validated UTF-8 `bytes` into a freshly allocated,
+/// exactly-sized UTF-16 slice owned by the caller. Returns a
+/// `UTF8ValidationError` for malformed source, or `error.OutOfMemory` when
+/// allocation fails.
+///
+/// @stable-since: v0.1.0
 pub fn utf8ToUtf16(allocator: std.mem.Allocator, bytes: []const u8) (utf8.UTF8ValidationError || utf16.UTF16EncodeError || error{OutOfMemory})![]u16 {
     const out_len = try utf8ToUtf16Len(bytes);
     const out = try allocator.alloc(u16, out_len);
@@ -51,6 +84,11 @@ pub fn utf8ToUtf16(allocator: std.mem.Allocator, bytes: []const u8) (utf8.UTF8Va
     return out;
 }
 
+/// Returns the number of UTF-8 bytes required to transcode the validated
+/// UTF-16 `units`. Returns a `UTF16ValidationError` when the source is
+/// malformed, or `error.Overflow` when the result would exceed `usize`.
+///
+/// @stable-since: v0.1.0
 pub fn utf16ToUtf8Len(units: []const u16) (utf16.UTF16ValidationError || utf8.UTF8EncodeError || TranscodingError)!usize {
     try ensureMaxExpansion(units.len, 3);
 
@@ -66,6 +104,12 @@ pub fn utf16ToUtf8Len(units: []const u16) (utf16.UTF16ValidationError || utf8.UT
     return out_len;
 }
 
+/// Transcodes the validated UTF-16 `units` into the caller-provided `out` slice
+/// and returns the number of UTF-8 bytes written. Returns a
+/// `UTF16ValidationError` for malformed source, a `UTF8EncodeError` (such as
+/// `BufferTooSmall`) when `out` cannot hold the result, or `error.Overflow`.
+///
+/// @stable-since: v0.1.0
 pub fn utf16ToUtf8Buffer(units: []const u16, out: []u8) (utf16.UTF16ValidationError || utf8.UTF8EncodeError || TranscodingError)!usize {
     try ensureMaxExpansion(units.len, 3);
 
@@ -81,6 +125,12 @@ pub fn utf16ToUtf8Buffer(units: []const u16, out: []u8) (utf16.UTF16ValidationEr
     return o;
 }
 
+/// Transcodes the validated UTF-16 `units` into a freshly allocated,
+/// exactly-sized UTF-8 slice owned by the caller. Returns a
+/// `UTF16ValidationError` for malformed source, `error.Overflow`, or
+/// `error.OutOfMemory` when allocation fails.
+///
+/// @stable-since: v0.1.0
 pub fn utf16ToUtf8(allocator: std.mem.Allocator, units: []const u16) (utf16.UTF16ValidationError || utf8.UTF8EncodeError || TranscodingError || error{OutOfMemory})![]u8 {
     const out_len = try utf16ToUtf8Len(units);
     const out = try allocator.alloc(u8, out_len);
@@ -90,6 +140,11 @@ pub fn utf16ToUtf8(allocator: std.mem.Allocator, units: []const u16) (utf16.UTF1
     return out;
 }
 
+/// Returns the number of UTF-32 code units (i.e. scalar values) required to
+/// transcode the validated UTF-8 `bytes`. Returns a `UTF8ValidationError` when
+/// the source is malformed.
+///
+/// @stable-since: v0.1.0
 pub fn utf8ToUtf32Len(bytes: []const u8) utf8.UTF8ValidationError!usize {
     var i: usize = 0;
     var out_len: usize = 0;
@@ -103,6 +158,12 @@ pub fn utf8ToUtf32Len(bytes: []const u8) utf8.UTF8ValidationError!usize {
     return out_len;
 }
 
+/// Transcodes the validated UTF-8 `bytes` into the caller-provided `out` slice
+/// and returns the number of UTF-32 code units written. Returns a
+/// `UTF8ValidationError` for malformed source, or a `UTF32EncodeError` (such as
+/// `BufferTooSmall`) when `out` cannot hold the result.
+///
+/// @stable-since: v0.1.0
 pub fn utf8ToUtf32Buffer(bytes: []const u8, out: []u32) (utf8.UTF8ValidationError || utf32.UTF32EncodeError)!usize {
     var i: usize = 0;
     var o: usize = 0;
@@ -116,6 +177,12 @@ pub fn utf8ToUtf32Buffer(bytes: []const u8, out: []u32) (utf8.UTF8ValidationErro
     return o;
 }
 
+/// Transcodes the validated UTF-8 `bytes` into a freshly allocated,
+/// exactly-sized UTF-32 slice owned by the caller. Returns a
+/// `UTF8ValidationError` for malformed source, or `error.OutOfMemory` when
+/// allocation fails.
+///
+/// @stable-since: v0.1.0
 pub fn utf8ToUtf32(allocator: std.mem.Allocator, bytes: []const u8) (utf8.UTF8ValidationError || utf32.UTF32EncodeError || error{OutOfMemory})![]u32 {
     const out_len = try utf8ToUtf32Len(bytes);
     const out = try allocator.alloc(u32, out_len);
@@ -125,6 +192,11 @@ pub fn utf8ToUtf32(allocator: std.mem.Allocator, bytes: []const u8) (utf8.UTF8Va
     return out;
 }
 
+/// Returns the number of UTF-8 bytes required to transcode the validated
+/// UTF-32 `units`. Returns a `UTF32ValidationError` when the source is
+/// malformed, or `error.Overflow` when the result would exceed `usize`.
+///
+/// @stable-since: v0.1.0
 pub fn utf32ToUtf8Len(units: []const u32) (utf32.UTF32ValidationError || utf8.UTF8EncodeError || TranscodingError)!usize {
     try ensureMaxExpansion(units.len, 4);
 
@@ -140,6 +212,12 @@ pub fn utf32ToUtf8Len(units: []const u32) (utf32.UTF32ValidationError || utf8.UT
     return out_len;
 }
 
+/// Transcodes the validated UTF-32 `units` into the caller-provided `out` slice
+/// and returns the number of UTF-8 bytes written. Returns a
+/// `UTF32ValidationError` for malformed source, a `UTF8EncodeError` (such as
+/// `BufferTooSmall`) when `out` cannot hold the result, or `error.Overflow`.
+///
+/// @stable-since: v0.1.0
 pub fn utf32ToUtf8Buffer(units: []const u32, out: []u8) (utf32.UTF32ValidationError || utf8.UTF8EncodeError || TranscodingError)!usize {
     try ensureMaxExpansion(units.len, 4);
 
@@ -155,6 +233,12 @@ pub fn utf32ToUtf8Buffer(units: []const u32, out: []u8) (utf32.UTF32ValidationEr
     return o;
 }
 
+/// Transcodes the validated UTF-32 `units` into a freshly allocated,
+/// exactly-sized UTF-8 slice owned by the caller. Returns a
+/// `UTF32ValidationError` for malformed source, `error.Overflow`, or
+/// `error.OutOfMemory` when allocation fails.
+///
+/// @stable-since: v0.1.0
 pub fn utf32ToUtf8(allocator: std.mem.Allocator, units: []const u32) (utf32.UTF32ValidationError || utf8.UTF8EncodeError || TranscodingError || error{OutOfMemory})![]u8 {
     const out_len = try utf32ToUtf8Len(units);
     const out = try allocator.alloc(u8, out_len);
@@ -164,6 +248,11 @@ pub fn utf32ToUtf8(allocator: std.mem.Allocator, units: []const u32) (utf32.UTF3
     return out;
 }
 
+/// Returns the number of UTF-32 code units (i.e. scalar values) required to
+/// transcode the validated UTF-16 `units`. Returns a `UTF16ValidationError`
+/// when the source is malformed.
+///
+/// @stable-since: v0.1.0
 pub fn utf16ToUtf32Len(units: []const u16) utf16.UTF16ValidationError!usize {
     var i: usize = 0;
     var out_len: usize = 0;
@@ -177,6 +266,12 @@ pub fn utf16ToUtf32Len(units: []const u16) utf16.UTF16ValidationError!usize {
     return out_len;
 }
 
+/// Transcodes the validated UTF-16 `units` into the caller-provided `out` slice
+/// and returns the number of UTF-32 code units written. Returns a
+/// `UTF16ValidationError` for malformed source, or a `UTF32EncodeError` (such
+/// as `BufferTooSmall`) when `out` cannot hold the result.
+///
+/// @stable-since: v0.1.0
 pub fn utf16ToUtf32Buffer(units: []const u16, out: []u32) (utf16.UTF16ValidationError || utf32.UTF32EncodeError)!usize {
     var i: usize = 0;
     var o: usize = 0;
@@ -190,6 +285,12 @@ pub fn utf16ToUtf32Buffer(units: []const u16, out: []u32) (utf16.UTF16Validation
     return o;
 }
 
+/// Transcodes the validated UTF-16 `units` into a freshly allocated,
+/// exactly-sized UTF-32 slice owned by the caller. Returns a
+/// `UTF16ValidationError` for malformed source, or `error.OutOfMemory` when
+/// allocation fails.
+///
+/// @stable-since: v0.1.0
 pub fn utf16ToUtf32(allocator: std.mem.Allocator, units: []const u16) (utf16.UTF16ValidationError || utf32.UTF32EncodeError || error{OutOfMemory})![]u32 {
     const out_len = try utf16ToUtf32Len(units);
     const out = try allocator.alloc(u32, out_len);
@@ -199,6 +300,11 @@ pub fn utf16ToUtf32(allocator: std.mem.Allocator, units: []const u16) (utf16.UTF
     return out;
 }
 
+/// Returns the number of UTF-16 code units required to transcode the validated
+/// UTF-32 `units`. Returns a `UTF32ValidationError` when the source is
+/// malformed, or `error.Overflow` when the result would exceed `usize`.
+///
+/// @stable-since: v0.1.0
 pub fn utf32ToUtf16Len(units: []const u32) (utf32.UTF32ValidationError || utf16.UTF16EncodeError || TranscodingError)!usize {
     try ensureMaxExpansion(units.len, 2);
 
@@ -214,6 +320,12 @@ pub fn utf32ToUtf16Len(units: []const u32) (utf32.UTF32ValidationError || utf16.
     return out_len;
 }
 
+/// Transcodes the validated UTF-32 `units` into the caller-provided `out` slice
+/// and returns the number of UTF-16 code units written. Returns a
+/// `UTF32ValidationError` for malformed source, a `UTF16EncodeError` (such as
+/// `BufferTooSmall`) when `out` cannot hold the result, or `error.Overflow`.
+///
+/// @stable-since: v0.1.0
 pub fn utf32ToUtf16Buffer(units: []const u32, out: []u16) (utf32.UTF32ValidationError || utf16.UTF16EncodeError || TranscodingError)!usize {
     try ensureMaxExpansion(units.len, 2);
 
@@ -229,6 +341,12 @@ pub fn utf32ToUtf16Buffer(units: []const u32, out: []u16) (utf32.UTF32Validation
     return o;
 }
 
+/// Transcodes the validated UTF-32 `units` into a freshly allocated,
+/// exactly-sized UTF-16 slice owned by the caller. Returns a
+/// `UTF32ValidationError` for malformed source, `error.Overflow`, or
+/// `error.OutOfMemory` when allocation fails.
+///
+/// @stable-since: v0.1.0
 pub fn utf32ToUtf16(allocator: std.mem.Allocator, units: []const u32) (utf32.UTF32ValidationError || utf16.UTF16EncodeError || TranscodingError || error{OutOfMemory})![]u16 {
     const out_len = try utf32ToUtf16Len(units);
     const out = try allocator.alloc(u16, out_len);
@@ -238,6 +356,11 @@ pub fn utf32ToUtf16(allocator: std.mem.Allocator, units: []const u32) (utf32.UTF
     return out;
 }
 
+/// Returns the number of UTF-16 code units a lossy transcode of `bytes` would
+/// produce, counting one replacement scalar (U+FFFD) per malformed UTF-8
+/// sequence. Never fails validation.
+///
+/// @stable-since: v0.1.0
 pub fn utf8ToUtf16LossyLen(bytes: []const u8) usize {
     var out_len: usize = 0;
     var iter = utf8.lossyIterator(bytes);
@@ -249,6 +372,13 @@ pub fn utf8ToUtf16LossyLen(bytes: []const u8) usize {
     return out_len;
 }
 
+/// Lossily transcodes `bytes` into the caller-provided `out` slice, emitting
+/// the replacement scalar (U+FFFD) for any malformed UTF-8 sequence, and
+/// returns the number of UTF-16 code units written. Only fails with a
+/// `UTF16EncodeError` (such as `BufferTooSmall`) when `out` cannot hold the
+/// result.
+///
+/// @stable-since: v0.1.0
 pub fn utf8ToUtf16LossyBuffer(bytes: []const u8, out: []u16) utf16.UTF16EncodeError!usize {
     var o: usize = 0;
     var iter = utf8.lossyIterator(bytes);
@@ -260,6 +390,11 @@ pub fn utf8ToUtf16LossyBuffer(bytes: []const u8, out: []u16) utf16.UTF16EncodeEr
     return o;
 }
 
+/// Lossily transcodes `bytes` into a freshly allocated, exactly-sized UTF-16
+/// slice owned by the caller, substituting the replacement scalar (U+FFFD) for
+/// malformed UTF-8. Only fails with `error.OutOfMemory` when allocation fails.
+///
+/// @stable-since: v0.1.0
 pub fn utf8ToUtf16Lossy(allocator: std.mem.Allocator, bytes: []const u8) (utf16.UTF16EncodeError || error{OutOfMemory})![]u16 {
     const out_len = utf8ToUtf16LossyLen(bytes);
     const out = try allocator.alloc(u16, out_len);
@@ -269,6 +404,11 @@ pub fn utf8ToUtf16Lossy(allocator: std.mem.Allocator, bytes: []const u8) (utf16.
     return out;
 }
 
+/// Returns the number of UTF-8 bytes a lossy transcode of `units` would
+/// produce, counting the replacement scalar (U+FFFD) for any malformed UTF-16.
+/// Only fails with `error.Overflow` when the result would exceed `usize`.
+///
+/// @stable-since: v0.1.0
 pub fn utf16ToUtf8LossyLen(units: []const u16) TranscodingError!usize {
     try ensureMaxExpansion(units.len, 3);
 
@@ -282,6 +422,12 @@ pub fn utf16ToUtf8LossyLen(units: []const u16) TranscodingError!usize {
     return out_len;
 }
 
+/// Lossily transcodes `units` into the caller-provided `out` slice, emitting
+/// the replacement scalar (U+FFFD) for any malformed UTF-16, and returns the
+/// number of UTF-8 bytes written. Fails with a `UTF8EncodeError` (such as
+/// `BufferTooSmall`) when `out` cannot hold the result, or `error.Overflow`.
+///
+/// @stable-since: v0.1.0
 pub fn utf16ToUtf8LossyBuffer(units: []const u16, out: []u8) (utf8.UTF8EncodeError || TranscodingError)!usize {
     try ensureMaxExpansion(units.len, 3);
 
@@ -295,6 +441,11 @@ pub fn utf16ToUtf8LossyBuffer(units: []const u16, out: []u8) (utf8.UTF8EncodeErr
     return o;
 }
 
+/// Lossily transcodes `units` into a freshly allocated, exactly-sized UTF-8
+/// slice owned by the caller, substituting the replacement scalar (U+FFFD) for
+/// malformed UTF-16. Fails with `error.Overflow` or `error.OutOfMemory`.
+///
+/// @stable-since: v0.1.0
 pub fn utf16ToUtf8Lossy(allocator: std.mem.Allocator, units: []const u16) (utf8.UTF8EncodeError || TranscodingError || error{OutOfMemory})![]u8 {
     const out_len = try utf16ToUtf8LossyLen(units);
     const out = try allocator.alloc(u8, out_len);
@@ -304,6 +455,12 @@ pub fn utf16ToUtf8Lossy(allocator: std.mem.Allocator, units: []const u16) (utf8.
     return out;
 }
 
+/// Returns the number of UTF-8 bytes a lossy transcode of `units` would
+/// produce, counting the replacement scalar (U+FFFD) for any value that is not
+/// a valid scalar. Only fails with `error.Overflow` when the result would
+/// exceed `usize`.
+///
+/// @stable-since: v0.1.0
 pub fn utf32ToUtf8LossyLen(units: []const u32) TranscodingError!usize {
     try ensureMaxExpansion(units.len, 4);
 
@@ -317,6 +474,13 @@ pub fn utf32ToUtf8LossyLen(units: []const u32) TranscodingError!usize {
     return out_len;
 }
 
+/// Lossily transcodes `units` into the caller-provided `out` slice, emitting
+/// the replacement scalar (U+FFFD) for any value that is not a valid scalar,
+/// and returns the number of UTF-8 bytes written. Fails with a `UTF8EncodeError`
+/// (such as `BufferTooSmall`) when `out` cannot hold the result, or
+/// `error.Overflow`.
+///
+/// @stable-since: v0.1.0
 pub fn utf32ToUtf8LossyBuffer(units: []const u32, out: []u8) (utf8.UTF8EncodeError || TranscodingError)!usize {
     try ensureMaxExpansion(units.len, 4);
 
@@ -330,6 +494,12 @@ pub fn utf32ToUtf8LossyBuffer(units: []const u32, out: []u8) (utf8.UTF8EncodeErr
     return o;
 }
 
+/// Lossily transcodes `units` into a freshly allocated, exactly-sized UTF-8
+/// slice owned by the caller, substituting the replacement scalar (U+FFFD) for
+/// any value that is not a valid scalar. Fails with `error.Overflow` or
+/// `error.OutOfMemory`.
+///
+/// @stable-since: v0.1.0
 pub fn utf32ToUtf8Lossy(allocator: std.mem.Allocator, units: []const u32) (utf8.UTF8EncodeError || TranscodingError || error{OutOfMemory})![]u8 {
     const out_len = try utf32ToUtf8LossyLen(units);
     const out = try allocator.alloc(u8, out_len);
@@ -405,7 +575,7 @@ test "lossy transcoding emits replacement scalar in target encoding" {
     try std.testing.expectEqualStrings("A\u{FFFD}B", utf8_out[0..utf32_utf8_len]);
 }
 
-test "hostile extreme: scalar boundaries roundtrip through every transcoding path" {
+test "scalar boundaries roundtrip through every transcoding path" {
     const scalars = [_]u32{
         0x0000,
         0x007F,
@@ -442,7 +612,7 @@ test "hostile extreme: scalar boundaries roundtrip through every transcoding pat
     try std.testing.expectEqualSlices(u16, utf16_buf[0..utf16_len], utf16_from_utf8[0..utf16_from_utf8_len]);
 }
 
-test "hostile: checked UTF-8 transcoding rejects malformed matrix" {
+test "checked UTF-8 transcoding rejects malformed matrix" {
     const Case = struct {
         bytes: []const u8,
         expect_err: anyerror,
@@ -470,7 +640,7 @@ test "hostile: checked UTF-8 transcoding rejects malformed matrix" {
     }
 }
 
-test "hostile: lossy UTF-8 transcoding over all byte values emits valid UTF-16 and UTF-8" {
+test "lossy UTF-8 transcoding over all byte values emits valid UTF-16 and UTF-8" {
     var bytes: [256]u8 = undefined;
     for (&bytes, 0..) |*byte, i| {
         byte.* = @intCast(i);
@@ -480,7 +650,7 @@ test "hostile: lossy UTF-8 transcoding over all byte values emits valid UTF-16 a
     const utf16_len = try utf8ToUtf16LossyBuffer(&bytes, &utf16_out);
 
     var scalar_count: usize = 0;
-    _ = try utf16.initUTF16View(utf16_out[0..utf16_len], .little, &scalar_count);
+    _ = try utf16.initUTF16View(utf16_out[0..utf16_len], &scalar_count);
 
     var utf8_out: [1024]u8 = undefined;
     const utf8_len = try utf16ToUtf8Buffer(utf16_out[0..utf16_len], &utf8_out);
@@ -488,7 +658,7 @@ test "hostile: lossy UTF-8 transcoding over all byte values emits valid UTF-16 a
     _ = try utf8.initUTF8View(utf8_out[0..utf8_len], &utf8_scalar_count);
 }
 
-test "hostile: lossy UTF-16 dense surrogate garbage emits valid UTF-8" {
+test "lossy UTF-16 dense surrogate garbage emits valid UTF-8" {
     const units = [_]u16{
         0xD800,
         0xD801,
@@ -509,7 +679,7 @@ test "hostile: lossy UTF-16 dense surrogate garbage emits valid UTF-8" {
     try std.testing.expect(scalar_count > 0);
 }
 
-test "hostile: lossy UTF-32 huge values emit valid UTF-8" {
+test "lossy UTF-32 huge values emit valid UTF-8" {
     const units = [_]u32{
         0,
         0xD800,
@@ -528,7 +698,7 @@ test "hostile: lossy UTF-32 huge values emit valid UTF-8" {
     try std.testing.expectEqual(units.len, scalar_count);
 }
 
-test "hostile: transcoding buffer-too-small checks across target encodings" {
+test "transcoding buffer-too-small checks across target encodings" {
     var empty_u8: [0]u8 = .{};
     var empty_u16: [0]u16 = .{};
     var empty_u32: [0]u32 = .{};
@@ -542,7 +712,7 @@ test "hostile: transcoding buffer-too-small checks across target encodings" {
     try std.testing.expectError(error.BufferTooSmall, utf16ToUtf32Buffer(&.{'A'}, &empty_u32));
 }
 
-test "hostile: transcoding rejects theoretical output length overflow before reading source" {
+test "transcoding rejects theoretical output length overflow before reading source" {
     const huge_u16_ptr: [*]const u16 = @ptrFromInt(0x1000);
     const huge_u32_ptr: [*]const u32 = @ptrFromInt(0x1000);
 

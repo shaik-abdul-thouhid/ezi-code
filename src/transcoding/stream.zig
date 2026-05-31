@@ -1,3 +1,17 @@
+//! Incremental, allocation-light UTF-8 stream decoder for data that arrives in
+//! discrete `[]const u8` chunks (e.g. socket reads or file segments). Pushed
+//! slices are referenced, not owned, and code points are decoded one at a time
+//! across chunk boundaries, transparently stitching scalars that are split
+//! between two buffers.
+//!
+//! - Use `nextCodePoint` for strict decoding: invalid sequences surface as
+//!   errors and the stream state is rolled back so the caller may retry.
+//! - Use `nextCodePointLossy` to substitute the replacement code point for
+//!   invalid bytes instead of erroring.
+//! - When a scalar is split across chunks and no further chunk is available,
+//!   the decoders return `error.NeedMoreBytes`; call `finish` once no more
+//!   input will arrive so a trailing partial sequence is reported instead.
+
 const std = @import("std");
 
 const encoding = @import("encoding");
@@ -29,16 +43,29 @@ const UTF8Stream = struct {
     cached_partial_expected_len: u3 = 0,
     eof: bool = false,
 
+    /// Free the stream's internal buffer-reference array and destroy the
+    /// stream itself. The pushed slices are not owned and are left untouched;
+    /// `allocator` must be the same one passed to `initUTF8Stream`.
+    /// @stable-since: v0.1.0
     pub fn deinit(self: *UTF8Stream, allocator: std.mem.Allocator) void {
         if (self.buffers) |buffers| allocator.free(buffers);
 
         allocator.destroy(self);
     }
 
+    /// Mark the stream as end-of-input. After this call the decoders no longer
+    /// return `error.NeedMoreBytes`; a trailing partial sequence is instead
+    /// reported as `error.EOFReached` (strict) or as a replacement code point
+    /// (lossy). Call once when no more chunks will be pushed.
+    /// @stable-since: v0.1.0
     pub fn finish(self: *UTF8Stream) void {
         self.eof = true;
     }
 
+    /// Clear all read progress and pending partial-sequence state, returning
+    /// the stream to its initial empty condition for reuse. The backing
+    /// buffer-reference array is retained for subsequent pushes.
+    /// @stable-since: v0.1.0
     pub fn reset(self: *UTF8Stream) void {
         self.buffers_filled = 0;
         self.current_buffer_index = null;
@@ -48,6 +75,11 @@ const UTF8Stream = struct {
         self.eof = false;
     }
 
+    /// Append a chunk to the stream's read queue. `slice` is referenced, not
+    /// copied, so it must stay valid until it has been fully consumed by the
+    /// decoders. Grows the internal reference array as needed and may therefore
+    /// return an allocator error. Empty slices are accepted and skipped on read.
+    /// @stable-since: v0.1.0
     pub fn push(self: *UTF8Stream, allocator: std.mem.Allocator, slice: []const u8) !void {
         if (self.buffers) |buffers| {
             @branchHint(.likely);
@@ -83,6 +115,18 @@ const UTF8Stream = struct {
         self.buffers_filled = 1;
     }
 
+    /// Strictly decode the next code point, transparently stitching scalars
+    /// that span chunk boundaries. Returns `null` once the stream is fully
+    /// drained. If `out_buf` is non-null the raw bytes of the scalar are copied
+    /// into it; pass `null` to decode without copying.
+    ///
+    /// Errors: `OutputBufferTooSmall` if `out_buf` cannot hold the scalar;
+    /// `NeedMoreBytes` if a scalar is split and more input may still be pushed;
+    /// `EOFReached` if a trailing partial scalar remains after `finish`; plus
+    /// the `UTF8ValidationError` set for malformed input. On any error the
+    /// stream position is rolled back so the call can be retried. Prefer
+    /// `nextCodePointLossy` when invalid bytes should be tolerated.
+    /// @stable-since: v0.1.0
     pub fn nextCodePoint(self: *UTF8Stream, out_buf: ?[]u8) (error{ BufferIsEmpty, OutputBufferTooSmall, NeedMoreBytes, EOFReached } || utf8.UTF8ValidationError)!?encoding.utf8.DecodedCodePoint {
         if (self.buffers == null or self.buffers_filled == 0) return null;
 
@@ -271,6 +315,18 @@ const UTF8Stream = struct {
         return null;
     }
 
+    /// Lossily decode the next code point: malformed sequences are reported as
+    /// `encoding.INVALID_CODE_POINT` (with `len` covering the offending bytes)
+    /// rather than raised as validation errors. Returns `null` once the stream
+    /// is fully drained. If `out_buf` is non-null the raw bytes are copied into
+    /// it; pass `null` to decode without copying.
+    ///
+    /// Errors: `OutputBufferTooSmall` if `out_buf` cannot hold the bytes;
+    /// `NeedMoreBytes` if a sequence is split and more input may still arrive.
+    /// After `finish`, a trailing partial sequence is emitted as a single
+    /// replacement code point instead. Prefer the strict `nextCodePoint` when
+    /// invalid input should surface as an error.
+    /// @stable-since: v0.1.0
     pub fn nextCodePointLossy(self: *UTF8Stream, out_buf: ?[]u8) (error{ BufferIsEmpty, OutputBufferTooSmall, NeedMoreBytes, EOFReached } || utf8.UTF8ValidationLossyError)!?encoding.utf8.DecodedCodePointLossy {
         if (self.buffers == null or self.buffers_filled == 0) return null;
 
@@ -549,8 +605,15 @@ const UTF8Stream = struct {
     }
 };
 
+/// Configuration for `initUTF8Stream`. Currently empty; reserved for future
+/// tuning knobs so call sites can pass `.{}` without later signature churn.
 pub const UTF8StreamOptions = struct {};
 
+/// Allocate and initialize a new UTF-8 stream. The returned stream is empty;
+/// feed it chunks with `push` and consume code points with `nextCodePoint` /
+/// `nextCodePointLossy`. Caller owns the result and must release it with
+/// `deinit` using the same `allocator`.
+/// @stable-since: v0.1.0
 pub fn initUTF8Stream(allocator: std.mem.Allocator, options: UTF8StreamOptions) !*UTF8Stream {
     _ = options;
 
