@@ -105,28 +105,6 @@ All lookups are deduplicated two-level page tables — two array indexes per
 query — so the table cost stays small even though every submodule covers the
 whole code space.
 
-### About the bidi algorithm
-
-`unicode.bidi` started as property lookups (`bidiMirroringGlyph`,
-`bidiPairedBracketType`) and now ships with the full UAX #9 pipeline in
-`bidi/algorithm.zig`:
-
-- `resolveParagraph(allocator, code_points, base)` — runs P2/P3 to pick the
-  paragraph level, then X1–X10 (explicit levels, isolating run sequences), then
-  W1–W7 (weak types), then N0–N2 (paired brackets and neutrals), then I1–I2
-  (back to levels). Returns a `Paragraph` that owns the per-character levels.
-- `Paragraph.reorderLine` / `reorderVisual` — L1/L2 display reordering for a
-  line, returned as a permutation of indices. Line breaking is left to you;
-  L1/L2 are defined per visual line, not per paragraph.
-- `paragraphLevel` — just the base level (allocation-free) if that's all you
-  need.
-- `mirror(cp, level)` — L4 glyph mirroring.
-
-The code mirrors the rule numbering in the spec so it can be read next to the
-text. `base` is `.ltr`, `.rtl`, or `.auto` (Unicode's first-strong heuristic).
-Explicit nesting is capped at the spec's `max_depth = 125`; deeper input is
-counted as overflow and ignored, as required.
-
 ## Unicode version and regenerating the tables
 
 The committed tables track the UCD files in `ucd/` (`UnicodeData.txt`,
