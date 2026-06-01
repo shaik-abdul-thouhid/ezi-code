@@ -225,6 +225,7 @@ pub const Paragraph = struct {
         const out = try allocator.dupe(Level, self.levels[start..end]);
         errdefer allocator.free(out);
         applyL1(out, self.original_classes[start..end], self.level);
+        propagateBnLevels(out, self.original_classes[start..end], self.level);
         return out;
     }
 
@@ -308,6 +309,26 @@ fn applyL1(levels: []Level, original: []const BidiClass, para_level: Level) void
     }
     if (run_start) |s| {
         for (levels[s..]) |*lv| lv.* = para_level;
+    }
+}
+
+// UAX §9 note 5.2: X9-removed characters (embedding/override initiators, PDF,
+// and BN) should carry the level of the following non-X9 character so that L2
+// does not accidentally split contiguous high-level runs at BN positions.
+// If no following non-X9 character exists, the paragraph level is used.
+// This is applied after L1 so that L1-reset trailing BN chars don't
+// propagate a stale inner-embedding level outward.
+fn propagateBnLevels(levels: []Level, original: []const BidiClass, para_level: Level) void {
+    var i: usize = 0;
+    while (i < levels.len) {
+        if (!isRemovedByX9(original[i])) {
+            i += 1;
+            continue;
+        }
+        var j = i + 1;
+        while (j < levels.len and isRemovedByX9(original[j])) j += 1;
+        const next_level = if (j < levels.len) levels[j] else para_level;
+        while (i < j) : (i += 1) levels[i] = next_level;
     }
 }
 

@@ -57,6 +57,8 @@ const numeric_values_path = "ucd/DerivedNumericValues.txt";
 const blocks_path = "ucd/Blocks.txt";
 const hangul_syllable_type_path = "ucd/HangulSyllableType.txt";
 const derived_age_path = "ucd/DerivedAge.txt";
+const bidi_test_path = "ucd/BidiTest.txt";
+const bidi_character_test_path = "ucd/BidiCharacterTest.txt";
 
 fn cleanData(line: []const u8) []const u8 {
     var comment_split = std.mem.splitScalar(u8, line, '#');
@@ -2681,6 +2683,36 @@ test "ucd hostile: HangulSyllableType.txt assigns the same type to every codepoi
     try testing.expectEqual(HST.not_applicable, hangul_props.hangulSyllableType(0x110000));
 }
 
+// Map a UAX #9 Bidi_Class short name to a representative codepoint whose
+// bidiClass() returns that class.  Only one representative per class is needed;
+// we deliberately avoid bracket codepoints for ON so N0 does not fire.
+fn bidiClassCp(name: []const u8) ?CodePoint {
+    if (std.mem.eql(u8, name, "L")) return 0x0041; // LATIN CAPITAL LETTER A
+    if (std.mem.eql(u8, name, "R")) return 0x05D0; // HEBREW LETTER ALEF
+    if (std.mem.eql(u8, name, "AL")) return 0x0627; // ARABIC LETTER ALEF
+    if (std.mem.eql(u8, name, "EN")) return 0x0030; // DIGIT ZERO
+    if (std.mem.eql(u8, name, "ES")) return 0x002B; // PLUS SIGN
+    if (std.mem.eql(u8, name, "ET")) return 0x0024; // DOLLAR SIGN
+    if (std.mem.eql(u8, name, "AN")) return 0x0660; // ARABIC-INDIC DIGIT ZERO
+    if (std.mem.eql(u8, name, "CS")) return 0x002C; // COMMA
+    if (std.mem.eql(u8, name, "NSM")) return 0x0300; // COMBINING GRAVE ACCENT
+    if (std.mem.eql(u8, name, "BN")) return 0x200B; // ZERO WIDTH SPACE
+    if (std.mem.eql(u8, name, "B")) return 0x2029; // PARAGRAPH SEPARATOR
+    if (std.mem.eql(u8, name, "S")) return 0x0009; // CHARACTER TABULATION
+    if (std.mem.eql(u8, name, "WS")) return 0x0020; // SPACE
+    if (std.mem.eql(u8, name, "ON")) return 0x0021; // EXCLAMATION MARK (not a bracket)
+    if (std.mem.eql(u8, name, "LRE")) return 0x202A;
+    if (std.mem.eql(u8, name, "LRO")) return 0x202D;
+    if (std.mem.eql(u8, name, "RLE")) return 0x202B;
+    if (std.mem.eql(u8, name, "RLO")) return 0x202E;
+    if (std.mem.eql(u8, name, "PDF")) return 0x202C;
+    if (std.mem.eql(u8, name, "LRI")) return 0x2066;
+    if (std.mem.eql(u8, name, "RLI")) return 0x2067;
+    if (std.mem.eql(u8, name, "FSI")) return 0x2068;
+    if (std.mem.eql(u8, name, "PDI")) return 0x2069;
+    return null;
+}
+
 test "ucd hostile: DerivedAge.txt assigns the same version to every codepoint" {
     const allocator = testing.allocator;
 
@@ -2713,4 +2745,301 @@ test "ucd hostile: DerivedAge.txt assigns the same version to every codepoint" {
     }
     try testing.expectEqual(age_props.Age.unassigned, age_props.age(0x110000));
     try testing.expectEqual(@as(?Version, null), age_props.assignedIn(0x1FFFFF));
+}
+
+// ============================================================================
+// UAX #9 Bidirectional Algorithm conformance: BidiTest.txt + BidiCharacterTest.txt
+//
+// BidiTest.txt format:
+//   @Levels: <l0> <l1> ...   — expected resolved levels; 'x' = removed by X9
+//   @Reorder: <i0> <i1> ...  — visual order of non-x characters (0-based indices)
+//   <types>; <bitset>         — Bidi_Class names + which para-directions to test
+//     bitset bit 0 (1) = auto-LTR (P2/P3, first-strong heuristic, default LTR)
+//     bitset bit 1 (2) = explicit LTR (force paragraph level 0)
+//     bitset bit 2 (4) = explicit RTL (force paragraph level 1)
+//
+// BidiCharacterTest.txt format (five semicolon-delimited fields per line):
+//   <cps>; <para_dir>; <para_level>; <levels>; <reorder>
+//     para_dir: 0=LTR, 1=RTL, 2=auto-LTR (P2/P3)
+// ============================================================================
+
+test "ucd hostile: BidiTest.txt full conformance (UAX #9 levels and visual order, abstract Bidi_Class sequences)" {
+    const allocator = testing.allocator;
+    const text = try std.Io.Dir.cwd().readFileAlloc(
+        testing.io,
+        bidi_test_path,
+        allocator,
+        .limited(8 * 1024 * 1024),
+    );
+    defer allocator.free(text);
+
+    // Context lines: slices into `text`, valid for its lifetime.
+    var levels_raw: []const u8 = "";
+    var reorder_raw: []const u8 = "";
+    var have_context = false;
+
+    var tested: usize = 0;
+    var line_no: usize = 0;
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    while (lines.next()) |raw_line| {
+        line_no += 1;
+        const clean = cleanData(raw_line);
+        if (clean.len == 0) continue;
+
+        if (std.mem.startsWith(u8, clean, "@Levels:")) {
+            levels_raw = std.mem.trim(u8, clean["@Levels:".len..], " \t");
+            have_context = true;
+            continue;
+        }
+        if (std.mem.startsWith(u8, clean, "@Reorder:")) {
+            reorder_raw = std.mem.trim(u8, clean["@Reorder:".len..], " \t");
+            continue;
+        }
+        if (!have_context) continue;
+
+        // Data line: <types>; <bitset>
+        var split = std.mem.splitScalar(u8, clean, ';');
+        const types_raw = std.mem.trim(u8, split.next() orelse continue, " \t");
+        const bitset_raw = std.mem.trim(u8, split.next() orelse continue, " \t");
+        if (types_raw.len == 0 or bitset_raw.len == 0) continue;
+        const bitset = try std.fmt.parseInt(u8, bitset_raw, 10);
+
+        // Parse Bidi_Class sequence → representative codepoints.
+        var cps: std.ArrayList(CodePoint) = .empty;
+        defer cps.deinit(allocator);
+        var type_tok = std.mem.tokenizeAny(u8, types_raw, " \t");
+        while (type_tok.next()) |t| {
+            const cp = bidiClassCp(t) orelse {
+                std.debug.print("BidiTest.txt line {d}: unknown Bidi_Class '{s}'\n", .{ line_no, t });
+                return error.UnknownBidiClass;
+            };
+            try cps.append(allocator, cp);
+        }
+
+        // Parse @Levels: context — e.g. "0 x 1 2".
+        var exp_levels: std.ArrayList(?bidi_props.Level) = .empty;
+        defer exp_levels.deinit(allocator);
+        var lev_tok = std.mem.tokenizeAny(u8, levels_raw, " \t");
+        while (lev_tok.next()) |t| {
+            if (std.mem.eql(u8, t, "x")) {
+                try exp_levels.append(allocator, null);
+            } else {
+                try exp_levels.append(allocator, try std.fmt.parseInt(bidi_props.Level, t, 10));
+            }
+        }
+
+        // Parse @Reorder: context — e.g. "0 2 1".
+        var exp_reorder: std.ArrayList(usize) = .empty;
+        defer exp_reorder.deinit(allocator);
+        var ro_tok = std.mem.tokenizeAny(u8, reorder_raw, " \t");
+        while (ro_tok.next()) |t| {
+            try exp_reorder.append(allocator, try std.fmt.parseInt(usize, t, 10));
+        }
+
+        if (exp_levels.items.len != cps.items.len) {
+            std.debug.print(
+                "BidiTest.txt line {d}: @Levels count ({d}) != types count ({d})\n",
+                .{ line_no, exp_levels.items.len, cps.items.len },
+            );
+            return error.BidiTestFormatError;
+        }
+
+        // Test each paragraph direction selected by the bitset.
+        const dir_table = [_]struct { bit: u8, dir: bidi_props.BaseDirection }{
+            .{ .bit = 1, .dir = .auto },
+            .{ .bit = 2, .dir = .ltr },
+            .{ .bit = 4, .dir = .rtl },
+        };
+
+        for (dir_table) |entry| {
+            if (bitset & entry.bit == 0) continue;
+
+            var para = try bidi_props.resolveParagraph(allocator, cps.items, entry.dir);
+            defer para.deinit();
+
+            // Get L1-applied levels (treating the whole sequence as one line).
+            const levels_l1 = try para.lineLevels(allocator, 0, para.levels.len);
+            defer allocator.free(levels_l1);
+
+            // Compare levels; skip 'x' positions.
+            for (exp_levels.items, 0..) |maybe_lvl, i| {
+                const want = maybe_lvl orelse continue;
+                if (levels_l1[i] != want) {
+                    std.debug.print(
+                        "BidiTest.txt line {d} dir=.{s}: level[{d}] expected {d} got {d}\n  types: {s}\n  @Levels: {s}\n",
+                        .{ line_no, @tagName(entry.dir), i, want, levels_l1[i], types_raw, levels_raw },
+                    );
+                    return error.BidiLevelMismatch;
+                }
+            }
+
+            // Compare visual order; filter out 'x' positions from the output.
+            const vis_order = try para.reorderLine(allocator, 0, para.levels.len);
+            defer allocator.free(vis_order);
+
+            var actual_reorder: std.ArrayList(usize) = .empty;
+            defer actual_reorder.deinit(allocator);
+            for (vis_order) |idx| {
+                if (exp_levels.items[idx] != null) try actual_reorder.append(allocator, idx);
+            }
+
+            if (actual_reorder.items.len != exp_reorder.items.len) {
+                std.debug.print(
+                    "BidiTest.txt line {d} dir=.{s}: reorder length expected {d} got {d}\n  types: {s}\n  @Reorder: {s}\n",
+                    .{ line_no, @tagName(entry.dir), exp_reorder.items.len, actual_reorder.items.len, types_raw, reorder_raw },
+                );
+                return error.BidiReorderLengthMismatch;
+            }
+
+            for (actual_reorder.items, exp_reorder.items, 0..) |got, want, ri| {
+                if (got != want) {
+                    std.debug.print(
+                        "BidiTest.txt line {d} dir=.{s}: reorder[{d}] expected {d} got {d}\n  types: {s}\n  @Reorder: {s}\n",
+                        .{ line_no, @tagName(entry.dir), ri, want, got, types_raw, reorder_raw },
+                    );
+                    return error.BidiReorderMismatch;
+                }
+            }
+
+            tested += 1;
+        }
+    }
+
+    try testing.expect(tested > 0);
+}
+
+test "ucd hostile: BidiCharacterTest.txt full conformance (UAX #9 levels and visual order, real codepoints)" {
+    const allocator = testing.allocator;
+    const text = try std.Io.Dir.cwd().readFileAlloc(
+        testing.io,
+        bidi_character_test_path,
+        allocator,
+        .limited(16 * 1024 * 1024),
+    );
+    defer allocator.free(text);
+
+    var tested: usize = 0;
+    var line_no: usize = 0;
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    while (lines.next()) |raw_line| {
+        line_no += 1;
+        const clean = cleanData(raw_line);
+        if (clean.len == 0) continue;
+
+        // Five semicolon-separated fields.
+        var fields = std.mem.splitScalar(u8, clean, ';');
+        const cps_raw = std.mem.trim(u8, fields.next() orelse continue, " \t");
+        const dir_raw = std.mem.trim(u8, fields.next() orelse continue, " \t");
+        const para_lvl_raw = std.mem.trim(u8, fields.next() orelse continue, " \t");
+        const levels_raw = std.mem.trim(u8, fields.next() orelse continue, " \t");
+        const reorder_raw = std.mem.trim(u8, fields.next() orelse continue, " \t");
+        if (cps_raw.len == 0) continue;
+
+        // Codepoints.
+        var cps: std.ArrayList(CodePoint) = .empty;
+        defer cps.deinit(allocator);
+        var cp_tok = std.mem.tokenizeAny(u8, cps_raw, " \t");
+        while (cp_tok.next()) |t| {
+            try cps.append(allocator, try std.fmt.parseInt(CodePoint, t, 16));
+        }
+
+        // Paragraph direction: 0=LTR, 1=RTL, 2=auto.
+        const dir_int = try std.fmt.parseInt(u8, dir_raw, 10);
+        const dir: bidi_props.BaseDirection = switch (dir_int) {
+            0 => .ltr,
+            1 => .rtl,
+            2 => .auto,
+            else => {
+                std.debug.print("BidiCharacterTest.txt line {d}: unknown para_direction {d}\n", .{ line_no, dir_int });
+                return error.UnknownParaDirection;
+            },
+        };
+
+        // Expected paragraph embedding level.
+        const exp_para_level = try std.fmt.parseInt(bidi_props.Level, para_lvl_raw, 10);
+
+        // Expected resolved levels ('x' = removed by X9).
+        var exp_levels: std.ArrayList(?bidi_props.Level) = .empty;
+        defer exp_levels.deinit(allocator);
+        var lev_tok = std.mem.tokenizeAny(u8, levels_raw, " \t");
+        while (lev_tok.next()) |t| {
+            if (std.mem.eql(u8, t, "x")) {
+                try exp_levels.append(allocator, null);
+            } else {
+                try exp_levels.append(allocator, try std.fmt.parseInt(bidi_props.Level, t, 10));
+            }
+        }
+
+        // Expected visual order (indices of non-x characters in display order).
+        var exp_reorder: std.ArrayList(usize) = .empty;
+        defer exp_reorder.deinit(allocator);
+        var ro_tok = std.mem.tokenizeAny(u8, reorder_raw, " \t");
+        while (ro_tok.next()) |t| {
+            if (t.len == 0) continue;
+            try exp_reorder.append(allocator, try std.fmt.parseInt(usize, t, 10));
+        }
+
+        // Run the full algorithm.
+        var para = try bidi_props.resolveParagraph(allocator, cps.items, dir);
+        defer para.deinit();
+
+        // Paragraph embedding level.
+        if (para.level != exp_para_level) {
+            std.debug.print(
+                "BidiCharacterTest.txt line {d}: paragraph level expected {d} got {d}\n  codepoints: {s}\n",
+                .{ line_no, exp_para_level, para.level, cps_raw },
+            );
+            return error.BidiParaLevelMismatch;
+        }
+
+        // Resolved levels with L1 applied (whole sequence treated as one line).
+        const levels_l1 = try para.lineLevels(allocator, 0, para.levels.len);
+        defer allocator.free(levels_l1);
+
+        for (exp_levels.items, 0..) |maybe_lvl, i| {
+            const want = maybe_lvl orelse continue;
+            if (i >= levels_l1.len) break;
+            if (levels_l1[i] != want) {
+                std.debug.print(
+                    "BidiCharacterTest.txt line {d}: level[{d}] expected {d} got {d}\n  codepoints: {s}\n",
+                    .{ line_no, i, want, levels_l1[i], cps_raw },
+                );
+                return error.BidiLevelMismatch;
+            }
+        }
+
+        // Visual order: filter to non-x positions only.
+        const vis_order = try para.reorderLine(allocator, 0, para.levels.len);
+        defer allocator.free(vis_order);
+
+        var actual_reorder: std.ArrayList(usize) = .empty;
+        defer actual_reorder.deinit(allocator);
+        for (vis_order) |idx| {
+            if (idx < exp_levels.items.len and exp_levels.items[idx] != null) {
+                try actual_reorder.append(allocator, idx);
+            }
+        }
+
+        if (actual_reorder.items.len != exp_reorder.items.len) {
+            std.debug.print(
+                "BidiCharacterTest.txt line {d}: reorder length expected {d} got {d}\n  codepoints: {s}\n",
+                .{ line_no, exp_reorder.items.len, actual_reorder.items.len, cps_raw },
+            );
+            return error.BidiReorderLengthMismatch;
+        }
+
+        for (actual_reorder.items, exp_reorder.items, 0..) |got, want, ri| {
+            if (got != want) {
+                std.debug.print(
+                    "BidiCharacterTest.txt line {d}: reorder[{d}] expected {d} got {d}\n  codepoints: {s}\n",
+                    .{ line_no, ri, want, got, cps_raw },
+                );
+                return error.BidiReorderMismatch;
+            }
+        }
+
+        tested += 1;
+    }
+
+    try testing.expect(tested > 0);
 }

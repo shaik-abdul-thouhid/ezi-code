@@ -3441,6 +3441,18 @@ pub fn main(init: std.process.Init) !void {
             .generatorFn = generateNormalizationTestFixture,
         },
 
+        // ----- Bidi conformance fixtures (download-only; no Zig source emitted) -----
+        .{
+            .file_name = "ucd/BidiTest.txt",
+            .url = "https://www.unicode.org/Public/17.0.0/ucd/BidiTest.txt",
+            .generatorFn = saveUCDFixtureOnly,
+        },
+        .{
+            .file_name = "ucd/BidiCharacterTest.txt",
+            .url = "https://www.unicode.org/Public/17.0.0/ucd/BidiCharacterTest.txt",
+            .generatorFn = saveUCDFixtureOnly,
+        },
+
         // ----- Collation fixtures (download-only; no Zig source emitted) -----
         .{
             .file_name = "ucd/CollationTest.zip",
