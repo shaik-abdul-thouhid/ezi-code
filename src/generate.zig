@@ -496,6 +496,82 @@ fn buildIndexPageTable(arena: std.mem.Allocator, froms: []const u21) !PageTable(
 }
 
 // ============================================================================
+// Bidi defaults from DerivedBidiClass.txt @missing directives
+// ============================================================================
+
+// Map the long names used in @missing comment lines to the u8 index in
+// bidi_class_table (same index used in the generated page table).
+fn bidiClassIndexFromLongName(name: []const u8) ?u8 {
+    const short: []const u8 = if (std.mem.eql(u8, name, "Left_To_Right")) "L"
+    else if (std.mem.eql(u8, name, "Right_To_Left")) "R"
+    else if (std.mem.eql(u8, name, "Arabic_Letter")) "AL"
+    else if (std.mem.eql(u8, name, "European_Terminator")) "ET"
+    else if (std.mem.eql(u8, name, "Arabic_Number")) "AN"
+    else if (std.mem.eql(u8, name, "European_Number")) "EN"
+    else if (std.mem.eql(u8, name, "Boundary_Neutral")) "BN"
+    else if (std.mem.eql(u8, name, "Other_Neutral")) "ON"
+    else if (std.mem.eql(u8, name, "Non_Spacing_Mark")) "NSM"
+    else if (std.mem.eql(u8, name, "Common_Separator")) "CS"
+    else if (std.mem.eql(u8, name, "Paragraph_Separator")) "B"
+    else if (std.mem.eql(u8, name, "Segment_Separator")) "S"
+    else if (std.mem.eql(u8, name, "White_Space")) "WS"
+    else return null;
+    const idx = lookupCategory(&bidi_class_table, bidi_class_unknown, short);
+    return if (idx == bidi_class_unknown) null else idx;
+}
+
+// Read ucd/DerivedBidiClass.txt (already saved by the preceding saveUCDFixtureOnly
+// entry) and return a 0x110000-element array with the correct default bidi class
+// for every codepoint.  Two layers are applied:
+//
+//  1. @missing comment lines — seed defaults for reserved blocks (AL, R, ET…).
+//  2. Explicit data lines   — overlay codepoints (e.g. BN for Default_Ignorable /
+//     Noncharacter codepoints) that have a non-default class but are absent from
+//     UnicodeData.txt.  UnicodeData.txt will then overwrite assigned codepoints.
+fn buildBidiDefaults(arena: std.mem.Allocator, io: std.Io) ![]u8 {
+    var dir: std.Io.Dir = .cwd();
+    const data = try dir.readFileAlloc(io, "ucd/DerivedBidiClass.txt", arena, .limited(4 * 1024 * 1024));
+
+    const defaults = try arena.alloc(u8, 0x110000);
+    @memset(defaults, bidi_class_gap_fill); // L for everything until proven otherwise
+
+    var lines = std.mem.splitScalar(u8, data, '\n');
+    while (lines.next()) |raw| {
+        const line = std.mem.trim(u8, raw, " \t\r");
+
+        if (std.mem.startsWith(u8, line, "# @missing:")) {
+            // Layer 1: default for a reserved block.
+            const rest = std.mem.trim(u8, line["# @missing:".len..], " \t");
+            var parts = std.mem.splitScalar(u8, rest, ';');
+            const range_raw = std.mem.trim(u8, parts.next() orelse continue, " \t");
+            const name_raw = std.mem.trim(u8, parts.next() orelse continue, " \t");
+            const idx = bidiClassIndexFromLongName(name_raw) orelse continue;
+            var ri = std.mem.splitSequence(u8, range_raw, "..");
+            const start = std.fmt.parseInt(u21, ri.next() orelse continue, 16) catch continue;
+            const end = if (ri.next()) |e| std.fmt.parseInt(u21, e, 16) catch continue else start;
+            var cp = start;
+            while (cp <= end) : (cp += 1) defaults[cp] = idx;
+        } else if (line.len > 0 and line[0] != '#') {
+            // Layer 2: explicit data line — "RANGE ; SHORT_CODE # comment".
+            var parts = std.mem.splitScalar(u8, line, ';');
+            const range_raw = std.mem.trim(u8, parts.next() orelse continue, " \t");
+            const code_field = parts.next() orelse continue;
+            const hash = std.mem.indexOfScalar(u8, code_field, '#') orelse code_field.len;
+            const code = std.mem.trim(u8, code_field[0..hash], " \t");
+            const idx = lookupCategory(&bidi_class_table, bidi_class_unknown, code);
+            if (idx == bidi_class_unknown) continue;
+            var ri = std.mem.splitSequence(u8, range_raw, "..");
+            const start = std.fmt.parseInt(u21, ri.next() orelse continue, 16) catch continue;
+            const end = if (ri.next()) |e| std.fmt.parseInt(u21, e, 16) catch continue else start;
+            var cp = start;
+            while (cp <= end) : (cp += 1) defaults[cp] = idx;
+        }
+    }
+
+    return defaults;
+}
+
+// ============================================================================
 // Generators
 // ============================================================================
 
@@ -506,6 +582,11 @@ fn generateUnicodeData(arena: std.mem.Allocator, io: std.Io, data: []const u8, u
     const buf = try arena.alloc(u8, 1024 * 4);
     var file_writer = file.writer(io, buf);
     const writer = &file_writer.interface;
+
+    // Seed bidi defaults from DerivedBidiClass.txt @missing directives so that
+    // unassigned codepoints in Arabic, Hebrew, Currency, etc. ranges get the
+    // correct default class instead of L.
+    const bidi_defaults = try buildBidiDefaults(arena, io);
 
     var lowercase = CaseMappingTracker{};
     var uppercase = CaseMappingTracker{};
@@ -561,7 +642,7 @@ fn generateUnicodeData(arena: std.mem.Allocator, io: std.Io, data: []const u8, u
         if (std.mem.endsWith(u8, range_hint, ", Last>")) {
             const start_cp = pending_range_start orelse return error.InvalidUnicodeRange;
             while (next_cp < start_cp) : (next_cp += 1) try category_values.append(arena, general_category_default);
-            while (next_bidi_cp < start_cp) : (next_bidi_cp += 1) try bidi_values.append(arena, bidi_class_gap_fill);
+            while (next_bidi_cp < start_cp) : (next_bidi_cp += 1) try bidi_values.append(arena, bidi_defaults[next_bidi_cp]);
             while (next_combining_cp < start_cp) : (next_combining_cp += 1) try combining_values.append(arena, 0);
             var range_cp = start_cp;
             while (range_cp <= cp) : (range_cp += 1) {
@@ -584,7 +665,7 @@ fn generateUnicodeData(arena: std.mem.Allocator, io: std.Io, data: []const u8, u
         try combining_values.append(arena, ccc_byte);
         next_combining_cp = cp + 1;
 
-        while (next_bidi_cp < cp) : (next_bidi_cp += 1) try bidi_values.append(arena, bidi_class_gap_fill);
+        while (next_bidi_cp < cp) : (next_bidi_cp += 1) try bidi_values.append(arena, bidi_defaults[next_bidi_cp]);
         try bidi_values.append(arena, bidi_idx);
         next_bidi_cp = cp + 1;
 
@@ -594,7 +675,7 @@ fn generateUnicodeData(arena: std.mem.Allocator, io: std.Io, data: []const u8, u
     }
 
     while (next_cp <= 0x10FFFF) : (next_cp += 1) try category_values.append(arena, general_category_default);
-    while (next_bidi_cp <= 0x10FFFF) : (next_bidi_cp += 1) try bidi_values.append(arena, bidi_class_gap_fill);
+    while (next_bidi_cp <= 0x10FFFF) : (next_bidi_cp += 1) try bidi_values.append(arena, bidi_defaults[next_bidi_cp]);
     while (next_combining_cp <= 0x10FFFF) : (next_combining_cp += 1) try combining_values.append(arena, 0);
 
     try writer.writeAll(
@@ -656,6 +737,7 @@ fn generateUnicodeData(arena: std.mem.Allocator, io: std.Io, data: []const u8, u
 
     try writer.writeAll(
         \\pub inline fn bidiClass(cp: CodePoint) BidiClass {
+        \\    if (cp > 0x10FFFF) return .left_to_right;
         \\    const page = bidi_level1[cp >> 8];
         \\    return bidi_level_2[page][cp & 0xFF];
         \\}
@@ -3290,6 +3372,13 @@ pub fn main(init: std.process.Init) !void {
             .file_name = "src/collation/generated/ducet.zig",
             .url = "https://www.unicode.org/Public/17.0.0/uca/allkeys.txt",
             .generatorFn = generateDucet,
+        },
+        // Must come before UnicodeData.txt: generateUnicodeData reads
+        // ucd/DerivedBidiClass.txt from disk to seed the @missing defaults.
+        .{
+            .file_name = "ucd/DerivedBidiClass.txt",
+            .url = "https://www.unicode.org/Public/17.0.0/ucd/extracted/DerivedBidiClass.txt",
+            .generatorFn = saveUCDFixtureOnly,
         },
         .{
             .file_name = "src/unicode/generated/unicode_data.zig",

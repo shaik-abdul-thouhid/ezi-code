@@ -59,6 +59,7 @@ const hangul_syllable_type_path = "ucd/HangulSyllableType.txt";
 const derived_age_path = "ucd/DerivedAge.txt";
 const bidi_test_path = "ucd/BidiTest.txt";
 const bidi_character_test_path = "ucd/BidiCharacterTest.txt";
+const derived_bidi_class_path = "ucd/DerivedBidiClass.txt";
 
 fn cleanData(line: []const u8) []const u8 {
     var comment_split = std.mem.splitScalar(u8, line, '#');
@@ -3042,4 +3043,88 @@ test "ucd hostile: BidiCharacterTest.txt full conformance (UAX #9 levels and vis
     }
 
     try testing.expect(tested > 0);
+}
+
+// ============================================================================
+// DerivedBidiClass.txt full-space conformance — catches @missing-default bugs
+// ============================================================================
+
+// Map the long names used in @missing comment lines to the BidiClass enum.
+fn bidiClassFromMissingName(name: []const u8) ?unicode_data.BidiClass {
+    if (std.mem.eql(u8, name, "Left_To_Right")) return .left_to_right;
+    if (std.mem.eql(u8, name, "Right_To_Left")) return .right_to_left;
+    if (std.mem.eql(u8, name, "Arabic_Letter")) return .arabic_letter;
+    if (std.mem.eql(u8, name, "European_Terminator")) return .european_terminator;
+    if (std.mem.eql(u8, name, "Arabic_Number")) return .arabic_number;
+    if (std.mem.eql(u8, name, "European_Number")) return .european_number;
+    if (std.mem.eql(u8, name, "Boundary_Neutral")) return .boundary_neutral;
+    if (std.mem.eql(u8, name, "Other_Neutral")) return .other_neutral;
+    if (std.mem.eql(u8, name, "Non_Spacing_Mark")) return .non_spacing_mark;
+    if (std.mem.eql(u8, name, "Common_Separator")) return .common_separator;
+    if (std.mem.eql(u8, name, "Paragraph_Separator")) return .paragraph_separator;
+    if (std.mem.eql(u8, name, "Segment_Separator")) return .segment_separator;
+    if (std.mem.eql(u8, name, "White_Space")) return .whitespace;
+    return null;
+}
+
+test "ucd hostile: DerivedBidiClass.txt full conformance — every codepoint 0..10FFFF including @missing defaults" {
+    const allocator = testing.allocator;
+
+    const txt = try std.Io.Dir.cwd().readFileAlloc(
+        testing.io,
+        derived_bidi_class_path,
+        allocator,
+        .limited(4 * 1024 * 1024),
+    );
+    defer allocator.free(txt);
+
+    // Build the ground-truth dense array.
+    // @missing lines are in the header (comments); data lines come after.
+    // A single forward sweep works: @missing seeds defaults, data lines override.
+    const expected = try allocator.alloc(unicode_data.BidiClass, 0x110000);
+    defer allocator.free(expected);
+    @memset(expected, .left_to_right);
+
+    var lines = std.mem.splitScalar(u8, txt, '\n');
+    while (lines.next()) |raw_line| {
+        const trimmed = std.mem.trim(u8, raw_line, " \t\r");
+
+        // @missing comment: "# @missing: RANGE; LongName"
+        if (std.mem.startsWith(u8, trimmed, "# @missing:")) {
+            const rest = std.mem.trim(u8, trimmed["# @missing:".len..], " \t");
+            var parts = std.mem.splitScalar(u8, rest, ';');
+            const range_raw = std.mem.trim(u8, parts.next() orelse continue, " \t");
+            const name_raw = std.mem.trim(u8, parts.next() orelse continue, " \t");
+            const bc = bidiClassFromMissingName(name_raw) orelse continue;
+            var ri = std.mem.splitSequence(u8, range_raw, "..");
+            const start = std.fmt.parseInt(CodePoint, ri.next() orelse continue, 16) catch continue;
+            const end = if (ri.next()) |e| std.fmt.parseInt(CodePoint, e, 16) catch continue else start;
+            for (@as(usize, start)..@as(usize, end) + 1) |cp| expected[cp] = bc;
+            continue;
+        }
+
+        // Skip other comment and blank lines.
+        if (trimmed.len == 0 or trimmed[0] == '#') continue;
+
+        // Explicit data line: "RANGE ; SHORT_CODE # comment"
+        var parts = std.mem.splitScalar(u8, trimmed, ';');
+        const range = try parseRange(parts.next() orelse continue);
+        const code_field = parts.next() orelse continue;
+        const hash = std.mem.indexOfScalar(u8, code_field, '#') orelse code_field.len;
+        const code = std.mem.trim(u8, code_field[0..hash], " \t");
+        const bc = bidiFromUcd(code);
+        for (@as(usize, range.start)..@as(usize, range.end) + 1) |cp| expected[cp] = bc;
+    }
+
+    for (expected, 0..) |want, cp| {
+        const got = unicode_data.bidiClass(@intCast(cp));
+        if (got != want) {
+            std.debug.print(
+                "DerivedBidiClass.txt U+{X:0>4}: expected .{s} got .{s}\n",
+                .{ cp, @tagName(want), @tagName(got) },
+            );
+            return error.BidiClassMismatch;
+        }
+    }
+    try testing.expectEqual(unicode_data.BidiClass.left_to_right, unicode_data.bidiClass(0x110000));
 }
