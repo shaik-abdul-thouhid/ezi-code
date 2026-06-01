@@ -4,6 +4,7 @@ const utils = @import("utils");
 pub const encoding = @import("encoding");
 const ts = @import("transcoding");
 pub const unicode = @import("unicode");
+pub const collation = @import("collation");
 
 pub const transcoding = ts.transcoding;
 pub const stream = ts.stream;
@@ -19,4 +20,5 @@ test {
     std.testing.refAllDecls(utils);
     std.testing.refAllDecls(ts);
     std.testing.refAllDecls(unicode);
+    std.testing.refAllDecls(collation);
 }

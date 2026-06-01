@@ -6,6 +6,7 @@ const TestEnum = enum {
     encoding,
     transcoding,
     unicode,
+    collation,
     utils,
     conformance,
 };
@@ -66,35 +67,23 @@ pub fn build(b: *std.Build) !void {
 
     const unicode: std.Build.Module.Import = .{ .name = "unicode", .module = unicode_module };
 
+    const collation_module = b.addModule("collation", .{
+        .root_source_file = b.path("src/collation/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{ utils, encoding, unicode, build_option_module },
+    });
+
+    const collation: std.Build.Module.Import = .{ .name = "collation", .module = collation_module };
+
     const ezi_code_module = b.addModule("ezi_code", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
-        .imports = &.{ utils, encoding, transcoding, unicode },
+        .imports = &.{ utils, encoding, transcoding, unicode, collation },
     });
 
     const root: std.Build.Module.Import = .{ .name = "ezi_code", .module = ezi_code_module };
-
-    const exe = b.addExecutable(.{
-        .name = "ezi_code",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/main.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{root},
-        }),
-    });
-
-    b.installArtifact(exe);
-
-    const run_step = b.step("run", "Run the app");
-
-    const run_cmd = b.addRunArtifact(exe);
-    run_step.dependOn(&run_cmd.step);
-
-    run_cmd.step.dependOn(b.getInstallStep());
-
-    run_cmd.addPassthruArgs();
 
     // Unicode table generation step
     const generate_unicode_exe = b.addExecutable(.{
@@ -116,6 +105,7 @@ pub fn build(b: *std.Build) !void {
     const encoding_tests = b.addTest(.{ .root_module = encoding_module });
     const transcoding_tests = b.addTest(.{ .root_module = transcoding_module });
     const unicode_tests = b.addTest(.{ .root_module = unicode_module });
+    const collation_tests = b.addTest(.{ .root_module = collation_module });
     const mod_tests = b.addTest(.{ .root_module = ezi_code_module });
 
     const run_mod_tests = b.addRunArtifact(mod_tests);
@@ -123,6 +113,7 @@ pub fn build(b: *std.Build) !void {
     const run_encoding_tests = b.addRunArtifact(encoding_tests);
     const run_transcoding_tests = b.addRunArtifact(transcoding_tests);
     const run_unicode_tests = b.addRunArtifact(unicode_tests);
+    const run_collation_tests = b.addRunArtifact(collation_tests);
 
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_mod_tests.step);
@@ -179,6 +170,19 @@ pub fn build(b: *std.Build) !void {
         test_step.dependOn(&run_unicode_tests.step);
     }
 
+    if (some(
+        TestEnum,
+        {},
+        include_tests,
+        struct {
+            fn predicate(_: void, i: TestEnum, _: usize) bool {
+                return i == .collation or i == .conformance or i == .all;
+            }
+        }.predicate,
+    )) {
+        test_step.dependOn(&run_collation_tests.step);
+    }
+
     // Benchmarks need optimization — Debug mode is so slow on the segmentation
     // iterators (table-driven property lookups, per-codepoint lookahead) that
     // a 16 KiB corpus appears to hang. Build a dedicated tree of modules at
@@ -221,11 +225,19 @@ pub fn build(b: *std.Build) !void {
     });
     const bench_unicode: std.Build.Module.Import = .{ .name = "unicode", .module = bench_unicode_module };
 
+    const bench_collation_module = b.createModule(.{
+        .root_source_file = b.path("src/collation/root.zig"),
+        .target = target,
+        .optimize = bench_optimize,
+        .imports = &.{ bench_utils, bench_encoding, bench_unicode },
+    });
+    const bench_collation: std.Build.Module.Import = .{ .name = "collation", .module = bench_collation_module };
+
     const bench_ezi_code_module = b.createModule(.{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = bench_optimize,
-        .imports = &.{ bench_utils, bench_encoding, bench_transcoding, bench_unicode },
+        .imports = &.{ bench_utils, bench_encoding, bench_transcoding, bench_unicode, bench_collation },
     });
     const bench_root: std.Build.Module.Import = .{ .name = "ezi_code", .module = bench_ezi_code_module };
 

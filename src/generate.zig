@@ -679,6 +679,306 @@ fn generateUnicodeData(arena: std.mem.Allocator, io: std.Io, data: []const u8, u
     try saveUCDFile(arena, io, &dir, data, url, buf);
 }
 
+fn packRecord(start: usize, len: usize) u32 {
+    if (start > 0x00FF_FFFF) @panic("DUCET CE table too large — widen record packing");
+    if (len > 0xFF) @panic("DUCET mapping too long — widen record packing");
+    return (@as(u32, @intCast(start)) << 8) | @as(u32, @intCast(len));
+}
+
+const CE = struct {
+    primary: u16,
+    secondary: u16,
+    tertiary: u16,
+    variable: bool,
+};
+
+fn parseWeights(text: []const u8) !CE {
+    var raw = std.mem.trim(u8, text, " \t\r");
+    if (raw.len < 2) return error.BadCE;
+    if (raw[0] != '[' or raw[raw.len - 1] != ']') return error.BadCE;
+    raw = raw[1 .. raw.len - 1];
+
+    const variable = raw[0] == '*';
+    if (!variable and raw[0] != '.') return error.BadCE;
+    const payload = raw[1..];
+
+    var split = std.mem.splitScalar(u8, payload, '.');
+    const p_raw = split.next() orelse return error.BadCE;
+    const s_raw = split.next() orelse return error.BadCE;
+    const t_raw = split.next() orelse return error.BadCE;
+    if (split.next() != null) return error.BadCE;
+
+    return .{
+        .primary = try std.fmt.parseInt(u16, p_raw, 16),
+        .secondary = try std.fmt.parseInt(u16, s_raw, 16),
+        .tertiary = try std.fmt.parseInt(u16, t_raw, 16),
+        .variable = variable,
+    };
+}
+
+fn generateDucet(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
+    const CodePoint = u21;
+
+    const ImplicitRange = struct { start: CodePoint, end: CodePoint, base: u16, origin: CodePoint };
+    const DoubleEntry = struct { first: CodePoint, second: CodePoint, record: u32 };
+    const TripleEntry = struct { first: CodePoint, second: CodePoint, third: CodePoint, record: u32 };
+
+    var implicit_ranges = std.ArrayList(ImplicitRange).empty;
+    var double_entries = std.ArrayList(DoubleEntry).empty;
+    var triple_entries = std.ArrayList(TripleEntry).empty;
+    var ce_table = std.ArrayList(CE).empty;
+
+    const mapping_records = try arena.alloc(u32, 0x110000);
+    @memset(mapping_records, 0);
+
+    var lines = std.mem.splitScalar(u8, data, '\n');
+    while (lines.next()) |raw_line| {
+        const line = std.mem.trim(u8, raw_line, " \t\r");
+        if (line.len == 0 or line[0] == '#') continue;
+
+        if (line[0] == '@') {
+            if (!std.mem.startsWith(u8, line, "@implicitweights")) continue;
+            const tail = std.mem.trim(u8, line["@implicitweights".len..], " \t\r");
+            // @implicitweights 17000..187FF; FB00 # Tangut
+            var split_comment = std.mem.splitScalar(u8, tail, '#');
+            const no_comment = std.mem.trim(u8, split_comment.next() orelse continue, " \t\r");
+            var split_semi = std.mem.splitScalar(u8, no_comment, ';');
+            const range_raw = std.mem.trim(u8, split_semi.next() orelse continue, " \t\r");
+            const base_raw = std.mem.trim(u8, split_semi.next() orelse continue, " \t\r");
+
+            var split_range = std.mem.splitSequence(u8, range_raw, "..");
+            const start_raw = split_range.next() orelse continue;
+            const end_raw = split_range.next() orelse continue;
+            const start = try std.fmt.parseInt(CodePoint, start_raw, 16);
+            const end = try std.fmt.parseInt(CodePoint, end_raw, 16);
+            const base = try std.fmt.parseInt(u16, base_raw, 16);
+            try implicit_ranges.append(arena, .{ .start = start, .end = end, .base = base, .origin = start });
+            continue;
+        }
+
+        var split_comments = std.mem.splitScalar(u8, line, '#');
+        const no_comment = std.mem.trim(u8, split_comments.next() orelse continue, " \t\r");
+        var split = std.mem.splitScalar(u8, no_comment, ';');
+        const key_raw = std.mem.trim(u8, split.next() orelse continue, " \t\r");
+        const value_raw = std.mem.trim(u8, split.next() orelse continue, " \t\r");
+
+        var key_tokens = std.mem.splitAny(u8, key_raw, " \t");
+        var key_buf: [8]CodePoint = undefined;
+        var key_len: usize = 0;
+        while (key_tokens.next()) |token_raw| {
+            const token = std.mem.trim(u8, token_raw, " \t\r");
+            if (token.len == 0) continue;
+            if (key_len == key_buf.len) return error.DucetKeyTooLong;
+            key_buf[key_len] = try std.fmt.parseInt(CodePoint, token, 16);
+            key_len += 1;
+        }
+        if (key_len == 0) continue;
+        const key = key_buf[0..key_len];
+
+        // Parse CE sequences: [...][...]
+        var tmp_ces = std.ArrayList(CE).empty;
+        defer tmp_ces.deinit(arena);
+        var idx: usize = 0;
+        while (idx < value_raw.len) {
+            const open = std.mem.indexOfScalarPos(u8, value_raw, idx, '[') orelse break;
+            const close = std.mem.indexOfScalarPos(u8, value_raw, open + 1, ']') orelse return error.BadCE;
+            const ce_txt = value_raw[open .. close + 1];
+            try tmp_ces.append(arena, try parseWeights(ce_txt));
+            idx = close + 1;
+        }
+        if (tmp_ces.items.len == 0) return error.BadCE;
+
+        const start = ce_table.items.len;
+        try ce_table.appendSlice(arena, tmp_ces.items);
+        const record = packRecord(start, tmp_ces.items.len);
+
+        switch (key_len) {
+            1 => {
+                const cp = key[0];
+                if (cp <= 0x10FFFF) mapping_records[cp] = record;
+            },
+            2 => {
+                try double_entries.append(arena, .{ .first = key[0], .second = key[1], .record = record });
+            },
+            3 => {
+                try triple_entries.append(arena, .{ .first = key[0], .second = key[1], .third = key[2], .record = record });
+            },
+            else => return error.DucetKeyTooLong,
+        }
+    }
+
+    // Sort contraction entries for binary search.
+    std.mem.sort(DoubleEntry, double_entries.items, {}, struct {
+        fn lessThan(_: void, a: DoubleEntry, b: DoubleEntry) bool {
+            if (a.first != b.first) return a.first < b.first;
+            return a.second < b.second;
+        }
+    }.lessThan);
+    std.mem.sort(TripleEntry, triple_entries.items, {}, struct {
+        fn lessThan(_: void, a: TripleEntry, b: TripleEntry) bool {
+            if (a.first != b.first) return a.first < b.first;
+            if (a.second != b.second) return a.second < b.second;
+            return a.third < b.third;
+        }
+    }.lessThan);
+    std.mem.sort(ImplicitRange, implicit_ranges.items, {}, struct {
+        fn lessThan(_: void, a: ImplicitRange, b: ImplicitRange) bool {
+            return a.start < b.start;
+        }
+    }.lessThan);
+
+    // The UCA implicit-weight algorithm uses a fixed origin per implicit base.
+    // allkeys.txt can provide multiple disjoint ranges for the same base (eg.
+    // Tangut + Tangut Supplement both use FB00), and BBBB must be computed as
+    // (CP - origin) rather than (CP - range.start) to preserve code point order.
+    var origin_by_base: std.AutoHashMapUnmanaged(u16, CodePoint) = .empty;
+    for (implicit_ranges.items) |r| {
+        const entry = try origin_by_base.getOrPut(arena, r.base);
+        if (!entry.found_existing) {
+            entry.value_ptr.* = r.start;
+        } else {
+            entry.value_ptr.* = @min(entry.value_ptr.*, r.start);
+        }
+    }
+    for (implicit_ranges.items) |*r| {
+        r.origin = origin_by_base.get(r.base).?;
+    }
+
+    const pt = try buildPageTable(u32, arena, mapping_records, 0);
+
+    var dir: std.Io.Dir = .cwd();
+    var file = try dir.createFile(io, file_name, .{ .truncate = true, .permissions = .default_file });
+    defer file.close(io);
+    const buf = try arena.alloc(u8, 1024 * 8);
+    var file_writer = file.writer(io, buf);
+    const writer = &file_writer.interface;
+
+    try writer.writeAll(
+        \\//! This file is auto-generated. Do not edit directly.
+        \\//! To regenerate run `zig build generate` at the repo root.
+        \\
+        \\const std = @import("std");
+        \\const CodePoint = @import("encoding").CodePoint;
+        \\const utils = @import("utils");
+        \\
+        \\pub const CE = packed struct(u64) {
+        \\    primary: u16,
+        \\    secondary: u16,
+        \\    tertiary: u16,
+        \\    variable: u1,
+        \\    _: u15,
+        \\};
+        \\
+        \\pub const ImplicitRange = struct { start: CodePoint, end: CodePoint, base: u16, origin: CodePoint };
+        \\pub const DoubleEntry = struct { first: CodePoint, second: CodePoint, record: u32 };
+        \\pub const TripleEntry = struct { first: CodePoint, second: CodePoint, third: CodePoint, record: u32 };
+        \\
+        \\fn unpackStart(record: u32) u32 { return record >> 8; }
+        \\fn unpackLen(record: u32) u8 { return @intCast(record & 0xFF); }
+        \\
+        \\
+    );
+
+    // Implicit ranges.
+    try writer.writeAll("//zig fmt: off\npub const implicit_ranges = [_]ImplicitRange{\n");
+    for (implicit_ranges.items) |r| {
+        try writer.print(
+            "    .{{ .start = 0x{X}, .end = 0x{X}, .base = 0x{X}, .origin = 0x{X} }},\n",
+            .{ r.start, r.end, r.base, r.origin },
+        );
+    }
+    try writer.writeAll("};\n//zig fmt: on\n\n");
+
+    // CE table.
+    try writer.writeAll("//zig fmt: off\npub const ce_table = [_]CE{\n");
+    for (ce_table.items) |ce| {
+        try writer.print(
+            "    .{{ .primary = 0x{X}, .secondary = 0x{X}, .tertiary = 0x{X}, .variable = {d}, ._ = 0 }},\n",
+            .{ ce.primary, ce.secondary, ce.tertiary, @intFromBool(ce.variable) },
+        );
+    }
+    try writer.writeAll("};\n//zig fmt: on\n\n");
+
+    // Mapping page table.
+    try emitLevel1(writer, "ducet_map", pt.level1);
+    try writer.writeAll("//zig fmt: off\nconst ducet_map_level2 = [_][256]u32 {\n");
+    for (pt.unique_pages) |page| {
+        try writer.writeAll("    .{\n        ");
+        for (page, 0..) |val, j| {
+            try writer.print("0x{X:0>8},", .{val});
+            if ((j + 1) % 8 == 0 and (j + 1) != page.len) try writer.writeAll("\n        ");
+        }
+        try writer.writeAll("\n    },\n");
+    }
+    try writer.writeAll("};\n//zig fmt: on\n\n");
+
+    try writer.writeAll(
+        \\pub inline fn mappingRecord(cp: CodePoint) u32 {
+        \\    if (cp > 0x10FFFF) return 0;
+        \\    const page = ducet_map_level1[cp >> 8];
+        \\    return ducet_map_level2[page][cp & 0xFF];
+        \\}
+        \\
+        \\pub inline fn ceSlice(record: u32) []const CE {
+        \\    const len: u8 = unpackLen(record);
+        \\    const start: u32 = unpackStart(record);
+        \\    return ce_table[start .. start + len];
+        \\}
+        \\
+    );
+
+    // Double/triple sequences.
+    try writer.writeAll("//zig fmt: off\nconst double_entries = [_]DoubleEntry{\n");
+    for (double_entries.items) |e| {
+        try writer.print("    .{{ .first = 0x{X}, .second = 0x{X}, .record = 0x{X:0>8} }},\n", .{ e.first, e.second, e.record });
+    }
+    try writer.writeAll("};\n\nconst triple_entries = [_]TripleEntry{\n");
+    for (triple_entries.items) |e| {
+        try writer.print("    .{{ .first = 0x{X}, .second = 0x{X}, .third = 0x{X}, .record = 0x{X:0>8} }},\n", .{ e.first, e.second, e.third, e.record });
+    }
+    try writer.writeAll("};\n//zig fmt: on\n\n");
+
+    try writer.writeAll(
+        \\fn findDouble(first: CodePoint, second: CodePoint) ?u32 {
+        \\    const idx = utils.binarySearch(DoubleEntry, &double_entries, .{ first, second }, struct {
+        \\        fn cmp(ctx: struct { CodePoint, CodePoint }, item: DoubleEntry) std.math.Order {
+        \\            if (ctx[0] < item.first) return .lt;
+        \\            if (ctx[0] > item.first) return .gt;
+        \\            return std.math.order(ctx[1], item.second);
+        \\        }
+        \\    }.cmp) orelse return null;
+        \\    return double_entries[idx].record;
+        \\}
+        \\
+        \\fn findTriple(first: CodePoint, second: CodePoint, third: CodePoint) ?u32 {
+        \\    const idx = utils.binarySearch(TripleEntry, &triple_entries, .{ first, second, third }, struct {
+        \\        fn cmp(ctx: struct { CodePoint, CodePoint, CodePoint }, item: TripleEntry) std.math.Order {
+        \\            if (ctx[0] < item.first) return .lt;
+        \\            if (ctx[0] > item.first) return .gt;
+        \\            if (ctx[1] < item.second) return .lt;
+        \\            if (ctx[1] > item.second) return .gt;
+        \\            return std.math.order(ctx[2], item.third);
+        \\        }
+        \\    }.cmp) orelse return null;
+        \\    return triple_entries[idx].record;
+        \\}
+        \\
+        \\pub inline fn lookupDouble(first: CodePoint, second: CodePoint) ?u32 {
+        \\    if (double_entries.len == 0) return null;
+        \\    return findDouble(first, second);
+        \\}
+        \\
+        \\pub inline fn lookupTriple(first: CodePoint, second: CodePoint, third: CodePoint) ?u32 {
+        \\    if (triple_entries.len == 0) return null;
+        \\    return findTriple(first, second, third);
+        \\}
+        \\
+    );
+
+    try file_writer.flush();
+    try saveUCDFile(arena, io, &dir, data, url, buf);
+}
+
 fn generateDerivedCoreProperty(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []const u8, file_name: []const u8) !void {
     var dir: std.Io.Dir = .cwd();
     var file = try dir.createFile(io, file_name, .{ .truncate = true, .permissions = .default_file });
@@ -2987,6 +3287,11 @@ pub fn main(init: std.process.Init) !void {
         generatorFn: *const fn (std.mem.Allocator, std.Io, data: []const u8, url: []const u8, file_name: []const u8) anyerror!void,
     }{
         .{
+            .file_name = "src/collation/generated/ducet.zig",
+            .url = "https://www.unicode.org/Public/17.0.0/uca/allkeys.txt",
+            .generatorFn = generateDucet,
+        },
+        .{
             .file_name = "src/unicode/generated/unicode_data.zig",
             .url = "https://www.unicode.org/Public/17.0.0/ucd/UnicodeData.txt",
             .generatorFn = generateUnicodeData,
@@ -3134,6 +3439,13 @@ pub fn main(init: std.process.Init) !void {
             .file_name = "ucd/NormalizationTest.txt", // fixture only, not Zig output
             .url = "https://www.unicode.org/Public/17.0.0/ucd/NormalizationTest.txt",
             .generatorFn = generateNormalizationTestFixture,
+        },
+
+        // ----- Collation fixtures (download-only; no Zig source emitted) -----
+        .{
+            .file_name = "ucd/CollationTest.zip",
+            .url = "https://www.unicode.org/Public/17.0.0/uca/CollationTest.zip",
+            .generatorFn = saveUCDFixtureOnly,
         },
     };
 

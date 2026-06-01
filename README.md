@@ -9,6 +9,7 @@ A Unicode library for Zig. Three layers, stacked:
   Unicode Character Database: normalization, casing, segmentation
   (grapheme / word / sentence / line), width, scripts, bidi, numeric, blocks,
   hangul, age.
+- **`collation`** — Default Unicode Collation Algorithm (UCA) using the DUCET.
 
 It has no dependencies. The UCD tables are generated into Zig source and
 committed, so a normal build doesn't touch the network or the `ucd/` inputs.
@@ -23,7 +24,7 @@ this will not compile, and that is the intended trade-off until Zig 0.17 lands.
 What works is well-tested. The unicode submodule includes exhaustive
 `0..=0x10FFFF` sweeps and runs against the official UCD conformance vectors
 (`GraphemeBreakTest.txt`, `WordBreakTest.txt`, `SentenceBreakTest.txt`,
-`LineBreakTest.txt`, `NormalizationTest.txt`) under a build flag. The bidi algorithm went in with the rule-numbered
+`LineBreakTest.txt`, `NormalizationTest.txt`, `CollationTest*.txt`) under a build flag. The bidi algorithm went in with the rule-numbered
 adversarial test set you'd expect for UAX #9.
 
 ## Installing
@@ -127,7 +128,7 @@ zig build
 # Run all tests (Debug). Note: the unicode sweeps are slow in Debug.
 zig build test
 
-# Run a specific suite. Selectors: all, encoding, transcoding, unicode, utils, conformance.
+# Run a specific suite. Selectors: all, encoding, transcoding, unicode, collation, utils, conformance.
 zig build test -Dinclude-test=unicode -Doptimize=ReleaseSafe
 
 # Run the UCD conformance vectors.
@@ -157,6 +158,9 @@ src/
     age/  bidi/  blocks/  casing/  hangul/  normalization/
     numeric/  properties/  scripts/  segmentation/  width/
     tests/         UCD conformance test runners
+  collation/       UCA/DUCET collation + conformance runner
+    generated/      Generated DUCET tables
+    tests/          CollationTest conformance runner
   utils/           Internal helpers (search, slices). Not part of the public API.
 bench/             Benchmark driver, framework, corpora, per-module suites
 ucd/               Raw UCD inputs (only needed for `zig build generate`)
