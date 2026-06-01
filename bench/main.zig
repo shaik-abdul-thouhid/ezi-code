@@ -31,6 +31,7 @@ const unicode_bidi = @import("modules/unicode_bidi.zig");
 const unicode_numeric_metadata = @import("modules/unicode_numeric_metadata.zig");
 const utils_slices = @import("modules/utils_slices.zig");
 const utils_search = @import("modules/utils_search.zig");
+const collation = @import("modules/collation.zig");
 
 const registry: []const framework.Suite = &.{
     encoding_utf8.suite,
@@ -47,6 +48,7 @@ const registry: []const framework.Suite = &.{
     unicode_numeric_metadata.suite,
     utils_slices.suite,
     utils_search.suite,
+    collation.suite,
 };
 
 fn printUsage() void {

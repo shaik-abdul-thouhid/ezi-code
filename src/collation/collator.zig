@@ -40,6 +40,94 @@ pub const Key = struct {
         self.work.deinit(allocator);
         self.* = undefined;
     }
+
+    /// Returns the byte length of the serialized sort key for the given options.
+    /// The result is exactly how many bytes `serializeInto` will write.
+    pub fn serializedLen(self: *const Key, options: Options) usize {
+        var len: usize = self.primary.items.len * 2;
+        if (options.strength == .primary) return len;
+        len += 2 + self.secondary.items.len * 2;
+        if (options.strength == .secondary) return len;
+        len += 2 + self.tertiary.items.len * 2;
+        if (options.strength == .tertiary) return len;
+        if (options.variable_weighting == .shifted) len += 2 + self.quaternary.items.len * 2;
+        if (options.strength == .quaternary) return len;
+        // identical: 2-byte separator + NFD codepoints encoded as 3-byte big-endian each
+        len += 2 + self.nfd.items.len * 3;
+        return len;
+    }
+
+    /// Writes the sort key into `buf` and returns the written slice.
+    /// `buf` must be at least `serializedLen(options)` bytes long.
+    ///
+    /// Format: big-endian u16 weight sequences separated by 0x0000 level markers,
+    /// one per strength level included by `options`. The identical level appends
+    /// NFD codepoints as 3-byte big-endian values after the final separator.
+    /// Two sort keys produced with the same options compare with `std.mem.order`
+    /// exactly as `Collator.compareKeys` would compare the originating `Key` values.
+    pub fn serializeInto(self: *const Key, options: Options, buf: []u8) []u8 {
+        std.debug.assert(buf.len >= self.serializedLen(options));
+        var pos: usize = 0;
+
+        for (self.primary.items) |w| {
+            buf[pos] = @intCast(w >> 8);
+            buf[pos + 1] = @intCast(w & 0xFF);
+            pos += 2;
+        }
+        if (options.strength == .primary) return buf[0..pos];
+
+        buf[pos] = 0;
+        buf[pos + 1] = 0;
+        pos += 2;
+        for (self.secondary.items) |w| {
+            buf[pos] = @intCast(w >> 8);
+            buf[pos + 1] = @intCast(w & 0xFF);
+            pos += 2;
+        }
+        if (options.strength == .secondary) return buf[0..pos];
+
+        buf[pos] = 0;
+        buf[pos + 1] = 0;
+        pos += 2;
+        for (self.tertiary.items) |w| {
+            buf[pos] = @intCast(w >> 8);
+            buf[pos + 1] = @intCast(w & 0xFF);
+            pos += 2;
+        }
+        if (options.strength == .tertiary) return buf[0..pos];
+
+        if (options.variable_weighting == .shifted) {
+            buf[pos] = 0;
+            buf[pos + 1] = 0;
+            pos += 2;
+            for (self.quaternary.items) |w| {
+                buf[pos] = @intCast(w >> 8);
+                buf[pos + 1] = @intCast(w & 0xFF);
+                pos += 2;
+            }
+        }
+        if (options.strength == .quaternary) return buf[0..pos];
+
+        buf[pos] = 0;
+        buf[pos + 1] = 0;
+        pos += 2;
+        for (self.nfd.items) |cp| {
+            buf[pos] = @intCast(cp >> 16);
+            buf[pos + 1] = @intCast((cp >> 8) & 0xFF);
+            buf[pos + 2] = @intCast(cp & 0xFF);
+            pos += 3;
+        }
+        return buf[0..pos];
+    }
+
+    /// Allocates and returns the serialized sort key bytes for the given options.
+    /// The caller owns the returned slice; free with the same allocator.
+    pub fn serializeAlloc(self: *const Key, allocator: Allocator, options: Options) ![]u8 {
+        const len = self.serializedLen(options);
+        const buf = try allocator.alloc(u8, len);
+        _ = self.serializeInto(options, buf);
+        return buf;
+    }
 };
 
 pub const Collator = struct {
@@ -322,6 +410,13 @@ fn isUnblocked(text: []const CodePoint, base: usize, candidate: usize, ccc_candi
         if (b_ccc >= ccc_candidate) return false;
     }
     return true;
+}
+
+/// Compares two serialized sort keys produced by `Key.serializeInto` or
+/// `Key.serializeAlloc` with the same options. Equivalent to calling
+/// `Collator.compareKeys` on the source keys — no allocation required.
+pub fn compareSerializedKeys(a: []const u8, b: []const u8) Order {
+    return std.mem.order(u8, a, b);
 }
 
 test "collation: shifted quaternary differentiates trailing variables" {

@@ -9,7 +9,8 @@ A Unicode library for Zig. Three layers, stacked:
   Unicode Character Database: normalization, casing, segmentation
   (grapheme / word / sentence / line), width, scripts, bidi, numeric, blocks,
   hangul, age.
-- **`collation`** — Default Unicode Collation Algorithm (UCA) using the DUCET.
+- **`collation`** — Default Unicode Collation Algorithm (UCA) using the DUCET,
+  with sort key serialization for allocation-free comparison and database indexing.
 
 It has no dependencies. The UCD tables are generated into Zig source and
 committed, so a normal build doesn't touch the network or the `ucd/` inputs.
@@ -31,13 +32,13 @@ adversarial test set you'd expect for UAX #9.
 
 Via git ref (resolves the tag at fetch time):
 
-```
+```sh
 zig fetch --save git+https://github.com/shaik-abdul-thouhid/ezi-code.git#v0.1.0
 ```
 
 Or via plain HTTP tarball (pins the content hash in `build.zig.zon`):
 
-```
+```sh
 zig fetch --save https://github.com/shaik-abdul-thouhid/ezi-code/archive/refs/tags/v0.1.0.tar.gz
 ```
 
@@ -80,11 +81,24 @@ var paragraph = try ezi.unicode.bidi.resolveParagraph(allocator, code_points, .a
 defer paragraph.deinit();
 const visual_order = try paragraph.reorderVisual(allocator);
 defer allocator.free(visual_order);
+
+// Collate: compare two strings per the Unicode Collation Algorithm.
+var collator = ezi.collation.Collator.init(.{});
+const order = try collator.compareUtf8(allocator, "café", "cafe");
+_ = order; // .gt
+
+// Build a sort key once, then serialize to bytes for allocation-free comparison.
+var key: ezi.collation.Key = .{};
+defer key.deinit(allocator);
+try collator.buildKey(allocator, code_points, &key);
+const sort_bytes = try key.serializeAlloc(allocator, collator.options);
+defer allocator.free(sort_bytes);
+// std.mem.order(u8, sort_bytes_a, sort_bytes_b) == collator.compareKeys(key_a, key_b)
 ```
 
-The per-module READMEs in `src/encoding/`, `src/transcoding/`, and
-`src/unicode/` document the full surface. Read them before reaching for the
-top-level types — the interesting design is at that level, not in the facade.
+The per-module READMEs in `src/encoding/`, `src/transcoding/`, `src/unicode/`,
+and `src/collation/` document the full surface. Read them before reaching for
+the top-level types — the interesting design is at that level, not in the facade.
 
 ## What's in the unicode module
 
@@ -150,7 +164,7 @@ Module list is in `bench/main.zig`.
 
 ## Layout
 
-```
+```text
 src/
   encoding/        UTF-8, UTF-16, UTF-32 codecs + per-module README
   transcoding/     Cross-encoding converters and UTF8Stream + per-module README
@@ -158,9 +172,9 @@ src/
     age/  bidi/  blocks/  casing/  hangul/  normalization/
     numeric/  properties/  scripts/  segmentation/  width/
     tests/         UCD conformance test runners
-  collation/       UCA/DUCET collation + conformance runner
+  collation/       UCA/DUCET collation + sort key serialization + per-module README
     generated/      Generated DUCET tables
-    tests/          CollationTest conformance runner
+    tests/          CollationTest conformance + sort key serialization tests
   utils/           Internal helpers (search, slices). Not part of the public API.
 bench/             Benchmark driver, framework, corpora, per-module suites
 ucd/               Raw UCD inputs (only needed for `zig build generate`)

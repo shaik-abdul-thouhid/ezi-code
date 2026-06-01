@@ -9,6 +9,7 @@ const build_options = @import("build_options");
 pub const types = @import("types.zig");
 pub const Collator = @import("collator.zig").Collator;
 pub const Key = @import("collator.zig").Key;
+pub const compareSerializedKeys = @import("collator.zig").compareSerializedKeys;
 pub const Options = types.Options;
 pub const Strength = types.Strength;
 pub const VariableWeighting = types.VariableWeighting;
@@ -17,9 +18,11 @@ pub const Order = types.Order;
 pub const generated = @import("generated/ducet.zig");
 
 const conformance_tests = @import("tests/uca_conformance.zig");
+const sort_key_tests = @import("tests/sort_key.zig");
 
 test {
     std.testing.refAllDecls(@This());
+    std.testing.refAllDecls(sort_key_tests);
     if (build_options.include_conformance) {
         std.testing.refAllDecls(conformance_tests);
     }
