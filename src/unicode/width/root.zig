@@ -54,6 +54,48 @@ pub fn terminalColumnWidth(cp: CodePoint) u2 {
     };
 }
 
+/// Sum of `terminalColumnWidth` over a slice of already-decoded scalars — the
+/// estimated number of monospace columns `code_points` occupies. Combining marks
+/// and controls contribute 0, East Asian Wide/Fullwidth contribute 2, everything
+/// else 1. Allocation-free and never traps.
+///
+/// @stable-since: v0.2.0
+pub fn stringWidthCodePoints(code_points: []const CodePoint) usize {
+    var total: usize = 0;
+    for (code_points) |cp| total += terminalColumnWidth(cp);
+    return total;
+}
+
+/// Estimated monospace column width of the UTF-8 `bytes`, summing
+/// `terminalColumnWidth` over each decoded scalar. Validates the input and
+/// surfaces a `UTF8ValidationError` on malformed sequences; use
+/// `stringWidthLossy` to measure possibly-malformed input instead.
+///
+/// @stable-since: v0.2.0
+pub fn stringWidth(bytes: []const u8) encoding.utf8.UTF8ValidationError!usize {
+    var i: usize = 0;
+    var total: usize = 0;
+    while (i < bytes.len) {
+        const decoded = try encoding.utf8.validateAndDecodeCodePointBytes(bytes, i);
+        total += terminalColumnWidth(decoded.code_point);
+        i += decoded.len;
+    }
+    return total;
+}
+
+/// Estimated monospace column width of the UTF-8 `bytes`, decoding leniently:
+/// each malformed sequence is treated as one replacement scalar (U+FFFD, width
+/// 1) rather than raising an error. Never fails. Strict counterpart:
+/// `stringWidth`.
+///
+/// @stable-since: v0.2.0
+pub fn stringWidthLossy(bytes: []const u8) usize {
+    var total: usize = 0;
+    var iter = encoding.utf8.lossyIterator(bytes);
+    while (iter.next()) |cp| total += terminalColumnWidth(cp);
+    return total;
+}
+
 // ============================================================================
 // Hostile / edge-case tests
 // ============================================================================
@@ -150,6 +192,26 @@ test "terminalColumnWidth zalgo: combining marks add zero columns" {
         // Each base is a 1-column ASCII scalar; each mark is 0 columns.
         try testing.expectEqual(s.base_count, total);
     }
+}
+
+test "stringWidth / stringWidthCodePoints: sums column widths" {
+    // "Aあ" = 1 (A) + 2 (Wide HIRAGANA A) = 3 columns.
+    try testing.expectEqual(@as(usize, 3), try stringWidth("Aあ"));
+
+    const cps = [_]CodePoint{ 'A', 0x3042, 0x0308 }; // A, あ (wide), combining diaeresis (0)
+    try testing.expectEqual(@as(usize, 3), stringWidthCodePoints(&cps));
+
+    try testing.expectEqual(@as(usize, 0), try stringWidth(""));
+    // Combining mark over a base adds no columns.
+    try testing.expectEqual(@as(usize, 1), try stringWidth("e\u{0301}"));
+
+    try testing.expectError(error.InvalidByteSequence, stringWidth("\xFF"));
+}
+
+test "stringWidthLossy: malformed bytes count as one replacement column" {
+    // 'A' + invalid byte (→ U+FFFD, width 1) + 'B' = 3.
+    try testing.expectEqual(@as(usize, 3), stringWidthLossy("A\xFFB"));
+    try testing.expectEqual(@as(usize, 3), stringWidthLossy("Aあ"));
 }
 
 test {

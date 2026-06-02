@@ -90,7 +90,7 @@ inline fn decodeByte(state: *u32, code_point: *CodePoint, byte: u8) DecodeResult
         else => .incomplete,
     };
 }
-inline fn countScalars(bytes: []const u8) !usize {
+inline fn scalarCountDfa(bytes: []const u8) !usize {
     var state: u32 = UTF8_ACCEPT;
     var code_point: CodePoint = 0;
     var count: usize = 0;
@@ -602,6 +602,34 @@ pub fn encodeCodePoint(code_point: CodePoint, bytes: []u8) UTF8EncodeError!u3 {
     return encode(code_point, bytes);
 }
 
+/// Encodes a valid `code_point` into `bytes` and returns the number of bytes
+/// written. Neither the code point nor the buffer length is validated — the
+/// caller must guarantee `code_point` is a valid scalar and that
+/// `bytes.len >= utf8EncodeLen(code_point)`. Use `encodeCodePoint` when either
+/// invariant is uncertain.
+///
+/// Note: **a buffer shorter than the encoded length triggers `unreachable`
+/// (checked illegal behavior in safe builds, UB in `ReleaseFast`).**
+///
+/// @stable-since: v0.2.0
+pub fn encodeCodePointUnchecked(code_point: CodePoint, bytes: []u8) u3 {
+    return encode(code_point, bytes) catch unreachable;
+}
+
+/// Encodes a valid `code_point` as UTF-8 and writes the bytes to `writer`,
+/// returning the number of bytes written. The code point is not validated —
+/// same contract as `encodeCodePoint` / `encodeCodePointUnchecked`, the caller
+/// must pass a valid scalar. The only error returned is the writer's own
+/// (`error.WriteFailed`).
+///
+/// @stable-since: v0.2.0
+pub fn encodeCodePointWriter(code_point: CodePoint, writer: *std.Io.Writer) std.Io.Writer.Error!u3 {
+    var buf: [4]u8 = undefined;
+    const len = encodeCodePointUnchecked(code_point, &buf);
+    try writer.writeAll(buf[0..len]);
+    return len;
+}
+
 /// This function validates and decodes code point from buffer. This is the unchecked variant
 /// of decode reverse, use strict variant `validateAndDecodeCodePointBytesReverse` if caller is uncertain the bytes are valid.
 ///
@@ -630,10 +658,18 @@ pub const UTF8SliceError = error{
     InvalidBoundary,
 };
 
-const UTF8ViewIterator = struct {
+/// Bidirectional cursor over the scalars of a `UTF8View`. Assumes the
+/// underlying bytes are already valid UTF-8 (as produced by `initUTF8View`);
+/// decoding is unchecked. Obtain one with `UTF8View.iter`.
+///
+/// @stable-since: v0.2.0
+pub const UTF8ViewIterator = struct {
     index: usize = 0,
     data: []const u8,
 
+    /// Advance to and return the next scalar, or `null` at the end.
+    ///
+    /// @stable-since: v0.2.0
     pub fn next(self: *UTF8ViewIterator) ?CodePoint {
         if (self.index >= self.data.len) {
             return null;
@@ -646,10 +682,16 @@ const UTF8ViewIterator = struct {
         return code_point.code_point;
     }
 
+    /// Rewind the cursor to the start of the view.
+    ///
+    /// @stable-since: v0.2.0
     pub fn reset(self: *UTF8ViewIterator) void {
         self.index = 0;
     }
 
+    /// Return the next scalar without advancing the cursor, or `null` at the end.
+    ///
+    /// @stable-since: v0.2.0
     pub fn peek(self: *const UTF8ViewIterator) ?CodePoint {
         if (self.index >= self.data.len) {
             return null;
@@ -658,6 +700,9 @@ const UTF8ViewIterator = struct {
         return bytesToUTF8CodePoint(self.data, self.index).code_point;
     }
 
+    /// Step back to and return the previous scalar, or `null` at the start.
+    ///
+    /// @stable-since: v0.2.0
     pub fn previous(self: *UTF8ViewIterator) ?CodePoint {
         if (self.index == 0) {
             return null;
@@ -669,6 +714,9 @@ const UTF8ViewIterator = struct {
         return code_point.code_point;
     }
 
+    /// Return the previous scalar without moving the cursor, or `null` at the start.
+    ///
+    /// @stable-since: v0.2.0
     pub fn peekPrevious(self: *const UTF8ViewIterator) ?CodePoint {
         if (self.index == 0) {
             return null;
@@ -678,9 +726,18 @@ const UTF8ViewIterator = struct {
     }
 };
 
-const UTF8View = struct {
+/// Zero-copy view over a `[]const u8` of validated UTF-8 bytes. Provides scalar
+/// counting, boundary tests, scalar-indexed sub-slicing, and a bidirectional
+/// iterator (`iter`). Construct with `initUTF8View` (checked) or
+/// `initUTF8ViewUnchecked`.
+///
+/// @stable-since: v0.2.0
+pub const UTF8View = struct {
     data: []const u8,
 
+    /// Return the number of scalars in the view by walking the lead bytes.
+    ///
+    /// @stable-since: v0.2.0
     pub fn countScalar(self: *const UTF8View) usize {
         var count: usize = 0;
         var i: usize = 0;
@@ -703,6 +760,11 @@ const UTF8View = struct {
         return count;
     }
 
+    /// Report whether byte offset `index` falls on a scalar boundary (the start
+    /// of a scalar, or the end of the data). Offsets inside a multi-byte
+    /// sequence return `false`.
+    ///
+    /// @stable-since: v0.2.0
     pub fn isBoundary(self: *const UTF8View, index: usize) bool {
         if (index > self.data.len) {
             return false;
@@ -715,6 +777,10 @@ const UTF8View = struct {
         return !isContinuationByte(self.data[index]);
     }
 
+    /// Return a sub-view spanning scalars `[start_scalar, end_scalar)`. Errors
+    /// if the range is inverted or runs past the end.
+    ///
+    /// @stable-since: v0.2.0
     pub fn sliceScalars(self: *const UTF8View, start_scalar: usize, end_scalar: usize) UTF8SliceError!UTF8View {
         if (start_scalar > end_scalar) {
             return error.IndexOutOfBounds;
@@ -765,15 +831,28 @@ const UTF8View = struct {
         };
     }
 
+    /// Return a bidirectional iterator positioned at the start of the view.
+    ///
+    /// @stable-since: v0.2.0
     pub fn iter(self: *const UTF8View) UTF8ViewIterator {
         return .{ .data = self.data };
     }
 };
 
-const UTF8LossyIterator = struct {
+/// Forward iterator that decodes raw, unvalidated `[]const u8` leniently,
+/// yielding the replacement scalar (U+FFFD) for any malformed sequence and
+/// collapsing a run of orphaned continuation bytes into a single replacement.
+/// Obtain one with `lossyIterator`.
+///
+/// @stable-since: v0.2.0
+pub const UTF8LossyIterator = struct {
     data: []const u8,
     index: usize = 0,
 
+    /// Advance to and return the next scalar (replacement on malformed bytes),
+    /// or `null` at the end.
+    ///
+    /// @stable-since: v0.2.0
     pub fn next(self: *UTF8LossyIterator) ?CodePoint {
         if (self.index >= self.data.len) {
             return null;
@@ -785,6 +864,10 @@ const UTF8LossyIterator = struct {
         return decoded.code_point;
     }
 
+    /// Return the next scalar without advancing (replacement on malformed
+    /// bytes), or `null` at the end.
+    ///
+    /// @stable-since: v0.2.0
     pub fn peek(self: *const UTF8LossyIterator) ?CodePoint {
         if (self.index >= self.data.len) {
             return null;
@@ -829,6 +912,31 @@ pub fn countScalarsLossy(bytes: []const u8) usize {
 
     while (iter.next()) |_| : (count += 1) {}
     return count;
+}
+
+/// Validates `bytes` and writes the decoded scalars into the caller-supplied
+/// `buf`, returning the number written. Strict counterpart of
+/// `bytesToCodePointsLossyBuffer`: a malformed sequence surfaces a
+/// `UTF8ValidationError` rather than a replacement scalar, and a `buf` too small
+/// to hold every scalar returns `error.BufferTooSmall`. Allocation-free; pair
+/// with `countScalars` to size `buf`, or use `bytesToUTF8String` to allocate.
+///
+/// @stable-since: v0.2.0
+pub fn bytesToCodePointsBuffer(bytes: []const u8, buf: []CodePoint) (UTF8ValidationError || error{BufferTooSmall})!usize {
+    var i: usize = 0;
+    var o: usize = 0;
+
+    while (i < bytes.len) {
+        const decoded = try validateAndDecodeCodePointBytes(bytes, i);
+        if (o >= buf.len) {
+            return error.BufferTooSmall;
+        }
+        buf[o] = decoded.code_point;
+        o += 1;
+        i += decoded.len;
+    }
+
+    return o;
 }
 
 /// This function writes the valid code points to the mutable CodePoint slice passed as argument.
@@ -896,6 +1004,29 @@ pub fn initUTF8ViewUnchecked(data: []const u8) UTF8View {
     return .{ .data = data };
 }
 
+/// Returns `true` when `bytes` is well-formed UTF-8 from start to end, `false`
+/// otherwise. Uses the branch-free Höhrmann DFA in a single pass, so it is the
+/// fast path when only a yes/no answer is needed; reach for `countScalars` or
+/// `initUTF8View` when the failure reason or the scalar count matters.
+///
+/// @stable-since: v0.2.0
+pub fn validate(bytes: []const u8) bool {
+    _ = scalarCountDfa(bytes) catch return false;
+    return true;
+}
+
+/// Validates `bytes` and returns the number of Unicode scalars it encodes.
+/// Strict counterpart of `countScalarsLossy`: a malformed sequence returns the
+/// corresponding `UTF8ValidationError` instead of being counted as a
+/// replacement scalar.
+///
+/// @stable-since: v0.2.0
+pub fn countScalars(bytes: []const u8) UTF8ValidationError!usize {
+    var scalar_count: usize = 0;
+    _ = try initUTF8View(bytes, &scalar_count);
+    return scalar_count;
+}
+
 /// Writes the valid CodePoints to a mutable CodePoint slice passed by from arguments
 /// Returns error if the writable buffer is small.
 ///
@@ -919,7 +1050,7 @@ pub fn utf8ViewToUTF8String(view: *const UTF8View, buf: []CodePoint) error{Buffe
 /// Generates a validated comptime CodePoint Slice from given bytes.
 ///
 /// @stable-since: v0.1.0
-pub fn bytesToUTF8StringComptime(comptime bytes: []const u8) (UTF8ValidationError || error{BufferTooSmall})![countScalars(bytes) catch {}]CodePoint {
+pub fn bytesToUTF8StringComptime(comptime bytes: []const u8) (UTF8ValidationError || error{BufferTooSmall})![scalarCountDfa(bytes) catch {}]CodePoint {
     comptime {
         var unicode_str_len: usize = 0;
 
@@ -1875,4 +2006,64 @@ test "encodeCodePoint rejects every undersized output buffer" {
             try std.testing.expectError(error.BufferTooSmall, encodeCodePoint(code_point, backing[0..out_len]));
         }
     }
+}
+
+test "validate: accepts well-formed and rejects malformed UTF-8" {
+    try std.testing.expect(validate("a€😀"));
+    try std.testing.expect(validate(""));
+    try std.testing.expect(!validate(&.{0x80})); // orphan continuation
+    try std.testing.expect(!validate(&.{ 0xC0, 0x80 })); // overlong
+    try std.testing.expect(!validate(&.{ 0xED, 0xA0, 0x80 })); // surrogate
+    try std.testing.expect(!validate(&.{ 0xF0, 0x9F, 0x98 })); // truncated
+}
+
+test "countScalars: strict count and error propagation" {
+    try std.testing.expectEqual(@as(usize, 0), try countScalars(""));
+    try std.testing.expectEqual(@as(usize, 3), try countScalars("a€😀"));
+    try std.testing.expectError(error.OverlongEncoding, countScalars(&.{ 0xE0, 0x80, 0x80 }));
+    try std.testing.expectError(error.InvalidByteSequence, countScalars("ok\xFF"));
+}
+
+test "bytesToCodePointsBuffer: strict decode, BufferTooSmall, and error propagation" {
+    var buf: [3]CodePoint = undefined;
+    const n = try bytesToCodePointsBuffer("a€😀", &buf);
+    try std.testing.expectEqual(@as(usize, 3), n);
+    try std.testing.expectEqualSlices(CodePoint, &.{ 'a', 0x20AC, 0x1F600 }, buf[0..n]);
+
+    var tiny: [1]CodePoint = undefined;
+    try std.testing.expectError(error.BufferTooSmall, bytesToCodePointsBuffer("ab", &tiny));
+    try std.testing.expectError(error.SurrogateCodePoint, bytesToCodePointsBuffer(&.{ 0xED, 0xA0, 0x80 }, &buf));
+}
+
+test "encodeCodePointUnchecked: matches encodeCodePoint for valid scalars" {
+    var buf: [4]u8 = undefined;
+    const cases = [_]CodePoint{ 'A', 0xA2, 0x20AC, 0x1F600 };
+    for (cases) |cp| {
+        const len = encodeCodePointUnchecked(cp, &buf);
+        try std.testing.expectEqual(utf8EncodeLen(cp), len);
+        const got = try validateAndDecodeCodePointBytes(&buf, 0);
+        try std.testing.expectEqual(cp, got.code_point);
+    }
+}
+
+test "encodeCodePointWriter: writes encoded bytes and reports length" {
+    var backing: [8]u8 = undefined;
+    var w = std.Io.Writer.fixed(&backing);
+
+    const len = try encodeCodePointWriter(0x20AC, &w);
+    try std.testing.expectEqual(@as(u3, 3), len);
+    try std.testing.expectEqualSlices(u8, &.{ 0xE2, 0x82, 0xAC }, w.buffered());
+
+    // A sink that cannot hold the encoded bytes surfaces the writer's own error.
+    var tiny_backing: [1]u8 = undefined;
+    var tiny = std.Io.Writer.fixed(&tiny_backing);
+    try std.testing.expectError(error.WriteFailed, encodeCodePointWriter(0x20AC, &tiny));
+}
+
+test "public view types are reachable as named types" {
+    const view: UTF8View = initUTF8ViewUnchecked("ab");
+    var it: UTF8ViewIterator = view.iter();
+    try std.testing.expectEqual(@as(?CodePoint, 'a'), it.next());
+    var lossy: UTF8LossyIterator = lossyIterator("ab");
+    try std.testing.expectEqual(@as(?CodePoint, 'a'), lossy.next());
 }

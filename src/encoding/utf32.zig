@@ -154,6 +154,36 @@ pub fn encodeCodePoint(code_point: CodePoint, buf: []u32) UTF32EncodeError!u1 {
     return len;
 }
 
+/// Encode a valid `code_point` into `buf` and return the units written (always
+/// 1). Neither the code point nor the buffer length is validated — the caller
+/// must guarantee a valid scalar and `buf.len >= 1`. Use `encodeCodePoint` when
+/// either invariant is uncertain.
+///
+/// Note: **an empty buffer or a surrogate / out-of-range scalar triggers
+/// `unreachable` (checked illegal behavior in safe builds, UB in `ReleaseFast`).**
+///
+/// @stable-since: v0.2.0
+pub fn encodeCodePointUnchecked(code_point: CodePoint, buf: []u32) u1 {
+    return encodeCodePoint(code_point, buf) catch unreachable;
+}
+
+/// Encode a valid `code_point` as a single UTF-32 unit and write it to `writer`
+/// as 4 bytes in the given `endian` order, returning the units written (always
+/// 1). The code point is not validated — same contract as `encodeCodePoint`.
+/// The only error returned is the writer's own (`error.WriteFailed`).
+///
+/// @stable-since: v0.2.0
+pub fn encodeCodePointWriter(code_point: CodePoint, endian: Endian, writer: *std.Io.Writer) std.Io.Writer.Error!u1 {
+    var units: [1]u32 = undefined;
+    _ = encodeCodePointUnchecked(code_point, &units);
+
+    var bytes: [4]u8 = undefined;
+    const byte_len = utils.slices.u32SliceToBytesBuffer(units[0..1], &bytes, endian) catch unreachable;
+
+    try writer.writeAll(bytes[0..byte_len]);
+    return 1;
+}
+
 /// Validate the unit at `buf[offset]` and return its sequence length
 /// (always 1). Errors on empty input, out-of-bounds offset, or an
 /// illegal unit.
@@ -402,6 +432,54 @@ pub fn countScalarsLossy(units: []const u32) usize {
     }
 
     return count;
+}
+
+/// Returns `true` when every unit of `units` is a valid UTF-32 scalar (no
+/// surrogates, none above U+10FFFF), `false` otherwise. Fast path when only a
+/// yes/no answer is needed; use `countScalars` or `initUTF32View` when the
+/// failure reason matters.
+///
+/// @stable-since: v0.2.0
+pub fn validate(units: []const u32) bool {
+    for (units) |unit| {
+        _ = validateStoredUnit(unit) catch return false;
+    }
+    return true;
+}
+
+/// Validates `units` and returns the number of Unicode scalars it encodes (one
+/// per unit). Strict counterpart of `countScalarsLossy`: a surrogate or
+/// out-of-range unit surfaces the corresponding `UTF32ValidationError` instead
+/// of being counted as a replacement scalar.
+///
+/// @stable-since: v0.2.0
+pub fn countScalars(units: []const u32) UTF32ValidationError!usize {
+    for (units) |unit| {
+        _ = try validateStoredUnit(unit);
+    }
+    return units.len;
+}
+
+/// Validates `units` and writes the decoded scalars into the caller-supplied
+/// `buf`, returning the number written. Strict counterpart of
+/// `bufToCodePointsLossyBuffer`: a surrogate or out-of-range unit surfaces a
+/// `UTF32ValidationError`, and a `buf` too small returns `error.BufferTooSmall`.
+/// Allocation-free; use `bufToUTF32String` to allocate.
+///
+/// @stable-since: v0.2.0
+pub fn bufToCodePointsBuffer(units: []const u32, buf: []CodePoint) (UTF32ValidationError || error{BufferTooSmall})!usize {
+    var o: usize = 0;
+
+    for (units) |unit| {
+        const code_point = try validateStoredUnit(unit);
+        if (o >= buf.len) {
+            return error.BufferTooSmall;
+        }
+        buf[o] = code_point;
+        o += 1;
+    }
+
+    return o;
 }
 
 /// Lossily decode `units` into the caller-supplied `buf`, returning the
@@ -879,4 +957,57 @@ test "encodeCodePoint rejects undersized UTF-32 output" {
     try std.testing.expectError(error.BufferTooSmall, encodeCodePoint('A', &empty));
     try std.testing.expectError(error.SurrogateCodePoint, encodeCodePoint(surrogate_range_start, &empty));
     try std.testing.expectError(error.CodePointTooLarge, encodeCodePoint(max_scalar + 1, &empty));
+}
+
+test "validate: accepts scalars and rejects surrogate / out-of-range units" {
+    try std.testing.expect(validate(&[_]u32{ 'a', 0x1F600, 0x10FFFF }));
+    try std.testing.expect(validate(&[_]u32{}));
+    try std.testing.expect(!validate(&[_]u32{surrogate_range_start}));
+    try std.testing.expect(!validate(&[_]u32{0x110000}));
+}
+
+test "countScalars: strict count and error propagation" {
+    try std.testing.expectEqual(@as(usize, 0), try countScalars(&[_]u32{}));
+    try std.testing.expectEqual(@as(usize, 3), try countScalars(&[_]u32{ 'a', 0x1F600, 0x10FFFF }));
+    try std.testing.expectError(error.SurrogateCodePoint, countScalars(&[_]u32{0xD800}));
+    try std.testing.expectError(error.CodePointTooLarge, countScalars(&[_]u32{0x110000}));
+}
+
+test "bufToCodePointsBuffer: strict decode, BufferTooSmall, and error propagation" {
+    var buf: [3]CodePoint = undefined;
+    const n = try bufToCodePointsBuffer(&[_]u32{ 'a', 0x1F600, 0x10FFFF }, &buf);
+    try std.testing.expectEqual(@as(usize, 3), n);
+    try std.testing.expectEqualSlices(CodePoint, &.{ 'a', 0x1F600, 0x10FFFF }, buf[0..n]);
+
+    var tiny: [1]CodePoint = undefined;
+    try std.testing.expectError(error.BufferTooSmall, bufToCodePointsBuffer(&[_]u32{ 'a', 'b' }, &tiny));
+    try std.testing.expectError(error.SurrogateCodePoint, bufToCodePointsBuffer(&[_]u32{0xD800}, &buf));
+}
+
+test "encodeCodePointUnchecked: matches encodeCodePoint for valid scalars" {
+    var buf: [1]u32 = undefined;
+    const cases = [_]CodePoint{ 'A', 0x03B1, 0x1F600, 0x10FFFF };
+    for (cases) |cp| {
+        const len = encodeCodePointUnchecked(cp, &buf);
+        try std.testing.expectEqual(@as(u1, 1), len);
+        const got = try validateAndDecodeU32CodePoint(&buf, 0);
+        try std.testing.expectEqual(cp, got.code_point);
+    }
+}
+
+test "encodeCodePointWriter: emits big/little-endian bytes" {
+    var backing: [4]u8 = undefined;
+
+    var be = std.Io.Writer.fixed(&backing);
+    const be_len = try encodeCodePointWriter('A', .big, &be);
+    try std.testing.expectEqual(@as(u1, 1), be_len);
+    try std.testing.expectEqualSlices(u8, &.{ 0x00, 0x00, 0x00, 0x41 }, be.buffered());
+
+    var le = std.Io.Writer.fixed(&backing);
+    _ = try encodeCodePointWriter('A', .little, &le);
+    try std.testing.expectEqualSlices(u8, &.{ 0x41, 0x00, 0x00, 0x00 }, le.buffered());
+
+    var tiny_backing: [2]u8 = undefined;
+    var tiny = std.Io.Writer.fixed(&tiny_backing);
+    try std.testing.expectError(error.WriteFailed, encodeCodePointWriter('A', .big, &tiny));
 }

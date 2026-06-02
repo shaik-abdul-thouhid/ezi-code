@@ -85,6 +85,25 @@ pub fn build(b: *std.Build) !void {
 
     const root: std.Build.Module.Import = .{ .name = "ezi_code", .module = ezi_code_module };
 
+    // API documentation generation. Zig autodoc is emitted by a compile step,
+    // so we build the facade module as an object purely to obtain its docs and
+    // install the static HTML/wasm bundle into the repo-root `docs/` directory
+    // (`.custom = ".."` is relative to the `zig-out` prefix, i.e. the project
+    // root). The bundle is committed so it can be browsed or served directly.
+    const docs_obj = b.addObject(.{
+        .name = "ezi_code",
+        .root_module = ezi_code_module,
+    });
+
+    const install_docs = b.addInstallDirectory(.{
+        .source_dir = docs_obj.getEmittedDocs(),
+        .install_dir = .{ .custom = ".." },
+        .install_subdir = "docs",
+    });
+
+    const docs_step = b.step("docs", "Generate API documentation into ./docs");
+    docs_step.dependOn(&install_docs.step);
+
     // Unicode table generation step
     const generate_unicode_exe = b.addExecutable(.{
         .name = "generator",

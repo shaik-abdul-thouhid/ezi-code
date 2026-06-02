@@ -509,6 +509,224 @@ pub fn utf32ToUtf8Lossy(allocator: std.mem.Allocator, units: []const u32) (utf8.
     return out;
 }
 
+/// Returns the number of UTF-32 code units a lossy transcode of `bytes` would
+/// produce — one scalar per decoded UTF-8 sequence, counting one replacement
+/// scalar (U+FFFD) per malformed sequence. Never fails validation.
+///
+/// @stable-since: v0.2.0
+pub fn utf8ToUtf32LossyLen(bytes: []const u8) usize {
+    return utf8.countScalarsLossy(bytes);
+}
+
+/// Lossily transcodes `bytes` into the caller-provided `out` slice, emitting the
+/// replacement scalar (U+FFFD) for any malformed UTF-8 sequence, and returns the
+/// number of UTF-32 code units written. Only fails with a `UTF32EncodeError`
+/// (such as `BufferTooSmall`) when `out` cannot hold the result.
+///
+/// @stable-since: v0.2.0
+pub fn utf8ToUtf32LossyBuffer(bytes: []const u8, out: []u32) utf32.UTF32EncodeError!usize {
+    var o: usize = 0;
+    var iter = utf8.lossyIterator(bytes);
+
+    while (iter.next()) |code_point| {
+        o += try utf32.encodeCodePoint(code_point, out[o..]);
+    }
+
+    return o;
+}
+
+/// Lossily transcodes `bytes` into a freshly allocated, exactly-sized UTF-32
+/// slice owned by the caller, substituting the replacement scalar (U+FFFD) for
+/// malformed UTF-8. Only fails with `error.OutOfMemory` when allocation fails.
+///
+/// @stable-since: v0.2.0
+pub fn utf8ToUtf32Lossy(allocator: std.mem.Allocator, bytes: []const u8) (utf32.UTF32EncodeError || error{OutOfMemory})![]u32 {
+    const out_len = utf8ToUtf32LossyLen(bytes);
+    const out = try allocator.alloc(u32, out_len);
+    errdefer allocator.free(out);
+
+    _ = try utf8ToUtf32LossyBuffer(bytes, out);
+    return out;
+}
+
+/// Returns the number of UTF-32 code units a lossy transcode of `units` would
+/// produce — one scalar per decoded UTF-16 sequence, counting the replacement
+/// scalar (U+FFFD) for any malformed UTF-16. Never fails validation.
+///
+/// @stable-since: v0.2.0
+pub fn utf16ToUtf32LossyLen(units: []const u16) usize {
+    return utf16.countScalarsLossy(units);
+}
+
+/// Lossily transcodes `units` into the caller-provided `out` slice, emitting the
+/// replacement scalar (U+FFFD) for any malformed UTF-16, and returns the number
+/// of UTF-32 code units written. Only fails with a `UTF32EncodeError` (such as
+/// `BufferTooSmall`) when `out` cannot hold the result.
+///
+/// @stable-since: v0.2.0
+pub fn utf16ToUtf32LossyBuffer(units: []const u16, out: []u32) utf32.UTF32EncodeError!usize {
+    var o: usize = 0;
+    var iter = utf16.lossyIterator(units);
+
+    while (iter.next()) |code_point| {
+        o += try utf32.encodeCodePoint(code_point, out[o..]);
+    }
+
+    return o;
+}
+
+/// Lossily transcodes `units` into a freshly allocated, exactly-sized UTF-32
+/// slice owned by the caller, substituting the replacement scalar (U+FFFD) for
+/// malformed UTF-16. Only fails with `error.OutOfMemory` when allocation fails.
+///
+/// @stable-since: v0.2.0
+pub fn utf16ToUtf32Lossy(allocator: std.mem.Allocator, units: []const u16) (utf32.UTF32EncodeError || error{OutOfMemory})![]u32 {
+    const out_len = utf16ToUtf32LossyLen(units);
+    const out = try allocator.alloc(u32, out_len);
+    errdefer allocator.free(out);
+
+    _ = try utf16ToUtf32LossyBuffer(units, out);
+    return out;
+}
+
+/// Returns the number of UTF-16 code units a lossy transcode of `units` would
+/// produce, counting the replacement scalar (U+FFFD) for any value that is not a
+/// valid scalar. Only fails with `error.Overflow` when the result would exceed
+/// `usize`.
+///
+/// @stable-since: v0.2.0
+pub fn utf32ToUtf16LossyLen(units: []const u32) TranscodingError!usize {
+    try ensureMaxExpansion(units.len, 2);
+
+    var out_len: usize = 0;
+    var iter = utf32.lossyIterator(units);
+
+    while (iter.next()) |code_point| {
+        out_len += utf16.utf16EncodeLen(code_point) catch @panic("invalid code point");
+    }
+
+    return out_len;
+}
+
+/// Lossily transcodes `units` into the caller-provided `out` slice, emitting the
+/// replacement scalar (U+FFFD) for any value that is not a valid scalar, and
+/// returns the number of UTF-16 code units written. Fails with a
+/// `UTF16EncodeError` (such as `BufferTooSmall`) when `out` cannot hold the
+/// result, or `error.Overflow`.
+///
+/// @stable-since: v0.2.0
+pub fn utf32ToUtf16LossyBuffer(units: []const u32, out: []u16) (utf16.UTF16EncodeError || TranscodingError)!usize {
+    try ensureMaxExpansion(units.len, 2);
+
+    var o: usize = 0;
+    var iter = utf32.lossyIterator(units);
+
+    while (iter.next()) |code_point| {
+        o += try utf16.encodeCodePoint(code_point, out[o..]);
+    }
+
+    return o;
+}
+
+/// Lossily transcodes `units` into a freshly allocated, exactly-sized UTF-16
+/// slice owned by the caller, substituting the replacement scalar (U+FFFD) for
+/// any value that is not a valid scalar. Fails with `error.Overflow` or
+/// `error.OutOfMemory`.
+///
+/// @stable-since: v0.2.0
+pub fn utf32ToUtf16Lossy(allocator: std.mem.Allocator, units: []const u32) (utf16.UTF16EncodeError || TranscodingError || error{OutOfMemory})![]u16 {
+    const out_len = try utf32ToUtf16LossyLen(units);
+    const out = try allocator.alloc(u16, out_len);
+    errdefer allocator.free(out);
+
+    _ = try utf32ToUtf16LossyBuffer(units, out);
+    return out;
+}
+
+// --- streaming writer variants ---------------------------------------------
+//
+// These thread scalars straight from the source codec into a `*std.Io.Writer`
+// without sizing an intermediate buffer, returning the number of output units
+// written. Conversions whose sink is UTF-8 emit bytes directly; conversions
+// whose sink is UTF-16 / UTF-32 take an `endian` and emit each code unit as
+// bytes in that order.
+
+/// Transcodes the validated UTF-16 `units` to UTF-8 and writes the bytes to
+/// `writer`, returning the number of bytes written. Surfaces a
+/// `UTF16ValidationError` for malformed source or the writer's own
+/// `error.WriteFailed`.
+///
+/// @stable-since: v0.2.0
+pub fn utf16ToUtf8Writer(units: []const u16, writer: *std.Io.Writer) (utf16.UTF16ValidationError || std.Io.Writer.Error)!usize {
+    var i: usize = 0;
+    var o: usize = 0;
+
+    while (i < units.len) {
+        const decoded = try utf16.validateAndDecodeU16CodePoint(units, i);
+        o += try utf8.encodeCodePointWriter(decoded.code_point, writer);
+        i += decoded.len;
+    }
+
+    return o;
+}
+
+/// Transcodes the validated UTF-32 `units` to UTF-8 and writes the bytes to
+/// `writer`, returning the number of bytes written. Surfaces a
+/// `UTF32ValidationError` for malformed source or the writer's own
+/// `error.WriteFailed`.
+///
+/// @stable-since: v0.2.0
+pub fn utf32ToUtf8Writer(units: []const u32, writer: *std.Io.Writer) (utf32.UTF32ValidationError || std.Io.Writer.Error)!usize {
+    var i: usize = 0;
+    var o: usize = 0;
+
+    while (i < units.len) {
+        const decoded = try utf32.validateAndDecodeU32CodePoint(units, i);
+        o += try utf8.encodeCodePointWriter(decoded.code_point, writer);
+        i += decoded.len;
+    }
+
+    return o;
+}
+
+/// Transcodes the validated UTF-8 `bytes` to UTF-16 and writes the code units to
+/// `writer` as bytes in `endian` order, returning the number of UTF-16 code
+/// units written. Surfaces a `UTF8ValidationError` for malformed source or the
+/// writer's own `error.WriteFailed`.
+///
+/// @stable-since: v0.2.0
+pub fn utf8ToUtf16Writer(bytes: []const u8, endian: utf16.Endian, writer: *std.Io.Writer) (utf8.UTF8ValidationError || std.Io.Writer.Error)!usize {
+    var i: usize = 0;
+    var o: usize = 0;
+
+    while (i < bytes.len) {
+        const decoded = try utf8.validateAndDecodeCodePointBytes(bytes, i);
+        o += try utf16.encodeCodePointWriter(decoded.code_point, endian, writer);
+        i += decoded.len;
+    }
+
+    return o;
+}
+
+/// Transcodes the validated UTF-8 `bytes` to UTF-32 and writes the code units to
+/// `writer` as bytes in `endian` order, returning the number of UTF-32 code
+/// units written. Surfaces a `UTF8ValidationError` for malformed source or the
+/// writer's own `error.WriteFailed`.
+///
+/// @stable-since: v0.2.0
+pub fn utf8ToUtf32Writer(bytes: []const u8, endian: utf32.Endian, writer: *std.Io.Writer) (utf8.UTF8ValidationError || std.Io.Writer.Error)!usize {
+    var i: usize = 0;
+    var o: usize = 0;
+
+    while (i < bytes.len) {
+        const decoded = try utf8.validateAndDecodeCodePointBytes(bytes, i);
+        o += try utf32.encodeCodePointWriter(decoded.code_point, endian, writer);
+        i += decoded.len;
+    }
+
+    return o;
+}
+
 test "utf8 to utf16 and back" {
     const input = "a€😀";
     var units: [4]u16 = undefined;
@@ -742,4 +960,82 @@ test "transcoding rejects theoretical output length overflow before reading sour
 
     try std.testing.expectError(error.Overflow, utf32ToUtf16Len(huge_utf32_to_utf16));
     try std.testing.expectError(error.Overflow, utf32ToUtf16Buffer(huge_utf32_to_utf16, &empty_u16));
+}
+
+test "lossy transcoding to UTF-32 / UTF-16 substitutes replacement scalar" {
+    // UTF-8 → UTF-32
+    const malformed_utf8 = [_]u8{ 'A', 0xF0, 0x9F, 0x92, '(', 'B' };
+    try std.testing.expectEqual(@as(usize, 4), utf8ToUtf32LossyLen(&malformed_utf8));
+    var u32_out: [4]u32 = undefined;
+    const n8 = try utf8ToUtf32LossyBuffer(&malformed_utf8, &u32_out);
+    try std.testing.expectEqualSlices(u32, &.{ 'A', encoding.INVALID_CODE_POINT, '(', 'B' }, u32_out[0..n8]);
+    const a8 = try utf8ToUtf32Lossy(std.testing.allocator, &malformed_utf8);
+    defer std.testing.allocator.free(a8);
+    try std.testing.expectEqualSlices(u32, u32_out[0..n8], a8);
+
+    // UTF-16 → UTF-32 (lone low surrogate → replacement)
+    const malformed_utf16 = [_]u16{ 'A', 0xDE00, 'B' };
+    try std.testing.expectEqual(@as(usize, 3), utf16ToUtf32LossyLen(&malformed_utf16));
+    var u32_out2: [3]u32 = undefined;
+    const n16 = try utf16ToUtf32LossyBuffer(&malformed_utf16, &u32_out2);
+    try std.testing.expectEqualSlices(u32, &.{ 'A', encoding.INVALID_CODE_POINT, 'B' }, u32_out2[0..n16]);
+    const a16 = try utf16ToUtf32Lossy(std.testing.allocator, &malformed_utf16);
+    defer std.testing.allocator.free(a16);
+    try std.testing.expectEqualSlices(u32, u32_out2[0..n16], a16);
+
+    // UTF-32 → UTF-16 (surrogate scalar → replacement, supplementary → pair)
+    const malformed_utf32 = [_]u32{ 'A', 0xD800, 0x1F600 };
+    const expected_len = try utf32ToUtf16LossyLen(&malformed_utf32);
+    var u16_out: [4]u16 = undefined;
+    const n32 = try utf32ToUtf16LossyBuffer(&malformed_utf32, &u16_out);
+    try std.testing.expectEqual(expected_len, n32);
+    try std.testing.expectEqualSlices(u16, &.{ 'A', encoding.INVALID_CODE_POINT, 0xD83D, 0xDE00 }, u16_out[0..n32]);
+    const a32 = try utf32ToUtf16Lossy(std.testing.allocator, &malformed_utf32);
+    defer std.testing.allocator.free(a32);
+    try std.testing.expectEqualSlices(u16, u16_out[0..n32], a32);
+}
+
+test "writer transcoding matches buffer transcoding" {
+    const input = "a€😀";
+
+    // UTF-16 → UTF-8 writer.
+    var u16buf: [4]u16 = undefined;
+    const u16len = try utf8ToUtf16Buffer(input, &u16buf);
+    var u8backing: [16]u8 = undefined;
+    var w = std.Io.Writer.fixed(&u8backing);
+    const bytes_written = try utf16ToUtf8Writer(u16buf[0..u16len], &w);
+    try std.testing.expectEqualStrings(input, w.buffered());
+    try std.testing.expectEqual(input.len, bytes_written);
+
+    // UTF-32 → UTF-8 writer.
+    var u32buf: [3]u32 = undefined;
+    const u32len = try utf8ToUtf32Buffer(input, &u32buf);
+    var w2 = std.Io.Writer.fixed(&u8backing);
+    _ = try utf32ToUtf8Writer(u32buf[0..u32len], &w2);
+    try std.testing.expectEqualStrings(input, w2.buffered());
+
+    // UTF-8 → UTF-16 writer (big-endian): byte length is 2 per code unit.
+    var w3backing: [16]u8 = undefined;
+    var w3 = std.Io.Writer.fixed(&w3backing);
+    const units16 = try utf8ToUtf16Writer(input, .big, &w3);
+    try std.testing.expectEqual(u16len, units16);
+    try std.testing.expectEqual(@as(usize, u16len * 2), w3.buffered().len);
+
+    // UTF-8 → UTF-32 writer (little-endian): byte length is 4 per code unit.
+    var w4backing: [16]u8 = undefined;
+    var w4 = std.Io.Writer.fixed(&w4backing);
+    const units32 = try utf8ToUtf32Writer(input, .little, &w4);
+    try std.testing.expectEqual(u32len, units32);
+    try std.testing.expectEqual(@as(usize, u32len * 4), w4.buffered().len);
+}
+
+test "writer transcoding propagates source validation and write errors" {
+    var backing: [16]u8 = undefined;
+    var w = std.Io.Writer.fixed(&backing);
+    try std.testing.expectError(error.InvalidLowSurrogate, utf16ToUtf8Writer(&.{0xDE00}, &w));
+    try std.testing.expectError(error.CodePointTooLarge, utf32ToUtf8Writer(&.{0x110000}, &w));
+
+    var tiny_backing: [1]u8 = undefined;
+    var tiny = std.Io.Writer.fixed(&tiny_backing);
+    try std.testing.expectError(error.WriteFailed, utf16ToUtf8Writer(&.{0x20AC}, &tiny));
 }

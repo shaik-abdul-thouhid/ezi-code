@@ -51,6 +51,43 @@ pub fn validateCodePoint(code_point: CodePoint) error{ CodePointTooLarge, Surrog
     }
 }
 
+/// Boolean form of `validateCodePoint`: returns `true` when `code_point` is a
+/// Unicode scalar value (in `0..=0x10FFFF` and not a surrogate), `false`
+/// otherwise. Convenient where the failure reason is not needed.
+///
+/// @stable-since: v0.2.0
+pub fn isValidCodePoint(code_point: CodePoint) bool {
+    validateCodePoint(code_point) catch return false;
+    return true;
+}
+
+/// Returns `true` when `code_point` lies in the UTF-16 surrogate range
+/// (U+D800..U+DFFF). Surrogates are never valid scalar values; this is the
+/// code-point-level counterpart of `utf16.isHighSurrogate` / `utf16.isLowSurrogate`.
+///
+/// @stable-since: v0.2.0
+pub fn isSurrogateCodePoint(code_point: CodePoint) bool {
+    return code_point >= SURROGATE_RANGE_START and code_point <= SURROGATE_RANGE_END;
+}
+
+/// Returns `true` when `code_point` is in the ASCII range (U+0000..U+007F).
+/// Exposed alongside `MAX_ASCII` for fast-path classification.
+///
+/// @stable-since: v0.2.0
+pub fn isAscii(code_point: CodePoint) bool {
+    return code_point <= MAX_ASCII;
+}
+
+/// Returns `true` when `code_point` is a supplementary-plane scalar
+/// (U+10000..U+10FFFF), i.e. anything outside the Basic Multilingual Plane.
+/// No validity check is performed; pair with `isValidCodePoint` for untrusted
+/// input.
+///
+/// @stable-since: v0.2.0
+pub fn isSupplementary(code_point: CodePoint) bool {
+    return code_point >= 0x10000;
+}
+
 test {
     std.testing.refAllDecls(utf8);
     std.testing.refAllDecls(utf16);

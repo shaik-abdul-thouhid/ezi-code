@@ -943,6 +943,11 @@ fn generateDucet(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []
         \\const CodePoint = @import("encoding").CodePoint;
         \\const utils = @import("utils");
         \\
+        \\/// A single DUCET collation element: the primary, secondary, and tertiary
+        \\/// weights plus the variable flag, packed into a `u64`. `ceSlice` returns
+        \\/// the elements for a record.
+        \\///
+        \\/// @stable-since: v0.2.0
         \\pub const CE = packed struct(u64) {
         \\    primary: u16,
         \\    secondary: u16,
@@ -951,8 +956,18 @@ fn generateDucet(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []
         \\    _: u15,
         \\};
         \\
+        \\/// A range of code points that receive implicit weights, with the base
+        \\/// primary weight and the origin used to derive each point's offset.
+        \\///
+        \\/// @stable-since: v0.2.0
         \\pub const ImplicitRange = struct { start: CodePoint, end: CodePoint, base: u16, origin: CodePoint };
+        \\/// A two-code-point DUCET contraction mapping to a collation-element record.
+        \\///
+        \\/// @stable-since: v0.2.0
         \\pub const DoubleEntry = struct { first: CodePoint, second: CodePoint, record: u32 };
+        \\/// A three-code-point DUCET contraction mapping to a collation-element record.
+        \\///
+        \\/// @stable-since: v0.2.0
         \\pub const TripleEntry = struct { first: CodePoint, second: CodePoint, third: CodePoint, record: u32 };
         \\
         \\fn unpackStart(record: u32) u32 { return record >> 8; }
@@ -995,12 +1010,20 @@ fn generateDucet(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []
     try writer.writeAll("};\n//zig fmt: on\n\n");
 
     try writer.writeAll(
+        \\/// Returns the DUCET record for a single code point (0 for unassigned or
+        \\/// out-of-range input). Decode it into collation elements with `ceSlice`.
+        \\///
+        \\/// @stable-since: v0.2.0
         \\pub inline fn mappingRecord(cp: CodePoint) u32 {
         \\    if (cp > 0x10FFFF) return 0;
         \\    const page = ducet_map_level1[cp >> 8];
         \\    return ducet_map_level2[page][cp & 0xFF];
         \\}
         \\
+        \\/// Returns the collation elements a record refers to, as a slice into the
+        \\/// shared `ce_table`.
+        \\///
+        \\/// @stable-since: v0.2.0
         \\pub inline fn ceSlice(record: u32) []const CE {
         \\    const len: u8 = unpackLen(record);
         \\    const start: u32 = unpackStart(record);
@@ -1045,11 +1068,19 @@ fn generateDucet(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []
         \\    return triple_entries[idx].record;
         \\}
         \\
+        \\/// Looks up the two-code-point DUCET contraction `(first, second)`,
+        \\/// returning its record or null if there is none.
+        \\///
+        \\/// @stable-since: v0.2.0
         \\pub inline fn lookupDouble(first: CodePoint, second: CodePoint) ?u32 {
         \\    if (double_entries.len == 0) return null;
         \\    return findDouble(first, second);
         \\}
         \\
+        \\/// Looks up the three-code-point DUCET contraction `(first, second, third)`,
+        \\/// returning its record or null if there is none.
+        \\///
+        \\/// @stable-since: v0.2.0
         \\pub inline fn lookupTriple(first: CodePoint, second: CodePoint, third: CodePoint) ?u32 {
         \\    if (triple_entries.len == 0) return null;
         \\    return findTriple(first, second, third);
@@ -1622,6 +1653,7 @@ fn generateSpecialCasing(arena: std.mem.Allocator, io: std.Io, data: []const u8,
         \\pub inline fn lookupFinalSigma(code_point: CodePoint) ?Mapping {
         \\    return lookup(.none, .final_sigma, code_point);
         \\}
+        \\
     );
 
     try file_writer.flush();

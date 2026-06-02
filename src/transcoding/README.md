@@ -26,7 +26,9 @@ utf8ToUtf16LossyBuffer
 ```
 
 …and the same six for `utf8ToUtf32`, `utf16ToUtf8`, `utf16ToUtf32`,
-`utf32ToUtf8`, `utf32ToUtf16`.
+`utf32ToUtf8`, `utf32ToUtf16`. As of v0.2.0 the lossy half of the matrix is
+complete: `utf8ToUtf32Lossy*`, `utf16ToUtf32Lossy*`, and `utf32ToUtf16Lossy*`
+were added so every one of the six pairs has all three lossy forms.
 
 The split exists so callers can pick their allocation strategy:
 
@@ -35,6 +37,15 @@ The split exists so callers can pick their allocation strategy:
   grow.
 - The allocating form is the convenience path: it calls `…Len`, allocates, fills,
   and hands back the slice (which the caller frees).
+
+### Writer variants
+
+For streaming straight to a sink without sizing a buffer, each conversion also
+has a `…Writer` form taking a `*std.Io.Writer` and returning the number of output
+units written: `utf16ToUtf8Writer`, `utf32ToUtf8Writer` (byte sinks, no
+endianness), and `utf8ToUtf16Writer`, `utf8ToUtf32Writer` (which take a
+`utils.Endian` and emit each code unit as bytes in that order). They validate the
+source and surface its `…ValidationError`, plus the writer's `error.WriteFailed`.
 
 ### Strict vs. lossy
 

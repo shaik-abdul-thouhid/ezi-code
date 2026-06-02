@@ -14,6 +14,17 @@ const ducet = @import("generated/ducet.zig");
 const Allocator = std.mem.Allocator;
 const CodePoint = encoding.CodePoint;
 
+/// A reusable Unicode collation sort key. `Collator.buildKey` populates it from
+/// a string: the four per-level weight arrays (`primary`..`quaternary`) plus the
+/// `nfd` code points used as the identical-strength tiebreaker. `work` is
+/// internal scratch for the discontiguous-match step.
+///
+/// Initialize with `.{}`, reuse across many strings via `clearRetainingCapacity`
+/// (keeps the backing allocations), and release with `deinit`. Compare two keys
+/// with `Collator.compareKeys`, or serialize to bytes with `serializeInto` /
+/// `serializeAlloc` for allocation-free comparison and storage.
+///
+/// @stable-since: v0.2.0
 pub const Key = struct {
     primary: std.ArrayListUnmanaged(u16) = .empty,
     secondary: std.ArrayListUnmanaged(u16) = .empty,
@@ -22,6 +33,11 @@ pub const Key = struct {
     nfd: std.ArrayListUnmanaged(CodePoint) = .empty,
     work: std.ArrayListUnmanaged(CodePoint) = .empty,
 
+    /// Reset the key for reuse, clearing all weight levels and scratch while
+    /// retaining their backing allocations. Pass the same `Key` to repeated
+    /// `Collator.buildKey` calls when sorting many strings.
+    ///
+    /// @stable-since: v0.2.0
     pub fn clearRetainingCapacity(self: *Key) void {
         self.primary.clearRetainingCapacity();
         self.secondary.clearRetainingCapacity();
@@ -31,6 +47,10 @@ pub const Key = struct {
         self.work.clearRetainingCapacity();
     }
 
+    /// Free all backing allocations and invalidate the key. `allocator` must be
+    /// the same one passed to `Collator.buildKey`.
+    ///
+    /// @stable-since: v0.2.0
     pub fn deinit(self: *Key, allocator: Allocator) void {
         self.primary.deinit(allocator);
         self.secondary.deinit(allocator);
@@ -41,8 +61,50 @@ pub const Key = struct {
         self.* = undefined;
     }
 
+    /// Read-only view of the primary (base-letter) weights, in order. Valid
+    /// until the next `buildKey` / `clearRetainingCapacity` / `deinit`.
+    ///
+    /// @stable-since: v0.2.0
+    pub fn primaryWeights(self: *const Key) []const u16 {
+        return self.primary.items;
+    }
+
+    /// Read-only view of the secondary (accent / diacritic) weights, in order.
+    /// Valid until the next mutation of the key.
+    ///
+    /// @stable-since: v0.2.0
+    pub fn secondaryWeights(self: *const Key) []const u16 {
+        return self.secondary.items;
+    }
+
+    /// Read-only view of the tertiary (case) weights, in order. Valid until the
+    /// next mutation of the key.
+    ///
+    /// @stable-since: v0.2.0
+    pub fn tertiaryWeights(self: *const Key) []const u16 {
+        return self.tertiary.items;
+    }
+
+    /// Read-only view of the quaternary weights (populated only under SHIFTED
+    /// variable weighting), in order. Valid until the next mutation of the key.
+    ///
+    /// @stable-since: v0.2.0
+    pub fn quaternaryWeights(self: *const Key) []const u16 {
+        return self.quaternary.items;
+    }
+
+    /// Read-only view of the NFD code points used as the identical-strength
+    /// tiebreaker, in order. Valid until the next mutation of the key.
+    ///
+    /// @stable-since: v0.2.0
+    pub fn nfdCodePoints(self: *const Key) []const CodePoint {
+        return self.nfd.items;
+    }
+
     /// Returns the byte length of the serialized sort key for the given options.
     /// The result is exactly how many bytes `serializeInto` will write.
+    ///
+    /// @stable-since: v0.2.0
     pub fn serializedLen(self: *const Key, options: Options) usize {
         var len: usize = self.primary.items.len * 2;
         if (options.strength == .primary) return len;
@@ -65,6 +127,8 @@ pub const Key = struct {
     /// NFD codepoints as 3-byte big-endian values after the final separator.
     /// Two sort keys produced with the same options compare with `std.mem.order`
     /// exactly as `Collator.compareKeys` would compare the originating `Key` values.
+    ///
+    /// @stable-since: v0.2.0
     pub fn serializeInto(self: *const Key, options: Options, buf: []u8) []u8 {
         std.debug.assert(buf.len >= self.serializedLen(options));
         var pos: usize = 0;
@@ -122,21 +186,102 @@ pub const Key = struct {
 
     /// Allocates and returns the serialized sort key bytes for the given options.
     /// The caller owns the returned slice; free with the same allocator.
+    ///
+    /// @stable-since: v0.2.0
     pub fn serializeAlloc(self: *const Key, allocator: Allocator, options: Options) ![]u8 {
         const len = self.serializedLen(options);
         const buf = try allocator.alloc(u8, len);
         _ = self.serializeInto(options, buf);
         return buf;
     }
+
+    /// Streams the serialized sort key to `writer` (same byte format as
+    /// `serializeInto`) and returns the number of bytes written. Avoids sizing or
+    /// allocating an intermediate buffer — useful for writing keys straight to a
+    /// file, socket, or hasher. Only the writer's own `error.WriteFailed` is
+    /// returned.
+    ///
+    /// @stable-since: v0.2.0
+    pub fn serializeIntoWriter(self: *const Key, options: Options, writer: *std.Io.Writer) std.Io.Writer.Error!usize {
+        var n: usize = 0;
+
+        for (self.primary.items) |w| {
+            try writer.writeByte(@intCast(w >> 8));
+            try writer.writeByte(@intCast(w & 0xFF));
+            n += 2;
+        }
+        if (options.strength == .primary) return n;
+
+        try writer.writeByte(0);
+        try writer.writeByte(0);
+        n += 2;
+        for (self.secondary.items) |w| {
+            try writer.writeByte(@intCast(w >> 8));
+            try writer.writeByte(@intCast(w & 0xFF));
+            n += 2;
+        }
+        if (options.strength == .secondary) return n;
+
+        try writer.writeByte(0);
+        try writer.writeByte(0);
+        n += 2;
+        for (self.tertiary.items) |w| {
+            try writer.writeByte(@intCast(w >> 8));
+            try writer.writeByte(@intCast(w & 0xFF));
+            n += 2;
+        }
+        if (options.strength == .tertiary) return n;
+
+        if (options.variable_weighting == .shifted) {
+            try writer.writeByte(0);
+            try writer.writeByte(0);
+            n += 2;
+            for (self.quaternary.items) |w| {
+                try writer.writeByte(@intCast(w >> 8));
+                try writer.writeByte(@intCast(w & 0xFF));
+                n += 2;
+            }
+        }
+        if (options.strength == .quaternary) return n;
+
+        try writer.writeByte(0);
+        try writer.writeByte(0);
+        n += 2;
+        for (self.nfd.items) |cp| {
+            try writer.writeByte(@intCast(cp >> 16));
+            try writer.writeByte(@intCast((cp >> 8) & 0xFF));
+            try writer.writeByte(@intCast(cp & 0xFF));
+            n += 3;
+        }
+        return n;
+    }
 };
 
+/// A Unicode Collation Algorithm collator. Stateless apart from its `options`
+/// (cheap to copy by value); construct with `init`. Compare strings directly
+/// with `compareUtf8` / `compareCodePoints` (which allocate scratch keys), or
+/// build reusable `Key` values with `buildKey` and compare them with
+/// `compareKeys` / serialize them for storage.
+///
+/// @stable-since: v0.2.0
 pub const Collator = struct {
     options: Options,
 
+    /// Create a collator with the given `options` (variable weighting, strength,
+    /// normalization). No allocation; the collator is a value type.
+    ///
+    /// @stable-since: v0.2.0
     pub fn init(options: Options) Collator {
         return .{ .options = options };
     }
 
+    /// Compares two UTF-8 strings under this collator's options, returning their
+    /// relative `Order`. Decodes both inputs and builds temporary sort keys, so
+    /// it allocates and frees internally. Surfaces a `UTF8ValidationError` for
+    /// malformed input or `error.OutOfMemory`. For repeated comparisons of the
+    /// same strings, build `Key` values once and use `compareKeys`.
+    ///
+    /// @stable-since: v0.2.0
     pub fn compareUtf8(
         self: Collator,
         allocator: Allocator,
@@ -151,6 +296,38 @@ pub const Collator = struct {
         return try self.compareCodePoints(allocator, a_cps, b_cps);
     }
 
+    /// Convenience predicate: `true` iff `a` sorts strictly before `b` under this
+    /// collator. Same semantics and error set as `compareUtf8`.
+    ///
+    /// @stable-since: v0.2.0
+    pub fn lessThanUtf8(
+        self: Collator,
+        allocator: Allocator,
+        a: []const u8,
+        b: []const u8,
+    ) (encoding.utf8.UTF8ValidationError || error{ BufferTooSmall, OutOfMemory })!bool {
+        return (try self.compareUtf8(allocator, a, b)) == .lt;
+    }
+
+    /// Convenience predicate: `true` iff `a` and `b` are equal under this
+    /// collator (equal at every compared level). Same error set as `compareUtf8`.
+    ///
+    /// @stable-since: v0.2.0
+    pub fn equalUtf8(
+        self: Collator,
+        allocator: Allocator,
+        a: []const u8,
+        b: []const u8,
+    ) (encoding.utf8.UTF8ValidationError || error{ BufferTooSmall, OutOfMemory })!bool {
+        return (try self.compareUtf8(allocator, a, b)) == .eq;
+    }
+
+    /// Compares two decoded code-point slices under this collator's options.
+    /// Builds and frees temporary sort keys internally, so it allocates. For
+    /// allocation-free repeated comparisons, reuse keys via
+    /// `compareCodePointsReusing` or build them once and call `compareKeys`.
+    ///
+    /// @stable-since: v0.2.0
     pub fn compareCodePoints(self: Collator, allocator: Allocator, a: []const CodePoint, b: []const CodePoint) error{OutOfMemory}!Order {
         var a_key: Key = .{};
         defer a_key.deinit(allocator);
@@ -162,6 +339,50 @@ pub const Collator = struct {
         return self.compareKeys(&a_key, &b_key);
     }
 
+    /// Compares two code-point slices reusing the caller-provided `a_key` and
+    /// `b_key` as scratch, returning their `Order`. Identical result to
+    /// `compareCodePoints` but lets a hot loop keep the key allocations alive
+    /// across calls (`clearRetainingCapacity` is applied by `buildKey`). The keys
+    /// are left holding `a`/`b`'s weights on return; the caller still owns and
+    /// must `deinit` them.
+    ///
+    /// @stable-since: v0.2.0
+    pub fn compareCodePointsReusing(
+        self: Collator,
+        allocator: Allocator,
+        a: []const CodePoint,
+        b: []const CodePoint,
+        a_key: *Key,
+        b_key: *Key,
+    ) error{OutOfMemory}!Order {
+        try self.buildKey(allocator, a, a_key);
+        try self.buildKey(allocator, b, b_key);
+        return self.compareKeys(a_key, b_key);
+    }
+
+    /// Convenience predicate: `true` iff `a` sorts strictly before `b`. Allocates
+    /// like `compareCodePoints`.
+    ///
+    /// @stable-since: v0.2.0
+    pub fn lessThanCodePoints(self: Collator, allocator: Allocator, a: []const CodePoint, b: []const CodePoint) error{OutOfMemory}!bool {
+        return (try self.compareCodePoints(allocator, a, b)) == .lt;
+    }
+
+    /// Convenience predicate: `true` iff `a` and `b` are equal under this
+    /// collator. Allocates like `compareCodePoints`.
+    ///
+    /// @stable-since: v0.2.0
+    pub fn equalCodePoints(self: Collator, allocator: Allocator, a: []const CodePoint, b: []const CodePoint) error{OutOfMemory}!bool {
+        return (try self.compareCodePoints(allocator, a, b)) == .eq;
+    }
+
+    /// Builds the sort key for `input` into `out`, applying the full UCA
+    /// pipeline: optional NFD normalization, discontiguous-match extension, DUCET
+    /// collation-element lookup, and variable-weighting handling. `out` is
+    /// cleared first (retaining its allocations), so the same `Key` can be reused
+    /// across many strings. The caller owns and must `deinit` `out`.
+    ///
+    /// @stable-since: v0.2.0
     pub fn buildKey(self: Collator, allocator: Allocator, input: []const CodePoint, out: *Key) error{OutOfMemory}!void {
         out.clearRetainingCapacity();
 
@@ -221,6 +442,12 @@ pub const Collator = struct {
         }
     }
 
+    /// Compares two already-built sort keys level by level (primary → secondary →
+    /// tertiary → quaternary → identical), stopping at this collator's `strength`.
+    /// Allocation-free. The keys must have been built with the same options for
+    /// the result to be meaningful.
+    ///
+    /// @stable-since: v0.2.0
     pub fn compareKeys(self: Collator, a: *const Key, b: *const Key) Order {
         const strength = self.options.strength;
 
@@ -244,6 +471,61 @@ pub const Collator = struct {
 
         // identical
         return orderCodePointSlices(a.nfd.items, b.nfd.items);
+    }
+
+    /// One-shot helper: builds the sort key for `input` and serializes it to an
+    /// owned byte slice under this collator's options. Equivalent to `buildKey`
+    /// followed by `Key.serializeAlloc`, but manages the scratch `Key` for you.
+    /// The caller owns and must free the returned slice. Compare results with
+    /// `compareSerializedKeys`.
+    ///
+    /// @stable-since: v0.2.0
+    pub fn sortKeyAlloc(self: Collator, allocator: Allocator, input: []const CodePoint) error{OutOfMemory}![]u8 {
+        var key: Key = .{};
+        defer key.deinit(allocator);
+        try self.buildKey(allocator, input, &key);
+        return key.serializeAlloc(allocator, self.options);
+    }
+
+    /// Sorts `items` (a slice of UTF-8 strings) in place into collation order
+    /// under this collator's options. Builds one serialized sort key per item,
+    /// sorts by raw byte comparison, then rewrites `items`. Allocates `O(total
+    /// key bytes)` transiently and frees it before returning. Surfaces a
+    /// `UTF8ValidationError` for malformed input or `error.OutOfMemory`.
+    ///
+    /// @stable-since: v0.2.0
+    pub fn sortUtf8InPlace(
+        self: Collator,
+        allocator: Allocator,
+        items: [][]const u8,
+    ) (encoding.utf8.UTF8ValidationError || error{ BufferTooSmall, OutOfMemory })!void {
+        const Entry = struct { key: []u8, str: []const u8 };
+
+        const entries = try allocator.alloc(Entry, items.len);
+        defer allocator.free(entries);
+
+        var built: usize = 0;
+        errdefer for (entries[0..built]) |e| allocator.free(e.key);
+
+        var key: Key = .{};
+        defer key.deinit(allocator);
+
+        for (items, 0..) |item, i| {
+            const cps = try encoding.utf8.bytesToUTF8String(allocator, item);
+            defer allocator.free(cps);
+            try self.buildKey(allocator, cps, &key);
+            entries[i] = .{ .key = try key.serializeAlloc(allocator, self.options), .str = item };
+            built += 1;
+        }
+
+        std.mem.sort(Entry, entries, {}, struct {
+            fn lessThan(_: void, x: Entry, y: Entry) bool {
+                return std.mem.lessThan(u8, x.key, y.key);
+            }
+        }.lessThan);
+
+        for (entries, 0..) |e, i| items[i] = e.str;
+        for (entries) |e| allocator.free(e.key);
     }
 
     fn appendCE(self: Collator, allocator: Allocator, out: *Key, ce: ducet.CE, after_variable: *bool) error{OutOfMemory}!void {
@@ -415,6 +697,8 @@ fn isUnblocked(text: []const CodePoint, base: usize, candidate: usize, ccc_candi
 /// Compares two serialized sort keys produced by `Key.serializeInto` or
 /// `Key.serializeAlloc` with the same options. Equivalent to calling
 /// `Collator.compareKeys` on the source keys — no allocation required.
+///
+/// @stable-since: v0.2.0
 pub fn compareSerializedKeys(a: []const u8, b: []const u8) Order {
     return std.mem.order(u8, a, b);
 }
@@ -430,4 +714,114 @@ test "collation: shifted quaternary differentiates trailing variables" {
 
     const order = try collator.compareCodePoints(allocator, a, b);
     try std.testing.expectEqual(Order.lt, order);
+}
+
+test "Key weight accessors expose the per-level arrays" {
+    const allocator = std.testing.allocator;
+    var collator = Collator.init(.{});
+    const cps = try encoding.utf8.bytesToUTF8String(allocator, "Ábc");
+    defer allocator.free(cps);
+
+    var key: Key = .{};
+    defer key.deinit(allocator);
+    try collator.buildKey(allocator, cps, &key);
+
+    try std.testing.expectEqualSlices(u16, key.primary.items, key.primaryWeights());
+    try std.testing.expectEqualSlices(u16, key.secondary.items, key.secondaryWeights());
+    try std.testing.expectEqualSlices(u16, key.tertiary.items, key.tertiaryWeights());
+    try std.testing.expectEqualSlices(u16, key.quaternary.items, key.quaternaryWeights());
+    try std.testing.expectEqualSlices(CodePoint, key.nfd.items, key.nfdCodePoints());
+    try std.testing.expect(key.primaryWeights().len > 0);
+}
+
+test "serializeIntoWriter matches serializeAlloc byte-for-byte" {
+    const allocator = std.testing.allocator;
+    var collator = Collator.init(.{ .strength = .identical });
+    const cps = try encoding.utf8.bytesToUTF8String(allocator, "Résumé!");
+    defer allocator.free(cps);
+
+    var key: Key = .{};
+    defer key.deinit(allocator);
+    try collator.buildKey(allocator, cps, &key);
+
+    const expected = try key.serializeAlloc(allocator, collator.options);
+    defer allocator.free(expected);
+
+    const buf = try allocator.alloc(u8, key.serializedLen(collator.options));
+    defer allocator.free(buf);
+    var w = std.Io.Writer.fixed(buf);
+    const n = try key.serializeIntoWriter(collator.options, &w);
+
+    try std.testing.expectEqual(expected.len, n);
+    try std.testing.expectEqualSlices(u8, expected, w.buffered());
+}
+
+test "sortKeyAlloc agrees with compareCodePoints via compareSerializedKeys" {
+    const allocator = std.testing.allocator;
+    var collator = Collator.init(.{});
+
+    const a = try encoding.utf8.bytesToUTF8String(allocator, "café");
+    defer allocator.free(a);
+    const b = try encoding.utf8.bytesToUTF8String(allocator, "cafe");
+    defer allocator.free(b);
+
+    const ka = try collator.sortKeyAlloc(allocator, a);
+    defer allocator.free(ka);
+    const kb = try collator.sortKeyAlloc(allocator, b);
+    defer allocator.free(kb);
+
+    try std.testing.expectEqual(
+        try collator.compareCodePoints(allocator, a, b),
+        compareSerializedKeys(ka, kb),
+    );
+}
+
+test "compareCodePointsReusing matches compareCodePoints" {
+    const allocator = std.testing.allocator;
+    var collator = Collator.init(.{});
+
+    const a = try encoding.utf8.bytesToUTF8String(allocator, "apple");
+    defer allocator.free(a);
+    const b = try encoding.utf8.bytesToUTF8String(allocator, "Apple");
+    defer allocator.free(b);
+
+    var ka: Key = .{};
+    defer ka.deinit(allocator);
+    var kb: Key = .{};
+    defer kb.deinit(allocator);
+
+    const reused = try collator.compareCodePointsReusing(allocator, a, b, &ka, &kb);
+    const direct = try collator.compareCodePoints(allocator, a, b);
+    try std.testing.expectEqual(direct, reused);
+}
+
+test "lessThan / equal convenience predicates" {
+    const allocator = std.testing.allocator;
+    var collator = Collator.init(.{});
+
+    try std.testing.expect(try collator.lessThanUtf8(allocator, "apple", "banana"));
+    try std.testing.expect(!try collator.lessThanUtf8(allocator, "banana", "apple"));
+    try std.testing.expect(try collator.equalUtf8(allocator, "abc", "abc"));
+
+    const a = try encoding.utf8.bytesToUTF8String(allocator, "a");
+    defer allocator.free(a);
+    const z = try encoding.utf8.bytesToUTF8String(allocator, "z");
+    defer allocator.free(z);
+    try std.testing.expect(try collator.lessThanCodePoints(allocator, a, z));
+    try std.testing.expect(try collator.equalCodePoints(allocator, a, a));
+}
+
+test "sortUtf8InPlace orders a word list by collation" {
+    const allocator = std.testing.allocator;
+    var collator = Collator.init(.{});
+
+    var items = [_][]const u8{ "banana", "Apple", "cherry", "apple" };
+    try collator.sortUtf8InPlace(allocator, &items);
+
+    // Primary order is a < c; "Apple"/"apple" differ only at the tertiary
+    // (case) level, so they sit adjacent ahead of "banana" and "cherry".
+    try std.testing.expectEqualStrings("banana", items[2]);
+    try std.testing.expectEqualStrings("cherry", items[3]);
+    try std.testing.expect(std.mem.eql(u8, items[0], "apple") or std.mem.eql(u8, items[0], "Apple"));
+    try std.testing.expect(std.mem.eql(u8, items[1], "apple") or std.mem.eql(u8, items[1], "Apple"));
 }

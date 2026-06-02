@@ -74,6 +74,25 @@ try collator.buildKey(allocator, code_points, &key);
 // Call clearRetainingCapacity() to reuse allocations between strings.
 ```
 
+### Convenience helpers
+
+- **Boolean predicates** — `lessThanUtf8` / `equalUtf8` and `lessThanCodePoints` /
+  `equalCodePoints` wrap the `compare*` calls when you only need a bool.
+- **Key reuse** — `compareCodePointsReusing(allocator, a, b, &key_a, &key_b)`
+  compares two strings using caller-owned scratch keys, so a hot loop keeps the
+  key allocations alive across calls (no per-comparison allocation).
+- **Weight inspection** — `Key.primaryWeights()`, `secondaryWeights()`,
+  `tertiaryWeights()`, `quaternaryWeights()`, and `nfdCodePoints()` expose the
+  per-level arrays as read-only slices (valid until the next mutation of the key).
+- **One-shot sort key** — `collator.sortKeyAlloc(allocator, code_points)` builds
+  and serializes a key in one call, managing the scratch `Key` for you.
+- **Streaming serialization** — `Key.serializeIntoWriter(options, writer)` writes
+  the same byte format as `serializeInto` to a `*std.Io.Writer` (file, socket,
+  hasher) without sizing an intermediate buffer.
+- **Batch sort** — `collator.sortUtf8InPlace(allocator, items)` sorts a
+  `[][]const u8` of UTF-8 strings into collation order (the manual sort-key recipe
+  below, packaged).
+
 ## Sort key serialization
 
 A sort key is a compact byte sequence where a raw `memcmp` of two sort keys

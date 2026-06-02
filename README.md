@@ -17,7 +17,7 @@ committed, so a normal build doesn't touch the network or the `ucd/` inputs.
 
 ## Status
 
-Version `0.1.0`. Pre-1.0 in the literal sense: the API is allowed to change.
+Version `0.2.0`. Pre-1.0 in the literal sense: the API is allowed to change.
 Tracks a recent Zig dev build (`0.17.0-dev.607+456b2ec07` minimum); it does
 not build against stable 0.16. If your toolchain isn't on a current `master`,
 this will not compile, and that is the intended trade-off until Zig 0.17 lands.
@@ -33,13 +33,13 @@ adversarial test set you'd expect for UAX #9.
 Via git ref (resolves the tag at fetch time):
 
 ```sh
-zig fetch --save git+https://github.com/shaik-abdul-thouhid/ezi-code.git#v0.1.0
+zig fetch --save git+https://github.com/shaik-abdul-thouhid/ezi-code.git#v0.2.0
 ```
 
 Or via plain HTTP tarball (pins the content hash in `build.zig.zon`):
 
 ```sh
-zig fetch --save https://github.com/shaik-abdul-thouhid/ezi-code/archive/refs/tags/v0.1.0.tar.gz
+zig fetch --save https://github.com/shaik-abdul-thouhid/ezi-code/archive/refs/tags/v0.2.0.tar.gz
 ```
 
 Then in `build.zig`:
@@ -75,6 +75,13 @@ defer allocator.free(utf16);
 // Normalize.
 const nfc = try ezi.unicode.nfc(allocator, "café");
 defer allocator.free(nfc);
+
+// Case-fold a UTF-8 string for caseless matching (ß → "ss").
+const folded = try ezi.unicode.casing.foldFullUtf8Alloc(allocator, "Straße");
+defer allocator.free(folded);   // "strasse"
+
+// Measure display width on a monospace grid (wide CJK counts as 2).
+const cols = try ezi.unicode.width.stringWidth("コード");  // 6
 
 // Bidi: resolve embedding levels and get the visual order of a line.
 var paragraph = try ezi.unicode.bidi.resolveParagraph(allocator, code_points, .auto);
@@ -161,6 +168,40 @@ zig build bench -- --size=524288 unicode  # custom corpus size
 The bench driver reports mean of 7 runs ± stddev with throughput and tracked
 allocator memory, over three corpora (ASCII, multilingual, pathological).
 Module list is in `bench/main.zig`.
+
+## Generating documentation
+
+```sh
+zig build docs
+```
+
+This emits the Zig autodoc bundle into the repo-root `docs/` directory:
+`index.html`, `main.js`, `main.wasm`, and `sources.tar` (the source the viewer
+loads on demand). Every public declaration carries a `@stable-since: vX.Y.Z`
+marker in its doc comment, so you can see when each API entered the stable surface.
+
+### Opening the docs
+
+The viewer is a WebAssembly app that `fetch`es `sources.tar` at runtime, so most
+browsers refuse to load it from a `file://` path (CORS). Serve `docs/` over HTTP
+instead:
+
+```sh
+zig build docs                       # (re)generate ./docs
+cd docs && python3 -m http.server 8000
+# then open http://localhost:8000 in a browser
+```
+
+Any static file server works — pick whatever you have:
+
+```sh
+npx http-server docs -p 8000         # Node
+php -S localhost:8000 -t docs        # PHP
+ruby -run -e httpd docs -p 8000      # Ruby
+```
+
+Some Chromium builds will still open `docs/index.html` directly from disk; if the
+page loads but shows no declarations, switch to the HTTP-server method above.
 
 ## Layout
 

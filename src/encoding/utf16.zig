@@ -228,6 +228,38 @@ pub fn encodeCodePoint(code_point: CodePoint, buf: []u16) UTF16EncodeError!u2 {
     return 2;
 }
 
+/// Encodes a valid `code_point` into `buf` and returns the number of code units
+/// written. Neither the code point nor the buffer length is validated — the
+/// caller must guarantee a valid scalar and that
+/// `buf.len >= (utf16EncodeLen(code_point) catch unreachable)`. Use
+/// `encodeCodePoint` when either invariant is uncertain.
+///
+/// Note: **a buffer shorter than the encoded length triggers `unreachable`
+/// (checked illegal behavior in safe builds, UB in `ReleaseFast`).**
+///
+/// @stable-since: v0.2.0
+pub fn encodeCodePointUnchecked(code_point: CodePoint, buf: []u16) u2 {
+    return encodeCodePoint(code_point, buf) catch unreachable;
+}
+
+/// Encodes a valid `code_point` as UTF-16 and writes its code units to `writer`
+/// as bytes in the given `endian` order, returning the number of code units
+/// written (1 or 2; i.e. `2 * return` bytes are emitted). The code point is not
+/// validated — same contract as `encodeCodePoint`. The only error returned is
+/// the writer's own (`error.WriteFailed`).
+///
+/// @stable-since: v0.2.0
+pub fn encodeCodePointWriter(code_point: CodePoint, endian: Endian, writer: *std.Io.Writer) std.Io.Writer.Error!u2 {
+    var units: [2]u16 = undefined;
+    const len = encodeCodePointUnchecked(code_point, &units);
+
+    var bytes: [4]u8 = undefined;
+    const byte_len = utils.slices.u16SliceToBytesBuffer(units[0..len], &bytes, endian) catch unreachable;
+
+    try writer.writeAll(bytes[0..byte_len]);
+    return len;
+}
+
 fn decode(buf: []const u16, offset: usize, len: u2) DecodedCodePoint {
     return switch (len) {
         1 => .{ .code_point = @as(CodePoint, buf[offset]), .len = 1 },
@@ -430,11 +462,19 @@ pub const UTF16SliceError = error{
     InvalidHighSurrogate,
 };
 
-const UTF16ViewIterator = struct {
+/// Bidirectional cursor over the scalars of a `UTF16View`. Assumes the
+/// underlying code units are already valid UTF-16 (as produced by
+/// `initUTF16View`); decoding is unchecked. Obtain one with `UTF16View.iter`.
+///
+/// @stable-since: v0.2.0
+pub const UTF16ViewIterator = struct {
     index: usize = 0,
     data: []const u16,
     curr: ?CodePoint = null,
 
+    /// Advance to and return the next scalar, or `null` at the end.
+    ///
+    /// @stable-since: v0.2.0
     pub fn next(self: *UTF16ViewIterator) ?CodePoint {
         if (self.index >= self.data.len) {
             return null;
@@ -447,6 +487,9 @@ const UTF16ViewIterator = struct {
         return self.curr.?;
     }
 
+    /// Return the next scalar without advancing the cursor, or `null` at the end.
+    ///
+    /// @stable-since: v0.2.0
     pub fn peek(self: *const UTF16ViewIterator) ?CodePoint {
         if (self.index >= self.data.len) {
             return null;
@@ -455,6 +498,9 @@ const UTF16ViewIterator = struct {
         return decodeCodePoint(self.data, self.index).code_point;
     }
 
+    /// Step back to and return the previous scalar, or `null` at the start.
+    ///
+    /// @stable-since: v0.2.0
     pub fn previous(self: *UTF16ViewIterator) ?CodePoint {
         if (self.index == 0) {
             return null;
@@ -467,6 +513,9 @@ const UTF16ViewIterator = struct {
         return self.curr.?;
     }
 
+    /// Return the previous scalar without moving the cursor, or `null` at the start.
+    ///
+    /// @stable-since: v0.2.0
     pub fn peekPrevious(self: *const UTF16ViewIterator) ?CodePoint {
         if (self.index == 0) {
             return null;
@@ -476,9 +525,18 @@ const UTF16ViewIterator = struct {
     }
 };
 
-const UTF16View = struct {
+/// Zero-copy view over a `[]const u16` of validated UTF-16 code units. Provides
+/// scalar counting, boundary tests, scalar-indexed sub-slicing, and a
+/// bidirectional iterator (`iter`). Construct with `initUTF16View` (checked) or
+/// `initUTF16ViewUnchecked`.
+///
+/// @stable-since: v0.2.0
+pub const UTF16View = struct {
     data: []const u16,
 
+    /// Return the number of scalars in the view by walking the code units.
+    ///
+    /// @stable-since: v0.2.0
     pub fn countScalar(self: *const UTF16View) usize {
         var count: usize = 0;
         var i: usize = 0;
@@ -494,6 +552,11 @@ const UTF16View = struct {
         return count;
     }
 
+    /// Report whether unit offset `index` falls on a scalar boundary (the start
+    /// of a scalar, or the end of the data). Offsets on a trailing (low)
+    /// surrogate return `false`.
+    ///
+    /// @stable-since: v0.2.0
     pub fn isBoundary(self: *const UTF16View, index: usize) bool {
         if (index > self.data.len) {
             return false;
@@ -506,6 +569,10 @@ const UTF16View = struct {
         return !isLowSurrogate(self.data[index]);
     }
 
+    /// Return a sub-view spanning scalars `[start_scalar, end_scalar)`. Errors
+    /// if the range is inverted, runs past the end, or splits a surrogate pair.
+    ///
+    /// @stable-since: v0.2.0
     pub fn sliceScalars(self: *const UTF16View, start_scalar: usize, end_scalar: usize) UTF16SliceError!UTF16View {
         if (start_scalar > end_scalar) {
             return error.IndexOutOfBounds;
@@ -562,20 +629,31 @@ const UTF16View = struct {
 
         return .{
             .data = self.data[start_unit.?..end_unit.?],
-            .endian = self.endian,
         };
     }
 
+    /// Return a bidirectional iterator positioned at the start of the view.
+    ///
+    /// @stable-since: v0.2.0
     pub fn iter(self: *const UTF16View) UTF16ViewIterator {
         return .{ .data = self.data };
     }
 };
 
-const UTF16LossyIterator = struct {
+/// Forward iterator that decodes raw, unvalidated `[]const u16` leniently,
+/// yielding the replacement scalar (U+FFFD) for any malformed sequence (lone or
+/// swapped surrogates). Obtain one with `lossyIterator`.
+///
+/// @stable-since: v0.2.0
+pub const UTF16LossyIterator = struct {
     data: []const u16,
     index: usize = 0,
     curr: ?CodePoint = null,
 
+    /// Advance to and return the next scalar (replacement on malformed units),
+    /// or `null` at the end.
+    ///
+    /// @stable-since: v0.2.0
     pub fn next(self: *UTF16LossyIterator) ?CodePoint {
         if (self.index >= self.data.len) {
             return null;
@@ -588,6 +666,10 @@ const UTF16LossyIterator = struct {
         return decoded.code_point;
     }
 
+    /// Return the next scalar without advancing (replacement on malformed
+    /// units), or `null` at the end.
+    ///
+    /// @stable-since: v0.2.0
     pub fn peek(self: *const UTF16LossyIterator) ?CodePoint {
         if (self.index >= self.data.len) {
             return null;
@@ -597,10 +679,20 @@ const UTF16LossyIterator = struct {
     }
 };
 
+/// Takes un-validated UTF-16 `units` and returns a lossy forward iterator. Any
+/// malformed unit yields the Unicode Replacement Character (U+FFFD). See
+/// `UTF16LossyIterator`; use `initUTF16View` for strict decoding.
+///
+/// @stable-since: v0.1.0
 pub fn lossyIterator(units: []const u16) UTF16LossyIterator {
     return .{ .data = units };
 }
 
+/// Returns the number of scalars produced by lossily decoding `units`,
+/// counting one replacement scalar per malformed unit. Strict counterpart:
+/// `countScalars`.
+///
+/// @stable-since: v0.1.0
 pub fn countScalarsLossy(units: []const u16) usize {
     var count: usize = 0;
     var iter = lossyIterator(units);
@@ -610,6 +702,12 @@ pub fn countScalarsLossy(units: []const u16) usize {
     return count;
 }
 
+/// Lossily decode `units` into the caller-supplied `buf`, returning the number
+/// of scalars written. Malformed units become the replacement scalar (U+FFFD);
+/// a `buf` too small to hold every scalar returns `error.BufferTooSmall`.
+/// Strict counterpart: `bufToCodePointsBuffer`.
+///
+/// @stable-since: v0.1.0
 pub fn bufToCodePointsLossyBuffer(units: []const u16, buf: []CodePoint) error{BufferTooSmall}!usize {
     var i: usize = 0;
     var iter = lossyIterator(units);
@@ -625,6 +723,11 @@ pub fn bufToCodePointsLossyBuffer(units: []const u16, buf: []CodePoint) error{Bu
     return i;
 }
 
+/// Lossily decode `units` into a freshly allocated `[]CodePoint`, substituting
+/// the replacement scalar (U+FFFD) for malformed units. The caller owns and
+/// must free the result.
+///
+/// @stable-since: v0.1.0
 pub fn bufToCodePointsLossy(allocator: std.mem.Allocator, units: []const u16) error{ OutOfMemory, BufferTooSmall }![]CodePoint {
     const len = countScalarsLossy(units);
     const out = try allocator.alloc(CodePoint, len);
@@ -634,6 +737,61 @@ pub fn bufToCodePointsLossy(allocator: std.mem.Allocator, units: []const u16) er
     return out;
 }
 
+/// Returns `true` when `units` is well-formed UTF-16 from start to end (every
+/// high surrogate paired with a low surrogate, no lone surrogates), `false`
+/// otherwise. Fast path when only a yes/no answer is needed; use `countScalars`
+/// or `initUTF16View` when the failure reason or scalar count matters.
+///
+/// @stable-since: v0.2.0
+pub fn validate(units: []const u16) bool {
+    var scalar_count: usize = 0;
+    _ = initUTF16View(units, &scalar_count) catch return false;
+    return true;
+}
+
+/// Validates `units` and returns the number of Unicode scalars it encodes.
+/// Strict counterpart of `countScalarsLossy`: a malformed unit surfaces the
+/// corresponding `UTF16ValidationError` instead of being counted as a
+/// replacement scalar.
+///
+/// @stable-since: v0.2.0
+pub fn countScalars(units: []const u16) UTF16ValidationError!usize {
+    var scalar_count: usize = 0;
+    _ = try initUTF16View(units, &scalar_count);
+    return scalar_count;
+}
+
+/// Validates `units` and writes the decoded scalars into the caller-supplied
+/// `buf`, returning the number written. Strict counterpart of
+/// `bufToCodePointsLossyBuffer`: a malformed unit surfaces a
+/// `UTF16ValidationError`, and a `buf` too small returns `error.BufferTooSmall`.
+/// Allocation-free; pair with `countScalars` to size `buf`, or use
+/// `bufToUTF16String` to allocate.
+///
+/// @stable-since: v0.2.0
+pub fn bufToCodePointsBuffer(units: []const u16, buf: []CodePoint) (UTF16ValidationError || error{BufferTooSmall})!usize {
+    var i: usize = 0;
+    var o: usize = 0;
+
+    while (i < units.len) {
+        const decoded = try validateAndDecodeU16CodePoint(units, i);
+        if (o >= buf.len) {
+            return error.BufferTooSmall;
+        }
+        buf[o] = decoded.code_point;
+        o += 1;
+        i += @as(usize, decoded.len);
+    }
+
+    return o;
+}
+
+/// Validate every code unit of `data` and return a view over it, writing the
+/// decoded scalar count to `resultant_unicode_str_len`. Errors on the first
+/// malformed sequence. Prefer this over the unchecked variant for untrusted
+/// input.
+///
+/// @stable-since: v0.1.0
 pub fn initUTF16View(data: []const u16, resultant_unicode_str_len: *usize) UTF16ValidationError!UTF16View {
     var i: usize = 0;
     var scalar_count: usize = 0;
@@ -649,10 +807,19 @@ pub fn initUTF16View(data: []const u16, resultant_unicode_str_len: *usize) UTF16
     return .{ .data = data };
 }
 
+/// Wrap `data` in a view without validating its code units. The caller must
+/// guarantee every unit forms valid UTF-16. Use `initUTF16View` for untrusted
+/// input.
+///
+/// @stable-since: v0.1.0
 pub fn initUTF16ViewUnchecked(data: []const u16) UTF16View {
     return .{ .data = data };
 }
 
+/// Copy the scalars of `view` into `buf`, returning the count written. Errors
+/// if `buf` is too small to hold every scalar.
+///
+/// @stable-since: v0.1.0
 pub fn utf16ViewToUTF16String(view: *const UTF16View, buf: []CodePoint) (UTF16ValidationError || error{BufferTooSmall})!usize {
     var i: usize = 0;
     var iter = view.iter();
@@ -669,7 +836,11 @@ pub fn utf16ViewToUTF16String(view: *const UTF16View, buf: []CodePoint) (UTF16Va
     return i;
 }
 
-pub fn bufToUTF16StringComptime(comptime units: []const u16) (UTF16ValidationError || error{BufferTooSmall})![initUTF16ViewUnchecked(units, .little).countScalar()]CodePoint {
+/// Validate and decode comptime-known `units` into a fixed-size `[N]CodePoint`
+/// array sized to the scalar count. Compile error on any malformed unit.
+///
+/// @stable-since: v0.1.0
+pub fn bufToUTF16StringComptime(comptime units: []const u16) (UTF16ValidationError || error{BufferTooSmall})![initUTF16ViewUnchecked(units).countScalar()]CodePoint {
     comptime {
         var unicode_str_len: usize = 0;
         const view = try initUTF16View(units, &unicode_str_len);
@@ -679,6 +850,10 @@ pub fn bufToUTF16StringComptime(comptime units: []const u16) (UTF16ValidationErr
     }
 }
 
+/// Validate and decode `buf` into a freshly allocated `[]CodePoint`. Errors on
+/// the first malformed unit. The caller owns and must free the result.
+///
+/// @stable-since: v0.1.0
 pub fn bufToUTF16String(allocator: std.mem.Allocator, buf: []const u16) (UTF16ValidationError || error{ BufferTooSmall, OutOfMemory })![]CodePoint {
     var unicode_str_len: usize = 0;
     const view = try initUTF16View(buf, &unicode_str_len);
@@ -1151,4 +1326,88 @@ test "encodeCodePoint rejects undersized UTF-16 output" {
 
     try std.testing.expectError(error.BufferTooSmall, encodeCodePoint('A', &empty));
     try std.testing.expectError(error.BufferTooSmall, encodeCodePoint(0x10000, &one));
+}
+
+test "validate: accepts well-formed and rejects malformed UTF-16" {
+    try std.testing.expect(validate(&[_]u16{ 'a', 0xD83D, 0xDE00 }));
+    try std.testing.expect(validate(&[_]u16{}));
+    try std.testing.expect(!validate(&[_]u16{low_surrogate_range_start})); // lone low
+    try std.testing.expect(!validate(&[_]u16{high_surrogate_range_start})); // lone high
+    try std.testing.expect(!validate(&[_]u16{ high_surrogate_range_start, 'A' })); // unpaired high
+}
+
+test "countScalars: strict count and error propagation" {
+    try std.testing.expectEqual(@as(usize, 0), try countScalars(&[_]u16{}));
+    // 'a' + a surrogate pair (😀) = 2 scalars across 3 code units.
+    try std.testing.expectEqual(@as(usize, 2), try countScalars(&[_]u16{ 'a', 0xD83D, 0xDE00 }));
+    try std.testing.expectError(error.InvalidLowSurrogate, countScalars(&[_]u16{low_surrogate_range_start}));
+}
+
+test "bufToCodePointsBuffer: strict decode, BufferTooSmall, and error propagation" {
+    var buf: [2]CodePoint = undefined;
+    const n = try bufToCodePointsBuffer(&[_]u16{ 'a', 0xD83D, 0xDE00 }, &buf);
+    try std.testing.expectEqual(@as(usize, 2), n);
+    try std.testing.expectEqualSlices(CodePoint, &.{ 'a', 0x1F600 }, buf[0..n]);
+
+    var tiny: [1]CodePoint = undefined;
+    try std.testing.expectError(error.BufferTooSmall, bufToCodePointsBuffer(&[_]u16{ 'a', 'b' }, &tiny));
+    try std.testing.expectError(error.InvalidLowSurrogate, bufToCodePointsBuffer(&[_]u16{low_surrogate_range_start}, &buf));
+}
+
+test "encodeCodePointUnchecked: matches encodeCodePoint for valid scalars" {
+    var buf: [2]u16 = undefined;
+    const cases = [_]CodePoint{ 'A', 0xFFFF, 0x10000, 0x1F600, 0x10FFFF };
+    for (cases) |cp| {
+        const len = encodeCodePointUnchecked(cp, &buf);
+        const got = try validateAndDecodeU16CodePoint(&buf, 0);
+        try std.testing.expectEqual(cp, got.code_point);
+        try std.testing.expectEqual(@as(u2, got.len), len);
+    }
+}
+
+test "encodeCodePointWriter: emits big/little-endian bytes" {
+    var backing: [8]u8 = undefined;
+
+    var be = std.Io.Writer.fixed(&backing);
+    const be_len = try encodeCodePointWriter('A', .big, &be);
+    try std.testing.expectEqual(@as(u2, 1), be_len);
+    try std.testing.expectEqualSlices(u8, &.{ 0x00, 0x41 }, be.buffered());
+
+    var le = std.Io.Writer.fixed(&backing);
+    _ = try encodeCodePointWriter('A', .little, &le);
+    try std.testing.expectEqualSlices(u8, &.{ 0x41, 0x00 }, le.buffered());
+
+    var pair = std.Io.Writer.fixed(&backing);
+    const pair_len = try encodeCodePointWriter(0x1F600, .big, &pair);
+    try std.testing.expectEqual(@as(u2, 2), pair_len);
+    try std.testing.expectEqualSlices(u8, &.{ 0xD8, 0x3D, 0xDE, 0x00 }, pair.buffered());
+
+    var tiny_backing: [1]u8 = undefined;
+    var tiny = std.Io.Writer.fixed(&tiny_backing);
+    try std.testing.expectError(error.WriteFailed, encodeCodePointWriter('A', .big, &tiny));
+}
+
+test "sliceScalars produces a usable sub-view (regression: no endian field)" {
+    var n: usize = 0;
+    const view = try initUTF16View(&[_]u16{ 'a', 0xD83D, 0xDE00, 'b' }, &n);
+    const mid = try view.sliceScalars(1, 3);
+    var out: [2]CodePoint = undefined;
+    const written = try utf16ViewToUTF16String(&mid, &out);
+    try std.testing.expectEqual(@as(usize, 2), written);
+    try std.testing.expectEqual(@as(CodePoint, 0x1F600), out[0]);
+    try std.testing.expectEqual(@as(CodePoint, 'b'), out[1]);
+}
+
+test "bufToUTF16StringComptime (regression: single-arg view ctor)" {
+    const arr = comptime try bufToUTF16StringComptime(&[_]u16{ 'h', 'i' });
+    try comptime std.testing.expect(arr.len == 2);
+    try comptime std.testing.expect(arr[0] == 'h' and arr[1] == 'i');
+}
+
+test "public view types are reachable as named types" {
+    const view: UTF16View = initUTF16ViewUnchecked(&[_]u16{ 'a', 'b' });
+    var it: UTF16ViewIterator = view.iter();
+    try std.testing.expectEqual(@as(?CodePoint, 'a'), it.next());
+    var lossy: UTF16LossyIterator = lossyIterator(&[_]u16{ 'a', 'b' });
+    try std.testing.expectEqual(@as(?CodePoint, 'a'), lossy.next());
 }

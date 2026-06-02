@@ -21,6 +21,9 @@ Files:
   emit for malformed input.
 - `validateCodePoint` — range + surrogate check (it does *not* reject reserved or
   noncharacter code points; those are still valid scalars).
+- Boolean classifiers (v0.2.0): `isValidCodePoint` (the bool form of
+  `validateCodePoint`), `isSurrogateCodePoint`, `isAscii`, and `isSupplementary`
+  (≥ U+10000).
 
 ## Three variants of everything
 
@@ -57,22 +60,32 @@ The most complete of the three:
   (`codePointLenReverse`, `validateAndDecodeCodePointBytesReverse`,
   `decodeCodePointReverseUnchecked`) so you can walk a buffer backwards without
   re-scanning from the start.
+- Whole-buffer validation (v0.2.0): `validate` returns a fast `bool` via the
+  Höhrmann DFA; `countScalars` validates and returns the scalar count with the
+  fine-grained `UTF8ValidationError` (the strict counterpart of `countScalarsLossy`).
 - Encoding: `encodeCodePoint` (buffer-checked only — the scalar is assumed valid)
-  and `utf8EncodeLen`.
+  and `utf8EncodeLen`. v0.2.0 adds `encodeCodePointUnchecked` (no buffer check) and
+  `encodeCodePointWriter` (encode straight to a `*std.Io.Writer`).
 - Classification helpers: `isContinuationByte`, `isLeaderByte`, `codePointLen`.
-- `UTF8View` — a validated (or assumed-valid) view over bytes with `countScalar`,
-  `isBoundary`, `sliceScalars` (slice by scalar index, not byte index), and an
-  iterator (`next`, `peek`, `previous`, `peekPrevious`, `reset`).
+- `UTF8View` (now a `pub` named type, as are `UTF8ViewIterator` and
+  `UTF8LossyIterator`) — a validated (or assumed-valid) view over bytes with
+  `countScalar`, `isBoundary`, `sliceScalars` (slice by scalar index, not byte
+  index), and an iterator (`next`, `peek`, `previous`, `peekPrevious`, `reset`).
 - `lossyIterator` for the same traversal over un-validated bytes.
-- Bulk conversions to `[]CodePoint`: `bytesToCodePointsLossy(Buffer)`,
-  `bytesToUTF8String` (allocating, strict), and `bytesToUTF8StringComptime` for
-  building scalar arrays at compile time.
+- Bulk conversions to `[]CodePoint`: `bytesToCodePointsBuffer` (strict, v0.2.0) and
+  `bytesToCodePointsLossy(Buffer)`, `bytesToUTF8String` (allocating, strict), and
+  `bytesToUTF8StringComptime` for building scalar arrays at compile time.
 
 ## UTF-16 (`utf16.zig`) and UTF-32 (`utf32.zig`)
 
 Both mirror the UTF-8 structure — strict / unchecked / lossy decode, `encodeCodePoint`,
 an encode-length helper, a view type, and a `lossyIterator` — so once you know one
-codec you know all three.
+codec you know all three. Each also gained the v0.2.0 additions: `validate`,
+strict `countScalars`, a strict `bufToCodePointsBuffer`, `encodeCodePointUnchecked`,
+and `encodeCodePointWriter`. Because a writer is a byte sink, the UTF-16/UTF-32
+`encodeCodePointWriter` takes an `endian` (`utils.Endian`) and emits each code unit
+as bytes in that order; the UTF-8 one needs no endianness. The `UTF16View` /
+`UTF32View` types and their iterators are `pub` named types.
 
 - UTF-16 (`validateAndDecodeU16CodePoint`, `utf16EncodeLen`, `initUTF16View`, …) is
   surrogate-pair aware: its errors call out lone high surrogates and missing/invalid

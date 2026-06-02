@@ -563,6 +563,61 @@ pub fn Normalizer(comptime form: NormalizationForm) type {
 }
 
 // ----------------------------------------------------------------------------
+// Allocation-free buffer variants
+//
+// `normalize` and the nf* wrappers allocate their result. The two helpers below
+// drive the streaming `Normalizer` to normalize into caller memory (or just
+// measure the output length) with zero allocation — the buffer counterparts of
+// the allocating pipeline.
+//
+// Note: these run the streaming algorithm, which matches the batch `normalize`
+// for all UAX #15 Stream-Safe input (≤30 non-starters between starters — i.e.
+// effectively all real text). On adversarial non-Stream-Safe runs the streaming
+// algorithm may order marks differently across an internal flush; use the
+// allocating `normalize` when exact batch semantics on such input are required.
+// ----------------------------------------------------------------------------
+
+/// Returns the number of codepoints `normalize(form, input)` would produce,
+/// computed allocation-free via the streaming `Normalizer`. Use it to size a
+/// `normalizeBuffer` destination.
+///
+/// @stable-since: v0.2.0
+pub fn normalizedLen(comptime form: NormalizationForm, input: []const CodePoint) usize {
+    var norm = Normalizer(form).init();
+    var scratch: [MAX_FEED_OUTPUT]CodePoint = undefined;
+    var n: usize = 0;
+    for (input) |cp| n += norm.feed(cp, &scratch).len;
+    n += norm.flush(&scratch).len;
+    return n;
+}
+
+/// Normalizes `input` to `form` into the caller-supplied `out`, returning the
+/// number of codepoints written. Allocation-free counterpart of `normalize`.
+/// Errors with `error.BufferTooSmall` when `out` cannot hold the result; size it
+/// with `normalizedLen`.
+///
+/// @stable-since: v0.2.0
+pub fn normalizeBuffer(comptime form: NormalizationForm, input: []const CodePoint, out: []CodePoint) error{BufferTooSmall}!usize {
+    var norm = Normalizer(form).init();
+    var scratch: [MAX_FEED_OUTPUT]CodePoint = undefined;
+    var o: usize = 0;
+
+    for (input) |cp| {
+        const emitted = norm.feed(cp, &scratch);
+        if (o + emitted.len > out.len) return error.BufferTooSmall;
+        @memcpy(out[o..][0..emitted.len], emitted);
+        o += emitted.len;
+    }
+
+    const tail = norm.flush(&scratch);
+    if (o + tail.len > out.len) return error.BufferTooSmall;
+    @memcpy(out[o..][0..tail.len], tail);
+    o += tail.len;
+
+    return o;
+}
+
+// ----------------------------------------------------------------------------
 // Re-exports of the raw DerivedNormalizationProps API (kept for callers that
 // want set-membership / Quick_Check lookups without going through the full
 // pipeline).
@@ -871,6 +926,35 @@ test "normalization zalgo: every form is idempotent, self-normalized, and canoni
             }
         }
     }
+}
+
+test "normalizeBuffer / normalizedLen match batch normalize" {
+    const inputs = [_][]const CodePoint{
+        &.{ 'h', 'e', 'l', 'l', 'o' },
+        &.{0x00C0}, // À precomposed
+        &.{ 0x0041, 0x0300 }, // A + combining grave
+        &.{ 'a', 0x0301, 0x0316 }, // marks out of CCC order
+        &.{0xAC01}, // Hangul LVT
+    };
+
+    inline for (.{ NormalizationForm.nfd, .nfc, .nfkd, .nfkc }) |form| {
+        for (inputs) |input| {
+            const batch = try normalize(form, testing.allocator, input);
+            defer testing.allocator.free(batch);
+
+            try testing.expectEqual(batch.len, normalizedLen(form, input));
+
+            var buf: [32]CodePoint = undefined;
+            const n = try normalizeBuffer(form, input, &buf);
+            try testing.expectEqualSlices(CodePoint, batch, buf[0..n]);
+        }
+    }
+}
+
+test "normalizeBuffer: BufferTooSmall when destination is undersized" {
+    // À (U+00C0) → NFD is two codepoints; a 1-slot buffer cannot hold it.
+    var buf: [1]CodePoint = undefined;
+    try testing.expectError(error.BufferTooSmall, normalizeBuffer(.nfd, &.{0x00C0}, &buf));
 }
 
 test {

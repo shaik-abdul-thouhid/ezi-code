@@ -48,6 +48,27 @@ inputs; you only re-run `generate` when bumping the Unicode version.
 `types.zig` holds the enums shared across submodules
 (`CanonicalCombiningClass`, `QuickCheck`, the case-folding mode/locale enums, …).
 
+## String-level operations
+
+The property and mapping functions are per-codepoint. These submodules also offer
+whole-string helpers in the project's variant families (`…Buffer` into caller
+memory, `…Alloc` owned slice, `…Writer` to a `*std.Io.Writer`, `…Len` exact size):
+
+- **casing** — simple (1:1) mapping over a string: `upperSimpleBuffer/Alloc`,
+  `lowerSimpleBuffer/Alloc`, `foldSimpleBuffer/Alloc` over `[]const CodePoint`, and
+  `upperSimpleUtf8Alloc/Writer`, `lowerSimpleUtf8Alloc/Writer` over UTF-8 bytes.
+  Full case folding (honors expansions like ß → "ss") via `foldFullLen/Buffer/Alloc`
+  and `foldFullUtf8Alloc/Writer` — the primitive for caseless matching. Simple
+  variants are fast but not locale/context-aware; use the per-codepoint
+  `toUpperCaseFull` / `toLowerCaseFull` for conformant cased output.
+- **width** — `stringWidth` (validating UTF-8), `stringWidthLossy`, and
+  `stringWidthCodePoints` sum `terminalColumnWidth` across a string, allocation-free.
+- **normalization** — allocation-free `normalizeBuffer` and `normalizedLen` drive
+  the streaming `Normalizer` to normalize into caller memory (the buffer
+  counterparts of the allocating `normalize`/`nfc`/`nfd`/`nfkc`/`nfkd`). This layer
+  stays code-point-only by design; for UTF-8 output, compose `normalize` with the
+  `transcoding` helpers.
+
 ## bidi
 
 Beyond the property lookups, `bidi/algorithm.zig` implements the full UAX #9

@@ -541,6 +541,258 @@ pub fn equalFoldCodePoints(comptime mode: EqualFoldMode, s1: []const CodePoint, 
 }
 
 // ============================================================================
+// String-level case mapping
+//
+// The functions above map a single codepoint. The helpers below apply a mapping
+// across a whole string, in the project's variant families: `…Buffer` writes
+// into caller memory, `…Alloc` returns an owned slice, `…Writer` streams UTF-8
+// to a `*std.Io.Writer`, and `…Len` reports the exact output size.
+//
+// `…Simple` variants use the single-codepoint (1:1) mappings, so they never
+// expand and never apply locale/contextual special-casing — fast and
+// allocation-light, but not fully Unicode-conformant for cased text. `foldFull…`
+// honors expanding folds (e.g. ß -> "ss"), making it the right primitive for
+// caseless matching. For conformant cased output use the per-codepoint
+// `toUpperCaseFull` / `toLowerCaseFull` / `toTitleCaseFull` with the appropriate
+// locale and condition.
+// ============================================================================
+
+const SimpleMap = fn (CodePoint) CodePoint;
+
+fn simpleMapCodePointsBuffer(comptime map: SimpleMap, code_points: []const CodePoint, out: []CodePoint) error{BufferTooSmall}!usize {
+    if (out.len < code_points.len) return error.BufferTooSmall;
+    for (code_points, 0..) |cp, i| out[i] = map(cp);
+    return code_points.len;
+}
+
+fn simpleMapCodePointsAlloc(comptime map: SimpleMap, allocator: std.mem.Allocator, code_points: []const CodePoint) error{OutOfMemory}![]CodePoint {
+    const out = try allocator.alloc(CodePoint, code_points.len);
+    errdefer allocator.free(out);
+    for (code_points, 0..) |cp, i| out[i] = map(cp);
+    return out;
+}
+
+/// Writes the simple uppercase mapping of each codepoint in `code_points` into
+/// `out` (1:1, no expansion), returning the count written. Errors with
+/// `error.BufferTooSmall` when `out` is shorter than `code_points`. Uses simple
+/// mappings only — see `toUpperCaseFull` for conformant, expanding casing.
+///
+/// @stable-since: v0.2.0
+pub fn upperSimpleBuffer(code_points: []const CodePoint, out: []CodePoint) error{BufferTooSmall}!usize {
+    return simpleMapCodePointsBuffer(toUpperCase, code_points, out);
+}
+
+/// Allocates and returns the simple uppercase mapping of `code_points` (1:1).
+/// The caller owns and must free the result.
+///
+/// @stable-since: v0.2.0
+pub fn upperSimpleAlloc(allocator: std.mem.Allocator, code_points: []const CodePoint) error{OutOfMemory}![]CodePoint {
+    return simpleMapCodePointsAlloc(toUpperCase, allocator, code_points);
+}
+
+/// Writes the simple lowercase mapping of each codepoint in `code_points` into
+/// `out` (1:1, no expansion), returning the count written. Errors with
+/// `error.BufferTooSmall` when `out` is too short. Uses simple mappings only —
+/// see `toLowerCaseFull` for conformant, locale-aware casing.
+///
+/// @stable-since: v0.2.0
+pub fn lowerSimpleBuffer(code_points: []const CodePoint, out: []CodePoint) error{BufferTooSmall}!usize {
+    return simpleMapCodePointsBuffer(toLowerCase, code_points, out);
+}
+
+/// Allocates and returns the simple lowercase mapping of `code_points` (1:1).
+/// The caller owns and must free the result.
+///
+/// @stable-since: v0.2.0
+pub fn lowerSimpleAlloc(allocator: std.mem.Allocator, code_points: []const CodePoint) error{OutOfMemory}![]CodePoint {
+    return simpleMapCodePointsAlloc(toLowerCase, allocator, code_points);
+}
+
+/// Writes the simple (1:1) default case folding of each codepoint in
+/// `code_points` into `out`, returning the count written. Errors with
+/// `error.BufferTooSmall` when `out` is too short. Use `foldFullBuffer` when
+/// expanding folds (e.g. ß -> "ss") must be honored.
+///
+/// @stable-since: v0.2.0
+pub fn foldSimpleBuffer(code_points: []const CodePoint, out: []CodePoint) error{BufferTooSmall}!usize {
+    return simpleMapCodePointsBuffer(caseFoldSimple, code_points, out);
+}
+
+/// Allocates and returns the simple (1:1) default case folding of `code_points`.
+/// The caller owns and must free the result.
+///
+/// @stable-since: v0.2.0
+pub fn foldSimpleAlloc(allocator: std.mem.Allocator, code_points: []const CodePoint) error{OutOfMemory}![]CodePoint {
+    return simpleMapCodePointsAlloc(caseFoldSimple, allocator, code_points);
+}
+
+/// Returns the number of codepoints produced by full default case folding of
+/// `code_points`, accounting for expansions. Use it to size a `foldFullBuffer`
+/// destination.
+///
+/// @stable-since: v0.2.0
+pub fn foldFullLen(code_points: []const CodePoint) usize {
+    var n: usize = 0;
+    for (code_points) |cp| n += caseFoldFull(cp).len;
+    return n;
+}
+
+/// Writes the full default case folding of `code_points` into `out`, returning
+/// the count written. Expanding folds (e.g. ß -> "ss") are honored. Errors with
+/// `error.BufferTooSmall` when `out` cannot hold the result; size it with
+/// `foldFullLen`.
+///
+/// @stable-since: v0.2.0
+pub fn foldFullBuffer(code_points: []const CodePoint, out: []CodePoint) error{BufferTooSmall}!usize {
+    var o: usize = 0;
+    for (code_points) |cp| {
+        const folded = caseFoldFull(cp);
+        const sl = folded.slice();
+        if (o + sl.len > out.len) return error.BufferTooSmall;
+        for (sl) |c| {
+            out[o] = c;
+            o += 1;
+        }
+    }
+    return o;
+}
+
+/// Allocates and returns the full default case folding of `code_points`,
+/// honoring expansions. The caller owns and must free the result.
+///
+/// @stable-since: v0.2.0
+pub fn foldFullAlloc(allocator: std.mem.Allocator, code_points: []const CodePoint) error{OutOfMemory}![]CodePoint {
+    const out = try allocator.alloc(CodePoint, foldFullLen(code_points));
+    errdefer allocator.free(out);
+    _ = foldFullBuffer(code_points, out) catch unreachable;
+    return out;
+}
+
+const UTF8ValidationError = encoding.utf8.UTF8ValidationError;
+
+fn simpleMapUtf8Len(comptime map: SimpleMap, bytes: []const u8) UTF8ValidationError!usize {
+    var i: usize = 0;
+    var n: usize = 0;
+    while (i < bytes.len) {
+        const decoded = try encoding.utf8.validateAndDecodeCodePointBytes(bytes, i);
+        n += encoding.utf8.utf8EncodeLen(map(decoded.code_point));
+        i += decoded.len;
+    }
+    return n;
+}
+
+fn simpleMapUtf8Alloc(comptime map: SimpleMap, allocator: std.mem.Allocator, bytes: []const u8) (UTF8ValidationError || error{OutOfMemory})![]u8 {
+    const len = try simpleMapUtf8Len(map, bytes);
+    const out = try allocator.alloc(u8, len);
+    errdefer allocator.free(out);
+
+    var i: usize = 0;
+    var o: usize = 0;
+    while (i < bytes.len) {
+        const decoded = encoding.utf8.validateAndDecodeCodePointBytes(bytes, i) catch unreachable;
+        o += encoding.utf8.encodeCodePointUnchecked(map(decoded.code_point), out[o..]);
+        i += decoded.len;
+    }
+    return out;
+}
+
+fn simpleMapUtf8Writer(comptime map: SimpleMap, bytes: []const u8, writer: *std.Io.Writer) (UTF8ValidationError || std.Io.Writer.Error)!usize {
+    var i: usize = 0;
+    var o: usize = 0;
+    while (i < bytes.len) {
+        const decoded = try encoding.utf8.validateAndDecodeCodePointBytes(bytes, i);
+        o += try encoding.utf8.encodeCodePointWriter(map(decoded.code_point), writer);
+        i += decoded.len;
+    }
+    return o;
+}
+
+/// Allocates and returns the simple uppercase mapping of the UTF-8 `bytes` as a
+/// new UTF-8 string (1:1 codepoint mapping). Malformed input surfaces a
+/// `UTF8ValidationError`. The caller owns and must free the result.
+///
+/// @stable-since: v0.2.0
+pub fn upperSimpleUtf8Alloc(allocator: std.mem.Allocator, bytes: []const u8) (UTF8ValidationError || error{OutOfMemory})![]u8 {
+    return simpleMapUtf8Alloc(toUpperCase, allocator, bytes);
+}
+
+/// Allocates and returns the simple lowercase mapping of the UTF-8 `bytes` as a
+/// new UTF-8 string (1:1 codepoint mapping). Malformed input surfaces a
+/// `UTF8ValidationError`. The caller owns and must free the result.
+///
+/// @stable-since: v0.2.0
+pub fn lowerSimpleUtf8Alloc(allocator: std.mem.Allocator, bytes: []const u8) (UTF8ValidationError || error{OutOfMemory})![]u8 {
+    return simpleMapUtf8Alloc(toLowerCase, allocator, bytes);
+}
+
+/// Maps the UTF-8 `bytes` to simple uppercase and writes the result as UTF-8 to
+/// `writer`, returning the number of bytes written. Surfaces a
+/// `UTF8ValidationError` for malformed source or the writer's `error.WriteFailed`.
+///
+/// @stable-since: v0.2.0
+pub fn upperSimpleUtf8Writer(bytes: []const u8, writer: *std.Io.Writer) (UTF8ValidationError || std.Io.Writer.Error)!usize {
+    return simpleMapUtf8Writer(toUpperCase, bytes, writer);
+}
+
+/// Maps the UTF-8 `bytes` to simple lowercase and writes the result as UTF-8 to
+/// `writer`, returning the number of bytes written. Surfaces a
+/// `UTF8ValidationError` for malformed source or the writer's `error.WriteFailed`.
+///
+/// @stable-since: v0.2.0
+pub fn lowerSimpleUtf8Writer(bytes: []const u8, writer: *std.Io.Writer) (UTF8ValidationError || std.Io.Writer.Error)!usize {
+    return simpleMapUtf8Writer(toLowerCase, bytes, writer);
+}
+
+/// Allocates and returns the full default case folding of the UTF-8 `bytes` as a
+/// new UTF-8 string, honoring expanding folds (e.g. ß -> "ss"). This is the
+/// primitive for caseless matching of UTF-8 text. Malformed input surfaces a
+/// `UTF8ValidationError`. The caller owns and must free the result.
+///
+/// @stable-since: v0.2.0
+pub fn foldFullUtf8Alloc(allocator: std.mem.Allocator, bytes: []const u8) (UTF8ValidationError || error{OutOfMemory})![]u8 {
+    // Size pass: account for fold expansions and the encoded byte length.
+    var i: usize = 0;
+    var len: usize = 0;
+    while (i < bytes.len) {
+        const decoded = try encoding.utf8.validateAndDecodeCodePointBytes(bytes, i);
+        const folded = caseFoldFull(decoded.code_point);
+        for (folded.slice()) |c| len += encoding.utf8.utf8EncodeLen(c);
+        i += decoded.len;
+    }
+
+    const out = try allocator.alloc(u8, len);
+    errdefer allocator.free(out);
+
+    i = 0;
+    var o: usize = 0;
+    while (i < bytes.len) {
+        const decoded = encoding.utf8.validateAndDecodeCodePointBytes(bytes, i) catch unreachable;
+        const folded = caseFoldFull(decoded.code_point);
+        for (folded.slice()) |c| o += encoding.utf8.encodeCodePointUnchecked(c, out[o..]);
+        i += decoded.len;
+    }
+    return out;
+}
+
+/// Folds the UTF-8 `bytes` with full default case folding and writes the result
+/// as UTF-8 to `writer`, returning the number of bytes written. Expanding folds
+/// are honored. Surfaces a `UTF8ValidationError` for malformed source or the
+/// writer's `error.WriteFailed`.
+///
+/// @stable-since: v0.2.0
+pub fn foldFullUtf8Writer(bytes: []const u8, writer: *std.Io.Writer) (UTF8ValidationError || std.Io.Writer.Error)!usize {
+    var i: usize = 0;
+    var o: usize = 0;
+    while (i < bytes.len) {
+        const decoded = try encoding.utf8.validateAndDecodeCodePointBytes(bytes, i);
+        const folded = caseFoldFull(decoded.code_point);
+        for (folded.slice()) |c| o += try encoding.utf8.encodeCodePointWriter(c, writer);
+        i += decoded.len;
+    }
+    return o;
+}
+
+// ============================================================================
 // Tests (relocated from unicode/root.zig during the slim-facade refactor)
 // ============================================================================
 
@@ -1062,6 +1314,85 @@ test "equalFoldCodePoints full: multiple expansions" {
 test "equalFoldCodePoints full: high-plane identity" {
     try testing.expect(equalFoldCodePoints(.full, &.{0x1F600}, &.{0x1F600}));
     try testing.expect(!equalFoldCodePoints(.full, &.{0x1F600}, &.{0x1F601}));
+}
+
+// ============================================================================
+// String-level case mapping tests
+// ============================================================================
+
+test "upper/lower/foldSimple over codepoints: Buffer and Alloc" {
+    const mixed = [_]CodePoint{ 'H', 'e', 'L', 'l', 'O' };
+
+    var buf: [5]CodePoint = undefined;
+    try testing.expectEqual(@as(usize, 5), try upperSimpleBuffer(&mixed, &buf));
+    try testing.expectEqualSlices(CodePoint, &.{ 'H', 'E', 'L', 'L', 'O' }, buf[0..5]);
+    try testing.expectEqual(@as(usize, 5), try lowerSimpleBuffer(&mixed, &buf));
+    try testing.expectEqualSlices(CodePoint, &.{ 'h', 'e', 'l', 'l', 'o' }, buf[0..5]);
+    try testing.expectEqual(@as(usize, 5), try foldSimpleBuffer(&mixed, &buf));
+    try testing.expectEqualSlices(CodePoint, &.{ 'h', 'e', 'l', 'l', 'o' }, buf[0..5]);
+
+    var tiny: [1]CodePoint = undefined;
+    try testing.expectError(error.BufferTooSmall, upperSimpleBuffer(&mixed, &tiny));
+
+    const up = try upperSimpleAlloc(testing.allocator, &mixed);
+    defer testing.allocator.free(up);
+    try testing.expectEqualSlices(CodePoint, &.{ 'H', 'E', 'L', 'L', 'O' }, up);
+    const lo = try lowerSimpleAlloc(testing.allocator, &mixed);
+    defer testing.allocator.free(lo);
+    try testing.expectEqualSlices(CodePoint, &.{ 'h', 'e', 'l', 'l', 'o' }, lo);
+    const fs = try foldSimpleAlloc(testing.allocator, &mixed);
+    defer testing.allocator.free(fs);
+    try testing.expectEqualSlices(CodePoint, &.{ 'h', 'e', 'l', 'l', 'o' }, fs);
+}
+
+test "foldFull over codepoints: Len, Buffer, Alloc honor expansion" {
+    // 'ma' + ß + 'e' -> "masse" (ß expands to ss).
+    const input = [_]CodePoint{ 'm', 'a', 0x00DF, 'e' };
+    try testing.expectEqual(@as(usize, 5), foldFullLen(&input));
+
+    var buf: [5]CodePoint = undefined;
+    try testing.expectEqual(@as(usize, 5), try foldFullBuffer(&input, &buf));
+    try testing.expectEqualSlices(CodePoint, &.{ 'm', 'a', 's', 's', 'e' }, buf[0..5]);
+
+    var tiny: [4]CodePoint = undefined;
+    try testing.expectError(error.BufferTooSmall, foldFullBuffer(&input, &tiny));
+
+    const ff = try foldFullAlloc(testing.allocator, &input);
+    defer testing.allocator.free(ff);
+    try testing.expectEqualSlices(CodePoint, &.{ 'm', 'a', 's', 's', 'e' }, ff);
+}
+
+test "simple case mapping over UTF-8: Alloc and Writer" {
+    const up = try upperSimpleUtf8Alloc(testing.allocator, "café");
+    defer testing.allocator.free(up);
+    try testing.expectEqualStrings("CAFÉ", up);
+
+    const lo = try lowerSimpleUtf8Alloc(testing.allocator, "HÉLLO");
+    defer testing.allocator.free(lo);
+    try testing.expectEqualStrings("héllo", lo);
+
+    var backing: [16]u8 = undefined;
+    var w = std.Io.Writer.fixed(&backing);
+    const n = try upperSimpleUtf8Writer("café", &w);
+    try testing.expectEqualStrings("CAFÉ", w.buffered());
+    try testing.expectEqual(w.buffered().len, n);
+
+    try testing.expectError(error.InvalidByteSequence, upperSimpleUtf8Alloc(testing.allocator, "\xFF"));
+}
+
+test "full case folding over UTF-8: Alloc and Writer expand ß" {
+    const ff = try foldFullUtf8Alloc(testing.allocator, "Straße");
+    defer testing.allocator.free(ff);
+    try testing.expectEqualStrings("strasse", ff);
+
+    var backing: [32]u8 = undefined;
+    var w = std.Io.Writer.fixed(&backing);
+    const n = try foldFullUtf8Writer("Straße", &w);
+    try testing.expectEqualStrings("strasse", w.buffered());
+    try testing.expectEqual(w.buffered().len, n);
+
+    // Result is caseless-equal to the original per equalFoldBytes.
+    try testing.expect(try equalFoldBytes(.full, "Straße", ff));
 }
 
 test {
