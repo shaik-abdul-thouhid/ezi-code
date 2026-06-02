@@ -78,6 +78,7 @@ pub const NormalizationForm = enum {
     nfkc,
 
     /// Map this form to its matching Quick_Check property selector.
+    ///
     /// @stable-since: v0.1.0
     pub fn quickCheckForm(comptime self: NormalizationForm) QuickCheckForm {
         return switch (self) {
@@ -90,6 +91,7 @@ pub const NormalizationForm = enum {
 
     /// Underlying decomposition flavor — NFC/NFKC need it as their first
     /// pipeline stage; NFD/NFKD ARE that stage.
+    ///
     /// @stable-since: v0.1.0
     pub fn decompositionForm(comptime self: NormalizationForm) DecompositionForm {
         return switch (self) {
@@ -100,6 +102,7 @@ pub const NormalizationForm = enum {
 
     /// True for the composing forms (NFC/NFKC), false for the decomposing
     /// forms (NFD/NFKD).
+    ///
     /// @stable-since: v0.1.0
     pub fn isComposing(comptime self: NormalizationForm) bool {
         return self == .nfc or self == .nfkc;
@@ -112,6 +115,7 @@ pub const NormalizationForm = enum {
 
 /// CCC byte for `cp`. Returns 0 (Not_Reordered) for cp > 0x10FFFF — caller
 /// shouldn't be feeding us those, but the table guard makes this safe.
+///
 /// @stable-since: v0.1.0
 pub inline fn ccc(cp: CodePoint) u8 {
     return @intFromEnum(unicode_data.canonicalCombiningClass(cp));
@@ -119,6 +123,7 @@ pub inline fn ccc(cp: CodePoint) u8 {
 
 /// True iff `cp` is a starter (CCC 0), i.e. it does not reorder under
 /// canonical ordering and may absorb following combiners.
+///
 /// @stable-since: v0.1.0
 pub inline fn isStarter(cp: CodePoint) bool {
     return ccc(cp) == 0;
@@ -128,6 +133,7 @@ pub inline fn isStarter(cp: CodePoint) bool {
 /// `hangul_buf` is a scratch slot the lookup writes into when `cp` is a
 /// Hangul syllable; the returned slice references it in that case.
 /// Returns null when `cp` has no decomposition (caller should emit `cp` as-is).
+///
 /// @stable-since: v0.1.0
 pub inline fn decomposeOne(
     comptime form: DecompositionForm,
@@ -143,6 +149,7 @@ pub inline fn decomposeOne(
 /// Primary composite of `starter` + `combiner`, or null if the pair has no
 /// canonical composition (Full_Composition_Exclusions are already pruned from
 /// the generated map). Caller is responsible for D115 blocking checks.
+///
 /// @stable-since: v0.1.0
 pub inline fn canonicalCompose(starter: CodePoint, combiner: CodePoint) ?CodePoint {
     return decomposition.canonicalCompose(starter, combiner);
@@ -157,6 +164,7 @@ pub inline fn canonicalCompose(starter: CodePoint, combiner: CodePoint) ?CodePoi
 /// definitively normalized; `.no` means definitively not; `.maybe` means a
 /// codepoint with a context-sensitive QC value is present and a full
 /// normalize + compare is required for a strict answer.
+///
 /// @stable-since: v0.1.0
 pub fn quickCheckString(comptime form: NormalizationForm, input: []const CodePoint) QuickCheck {
     const qcf = comptime form.quickCheckForm();
@@ -183,6 +191,7 @@ pub fn quickCheckString(comptime form: NormalizationForm, input: []const CodePoi
 /// allocation-free using the streaming Normalizer, comparing emitted
 /// codepoints to `input` position-by-position and bailing on the first
 /// mismatch.
+///
 /// @stable-since: v0.1.0
 pub fn isNormalized(comptime form: NormalizationForm, input: []const CodePoint) bool {
     switch (quickCheckString(form, input)) {
@@ -245,6 +254,7 @@ fn canonicalReorder(seq: []CodePoint) void {
 /// Decompose `input` to its NFD or NFKD form. The result is allocated; caller
 /// frees with `allocator.free`. Comptime-specialized on `form` — the
 /// canonical vs compatibility selector becomes a direct call.
+///
 /// @stable-since: v0.1.0
 pub fn decompose(
     comptime form: DecompositionForm,
@@ -277,6 +287,7 @@ pub fn decompose(
 ///
 /// Comptime-specialized on `form`. The inner decomposition stage uses the
 /// matched canonical/compat selector.
+///
 /// @stable-since: v0.1.0
 pub fn compose(
     comptime form: CompositionForm,
@@ -351,6 +362,7 @@ fn composeInPlace(buf: []CodePoint) usize {
 /// or `compose` for NFC/NFKC. The result is allocated; caller frees with
 /// `allocator.free`. Already-normalized input is returned as a fresh dupe via
 /// the QC fast path.
+///
 /// @stable-since: v0.1.0
 pub fn normalize(
     comptime form: NormalizationForm,
@@ -373,21 +385,25 @@ pub fn normalize(
 }
 
 /// NFD (canonical decomposition) of `input`. Result is allocated; caller frees.
+///
 /// @stable-since: v0.1.0
 pub inline fn nfd(allocator: Allocator, input: []const CodePoint) Allocator.Error![]CodePoint {
     return normalize(.nfd, allocator, input);
 }
 /// NFKD (compatibility decomposition) of `input`. Result is allocated; caller frees.
+///
 /// @stable-since: v0.1.0
 pub inline fn nfkd(allocator: Allocator, input: []const CodePoint) Allocator.Error![]CodePoint {
     return normalize(.nfkd, allocator, input);
 }
 /// NFC (canonical composition) of `input`. Result is allocated; caller frees.
+///
 /// @stable-since: v0.1.0
 pub inline fn nfc(allocator: Allocator, input: []const CodePoint) Allocator.Error![]CodePoint {
     return normalize(.nfc, allocator, input);
 }
 /// NFKC (compatibility composition) of `input`. Result is allocated; caller frees.
+///
 /// @stable-since: v0.1.0
 pub inline fn nfkc(allocator: Allocator, input: []const CodePoint) Allocator.Error![]CodePoint {
     return normalize(.nfkc, allocator, input);
@@ -444,6 +460,7 @@ pub const MAX_DECOMP_LEN: usize = MAX_FEED_OUTPUT;
 /// For starter+starter composition (e.g. Bengali U+09C7 + U+09BE → U+09CB),
 /// the composition is attempted only when no marks intervene — D115 blocks
 /// would catch the case anyway because any intervening mark has CCC >= 0.
+///
 /// @stable-since: v0.1.0
 pub fn Normalizer(comptime form: NormalizationForm) type {
     return struct {
@@ -455,6 +472,7 @@ pub fn Normalizer(comptime form: NormalizationForm) type {
         len: usize = 0,
 
         /// Construct an empty normalizer with no pending region.
+        ///
         /// @stable-since: v0.1.0
         pub fn init() Self {
             return .{};
@@ -464,6 +482,7 @@ pub fn Normalizer(comptime form: NormalizationForm) type {
         /// The returned slice points into `out` and is valid only until the
         /// next `feed`/`flush`. `out` MUST be a `*[MAX_FEED_OUTPUT]CodePoint`.
         /// Call `flush` after the last codepoint to drain the trailing region.
+        ///
         /// @stable-since: v0.1.0
         pub fn feed(self: *Self, cp: CodePoint, out: *[MAX_FEED_OUTPUT]CodePoint) []const CodePoint {
             var hangul_buf: [3]CodePoint = undefined;
@@ -511,6 +530,7 @@ pub fn Normalizer(comptime form: NormalizationForm) type {
         /// Drain the final pending region at end-of-input, emitting it into
         /// `out` and resetting the normalizer. Returns a slice into `out`,
         /// valid until the next call. `out` MUST be a `*[MAX_FEED_OUTPUT]CodePoint`.
+        ///
         /// @stable-since: v0.1.0
         pub fn flush(self: *Self, out: *[MAX_FEED_OUTPUT]CodePoint) []const CodePoint {
             self.finalize();

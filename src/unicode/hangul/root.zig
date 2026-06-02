@@ -27,10 +27,12 @@ pub const HangulSyllableType = generated.HangulSyllableType;
 ///
 /// Total over all `u21` inputs; out-of-range and non-Hangul codepoints map to
 /// `.not_applicable`, so no validation of `cp` is required.
+///
 /// @stable-since: v0.1.0
 pub const hangulSyllableType = generated.hangulSyllableType;
 
 /// True when `cp` is a conjoining jamo (Leading, Vowel, or Trailing).
+///
 /// @stable-since: v0.1.0
 pub inline fn isConjoiningJamo(cp: CodePoint) bool {
     return switch (hangulSyllableType(cp)) {
@@ -40,6 +42,7 @@ pub inline fn isConjoiningJamo(cp: CodePoint) bool {
 }
 
 /// True when `cp` is a precomposed Hangul syllable (LV or LVT).
+///
 /// @stable-since: v0.1.0
 pub inline fn isSyllable(cp: CodePoint) bool {
     return switch (hangulSyllableType(cp)) {

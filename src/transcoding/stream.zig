@@ -17,15 +17,6 @@ const std = @import("std");
 const encoding = @import("encoding");
 const utf8 = encoding.utf8;
 
-// nextCodePointLossy()
-// nextScalar()
-// nextScalarLossy()
-// peekCodePoint()
-// skipCodePoint()
-// finish()
-// reset()
-// discardConsumed()
-
 const UTF8Stream = struct {
     /// Buffer for storing the slice reference.
     /// The underlying slices are not owned by the stream
@@ -46,6 +37,7 @@ const UTF8Stream = struct {
     /// Free the stream's internal buffer-reference array and destroy the
     /// stream itself. The pushed slices are not owned and are left untouched;
     /// `allocator` must be the same one passed to `initUTF8Stream`.
+    ///
     /// @stable-since: v0.1.0
     pub fn deinit(self: *UTF8Stream, allocator: std.mem.Allocator) void {
         if (self.buffers) |buffers| allocator.free(buffers);
@@ -57,6 +49,7 @@ const UTF8Stream = struct {
     /// return `error.NeedMoreBytes`; a trailing partial sequence is instead
     /// reported as `error.EOFReached` (strict) or as a replacement code point
     /// (lossy). Call once when no more chunks will be pushed.
+    ///
     /// @stable-since: v0.1.0
     pub fn finish(self: *UTF8Stream) void {
         self.eof = true;
@@ -65,6 +58,7 @@ const UTF8Stream = struct {
     /// Clear all read progress and pending partial-sequence state, returning
     /// the stream to its initial empty condition for reuse. The backing
     /// buffer-reference array is retained for subsequent pushes.
+    ///
     /// @stable-since: v0.1.0
     pub fn reset(self: *UTF8Stream) void {
         self.buffers_filled = 0;
@@ -79,6 +73,7 @@ const UTF8Stream = struct {
     /// copied, so it must stay valid until it has been fully consumed by the
     /// decoders. Grows the internal reference array as needed and may therefore
     /// return an allocator error. Empty slices are accepted and skipped on read.
+    ///
     /// @stable-since: v0.1.0
     pub fn push(self: *UTF8Stream, allocator: std.mem.Allocator, slice: []const u8) !void {
         if (self.buffers) |buffers| {
@@ -126,6 +121,7 @@ const UTF8Stream = struct {
     /// the `UTF8ValidationError` set for malformed input. On any error the
     /// stream position is rolled back so the call can be retried. Prefer
     /// `nextCodePointLossy` when invalid bytes should be tolerated.
+    ///
     /// @stable-since: v0.1.0
     pub fn nextCodePoint(self: *UTF8Stream, out_buf: ?[]u8) (error{ BufferIsEmpty, OutputBufferTooSmall, NeedMoreBytes, EOFReached } || utf8.UTF8ValidationError)!?encoding.utf8.DecodedCodePoint {
         if (self.buffers == null or self.buffers_filled == 0) return null;
@@ -326,6 +322,7 @@ const UTF8Stream = struct {
     /// After `finish`, a trailing partial sequence is emitted as a single
     /// replacement code point instead. Prefer the strict `nextCodePoint` when
     /// invalid input should surface as an error.
+    ///
     /// @stable-since: v0.1.0
     pub fn nextCodePointLossy(self: *UTF8Stream, out_buf: ?[]u8) (error{ BufferIsEmpty, OutputBufferTooSmall, NeedMoreBytes, EOFReached } || utf8.UTF8ValidationLossyError)!?encoding.utf8.DecodedCodePointLossy {
         if (self.buffers == null or self.buffers_filled == 0) return null;
@@ -613,6 +610,7 @@ pub const UTF8StreamOptions = struct {};
 /// feed it chunks with `push` and consume code points with `nextCodePoint` /
 /// `nextCodePointLossy`. Caller owns the result and must release it with
 /// `deinit` using the same `allocator`.
+///
 /// @stable-since: v0.1.0
 pub fn initUTF8Stream(allocator: std.mem.Allocator, options: UTF8StreamOptions) !*UTF8Stream {
     _ = options;

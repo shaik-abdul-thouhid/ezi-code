@@ -27,20 +27,24 @@ pub const Version = generated.Version;
 
 /// The Age of `cp`: the Unicode version it was first assigned in, or
 /// `.unassigned` if it is not yet assigned (or above U+10FFFF).
+///
 /// @stable-since: v0.1.0
 pub const age = generated.age;
 
 /// The `{ major, minor }` version a non-`unassigned` `Age` denotes, else null.
+///
 /// @stable-since: v0.1.0
 pub const version = generated.version;
 
 /// The Unicode version `cp` was first assigned in, or null when unassigned.
+///
 /// @stable-since: v0.1.0
 pub inline fn assignedIn(cp: CodePoint) ?Version {
     return version(age(cp));
 }
 
 /// True when `cp` is assigned in the current Unicode version.
+///
 /// @stable-since: v0.1.0
 pub inline fn isAssigned(cp: CodePoint) bool {
     return age(cp) != .unassigned;

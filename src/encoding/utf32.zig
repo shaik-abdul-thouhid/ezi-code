@@ -108,6 +108,7 @@ fn validateStoredUnit(unit: u32) UTF32ValidationError!CodePoint {
 
 /// Validate `c32` as a stored UTF-32 unit and return its sequence length
 /// (always 1). Errors on surrogate or out-of-range units.
+///
 /// @stable-since: v0.1.0
 pub fn utf32SequenceLen(c32: u32) UTF32ValidationError!u1 {
     _ = try validateStoredUnit(c32);
@@ -116,6 +117,7 @@ pub fn utf32SequenceLen(c32: u32) UTF32ValidationError!u1 {
 
 /// Buffer must end at the last code unit of the scalar (`buf.len - 1`).
 /// Validates that trailing unit and returns its sequence length (always 1).
+///
 /// @stable-since: v0.1.0
 pub fn utf32SequenceLenReverse(buf: []const u32) UTF32ValidationError!u1 {
     if (buf.len == 0) {
@@ -127,6 +129,7 @@ pub fn utf32SequenceLenReverse(buf: []const u32) UTF32ValidationError!u1 {
 
 /// Return the number of code units `code_point` would occupy when encoded
 /// (always 1). Errors on surrogate or out-of-range scalars.
+///
 /// @stable-since: v0.1.0
 pub fn utf32EncodeLen(code_point: CodePoint) UTF32EncodeError!u1 {
     if (code_point > encoding_range_end) {
@@ -142,6 +145,7 @@ pub fn utf32EncodeLen(code_point: CodePoint) UTF32EncodeError!u1 {
 
 /// Encode `code_point` into `buf` and return the units written (always 1).
 /// Errors on surrogate or out-of-range scalars, or if `buf` is too small.
+///
 /// @stable-since: v0.1.0
 pub fn encodeCodePoint(code_point: CodePoint, buf: []u32) UTF32EncodeError!u1 {
     const len = try utf32EncodeLen(code_point);
@@ -187,6 +191,7 @@ pub fn encodeCodePointWriter(code_point: CodePoint, endian: Endian, writer: *std
 /// Validate the unit at `buf[offset]` and return its sequence length
 /// (always 1). Errors on empty input, out-of-bounds offset, or an
 /// illegal unit.
+///
 /// @stable-since: v0.1.0
 pub fn validateU32CodePoint(buf: []const u32, offset: usize) UTF32ValidationError!u1 {
     if (buf.len == 0) {
@@ -201,6 +206,7 @@ pub fn validateU32CodePoint(buf: []const u32, offset: usize) UTF32ValidationErro
 
 /// Validate the trailing unit of `buf` and return its sequence length
 /// (always 1). Reverse counterpart of `validateU32CodePoint`.
+///
 /// @stable-since: v0.1.0
 pub fn validateU32CodePointReverse(buf: []const u32) UTF32ValidationError!u1 {
     return try utf32SequenceLenReverse(buf);
@@ -229,6 +235,7 @@ fn validateAndDecodeU32CodePointWithLen(buf: []const u32, offset: usize, len: u1
 /// Validate and decode the scalar at `buf[offset]`. Prefer this checked
 /// entry point for untrusted input; it rejects surrogate and out-of-range
 /// units rather than producing them.
+///
 /// @stable-since: v0.1.0
 pub fn validateAndDecodeU32CodePoint(buf: []const u32, offset: usize) UTF32ValidationError!DecodedCodePoint {
     const len = try validateU32CodePoint(buf, offset);
@@ -238,6 +245,7 @@ pub fn validateAndDecodeU32CodePoint(buf: []const u32, offset: usize) UTF32Valid
 /// Decode the scalar at `buf[offset]`, substituting the replacement scalar
 /// for any surrogate or out-of-range unit. Only structural errors (empty
 /// input, out-of-bounds offset) are raised.
+///
 /// @stable-since: v0.1.0
 pub fn validateAndDecodeU32CodePointLossy(buf: []const u32, offset: usize) UTF32ValidationLossyError!DecodedCodePointLossy {
     if (buf.len == 0) {
@@ -253,6 +261,7 @@ pub fn validateAndDecodeU32CodePointLossy(buf: []const u32, offset: usize) UTF32
 /// Validate and decode the scalar ending at the last unit of `buf`.
 /// Reverse counterpart of `validateAndDecodeU32CodePoint`, for backward
 /// traversal.
+///
 /// @stable-since: v0.1.0
 pub fn validateAndDecodeU32CodePointReverse(buf: []const u32) UTF32ValidationError!DecodedCodePoint {
     const len = try utf32SequenceLenReverse(buf);
@@ -347,6 +356,7 @@ pub const UTF32View = struct {
     endian: Endian,
 
     /// Return the number of scalars in the view (equal to the unit count).
+    ///
     /// @stable-since: v0.1.0
     pub fn countScalar(self: *const UTF32View) usize {
         return self.data.len;
@@ -354,6 +364,7 @@ pub const UTF32View = struct {
 
     /// Report whether `index` is a valid scalar boundary, i.e. any offset
     /// from 0 through the unit count inclusive.
+    ///
     /// @stable-since: v0.1.0
     pub fn isBoundary(self: *const UTF32View, index: usize) bool {
         return index <= self.data.len;
@@ -361,6 +372,7 @@ pub const UTF32View = struct {
 
     /// Return a sub-view spanning scalars `[start_scalar, end_scalar)`.
     /// Errors if the range is inverted or runs past the end.
+    ///
     /// @stable-since: v0.1.0
     pub fn sliceScalars(self: *const UTF32View, start_scalar: usize, end_scalar: usize) UTF32SliceError!UTF32View {
         if (start_scalar > end_scalar or end_scalar > self.data.len) {
@@ -374,6 +386,7 @@ pub const UTF32View = struct {
     }
 
     /// Return a bidirectional iterator positioned at the start of the view.
+    ///
     /// @stable-since: v0.1.0
     pub fn iter(self: *const UTF32View) UTF32ViewIterator {
         return .{ .view = self };
@@ -389,6 +402,7 @@ pub const UTF32LossyIterator = struct {
 
     /// Advance to and return the next scalar (replacement on invalid
     /// units), or `null` at the end.
+    ///
     /// @stable-since: v0.1.0
     pub fn next(self: *UTF32LossyIterator) ?CodePoint {
         if (self.index >= self.data.len) {
@@ -404,6 +418,7 @@ pub const UTF32LossyIterator = struct {
 
     /// Return the next scalar without advancing (replacement on invalid
     /// units), or `null` at the end.
+    ///
     /// @stable-since: v0.1.0
     pub fn peek(self: *const UTF32LossyIterator) ?CodePoint {
         if (self.index >= self.data.len) {
@@ -415,6 +430,7 @@ pub const UTF32LossyIterator = struct {
 };
 
 /// Create a lossy forward iterator over `units` (see `UTF32LossyIterator`).
+///
 /// @stable-since: v0.1.0
 pub fn lossyIterator(units: []const u32) UTF32LossyIterator {
     return .{ .data = units };
@@ -422,6 +438,7 @@ pub fn lossyIterator(units: []const u32) UTF32LossyIterator {
 
 /// Count the scalars produced by lossy decoding `units`, including
 /// replacement scalars for invalid units.
+///
 /// @stable-since: v0.1.0
 pub fn countScalarsLossy(units: []const u32) usize {
     var count: usize = 0;
@@ -484,6 +501,7 @@ pub fn bufToCodePointsBuffer(units: []const u32, buf: []CodePoint) (UTF32Validat
 
 /// Lossily decode `units` into the caller-supplied `buf`, returning the
 /// number of scalars written. Errors if `buf` cannot hold them all.
+///
 /// @stable-since: v0.1.0
 pub fn bufToCodePointsLossyBuffer(units: []const u32, buf: []CodePoint) error{BufferTooSmall}!usize {
     var i: usize = 0;
@@ -502,6 +520,7 @@ pub fn bufToCodePointsLossyBuffer(units: []const u32, buf: []CodePoint) error{Bu
 
 /// Lossily decode `units` into a freshly allocated `[]CodePoint`. The
 /// caller owns and must free the result.
+///
 /// @stable-since: v0.1.0
 pub fn bufToCodePointsLossy(allocator: std.mem.Allocator, units: []const u32) error{ OutOfMemory, BufferTooSmall }![]CodePoint {
     const len = countScalarsLossy(units);
@@ -516,6 +535,7 @@ pub fn bufToCodePointsLossy(allocator: std.mem.Allocator, units: []const u32) er
 /// decoded scalar count to `resultant_unicode_str_len`. Errors on the first
 /// surrogate or out-of-range unit. Prefer this over the unchecked variant
 /// for untrusted input.
+///
 /// @stable-since: v0.1.0
 pub fn initUTF32View(data: []const u32, endian: Endian, resultant_unicode_str_len: *usize) UTF32ValidationError!UTF32View {
     var i: usize = 0;
@@ -534,6 +554,7 @@ pub fn initUTF32View(data: []const u32, endian: Endian, resultant_unicode_str_le
 
 /// Wrap `data` in a view without validating its units. The caller must
 /// guarantee every unit is a valid UTF-32 scalar.
+///
 /// @stable-since: v0.1.0
 pub fn initUTF32ViewUnchecked(data: []const u32, endian: Endian) UTF32View {
     return .{ .data = data, .endian = endian };
@@ -541,6 +562,7 @@ pub fn initUTF32ViewUnchecked(data: []const u32, endian: Endian) UTF32View {
 
 /// Copy the scalars of `view` into `buf`, returning the count written.
 /// Errors if `buf` is too small to hold every scalar.
+///
 /// @stable-since: v0.1.0
 pub fn utf32ViewToUTF32String(view: *const UTF32View, buf: []CodePoint) (UTF32ValidationError || error{BufferTooSmall})!usize {
     var i: usize = 0;
@@ -561,6 +583,7 @@ pub fn utf32ViewToUTF32String(view: *const UTF32View, buf: []CodePoint) (UTF32Va
 /// Validate and decode comptime-known `units` into a fixed-size
 /// `[N]CodePoint` array sized to the scalar count. Compile error on any
 /// invalid unit.
+///
 /// @stable-since: v0.1.0
 pub fn bufToUTF32StringComptime(comptime units: []const u32) (UTF32ValidationError || error{BufferTooSmall})![initUTF32ViewUnchecked(units, .little).countScalar()]CodePoint {
     comptime {
@@ -574,6 +597,7 @@ pub fn bufToUTF32StringComptime(comptime units: []const u32) (UTF32ValidationErr
 
 /// Validate and decode `buf` into a freshly allocated `[]CodePoint`. Errors
 /// on the first invalid unit. The caller owns and must free the result.
+///
 /// @stable-since: v0.1.0
 pub fn bufToUTF32String(allocator: std.mem.Allocator, buf: []const u32, endian: Endian) (UTF32ValidationError || error{ BufferTooSmall, OutOfMemory })![]CodePoint {
     var unicode_str_len: usize = 0;

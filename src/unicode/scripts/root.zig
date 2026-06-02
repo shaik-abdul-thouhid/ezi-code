@@ -49,6 +49,7 @@ const singleton_sets = blk: {
 
 /// True if `cp` carries an explicit Script_Extensions value in the UCD (i.e.
 /// `scriptExtensions` returns the stored set rather than the Script fallback).
+///
 /// @stable-since: v0.1.0
 pub inline fn hasExplicitScriptExtensions(cp: CodePoint) bool {
     return generated_extensions.scriptExtensionIndex(cp) != 0;
@@ -58,6 +59,7 @@ pub inline fn hasExplicitScriptExtensions(cp: CodePoint) bool {
 /// with. Codepoints without an explicit value resolve to a one-element slice
 /// holding their Script property. The returned slice is always non-empty and
 /// has static lifetime; never mutate it.
+///
 /// @stable-since: v0.1.0
 pub fn scriptExtensions(cp: CodePoint) []const ScriptType {
     const idx = generated_extensions.scriptExtensionIndex(cp);
@@ -70,6 +72,7 @@ pub fn scriptExtensions(cp: CodePoint) []const ScriptType {
 
 /// True if `script` is one of `cp`'s Script_Extensions. Handles both the
 /// explicit-set and Script-fallback cases via `scriptExtensions`.
+///
 /// @stable-since: v0.1.0
 pub inline fn hasScriptExtension(cp: CodePoint, script: ScriptType) bool {
     for (scriptExtensions(cp)) |s| {
