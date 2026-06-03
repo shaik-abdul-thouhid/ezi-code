@@ -96,7 +96,7 @@ test "version: round-trips and unassigned maps to null" {
 }
 
 test "age: every codepoint maps to a valid enum variant, never traps" {
-    const field_count = @typeInfo(Age).@"enum".fields.len;
+    const field_count = @typeInfo(Age).@"enum".field_values.len;
     var cp: CodePoint = 0;
     while (cp <= 0x10FFFF) : (cp += 1) {
         const a = age(cp);
@@ -109,10 +109,10 @@ test "age: every codepoint maps to a valid enum variant, never traps" {
 test "age: enum variants are ordered by ascending version" {
     // The generator emits versions in release order; confirm the parallel
     // version table is monotonically non-decreasing.
-    const fields = @typeInfo(Age).@"enum".fields;
+    const fields = @typeInfo(Age).@"enum".field_values;
     var prev: Version = .{ .major = 0, .minor = 0 };
     inline for (fields) |f| {
-        const a: Age = @enumFromInt(f.value);
+        const a: Age = @enumFromInt(f);
         if (version(a)) |v| {
             const ge = v.major > prev.major or (v.major == prev.major and v.minor >= prev.minor);
             try testing.expect(ge);

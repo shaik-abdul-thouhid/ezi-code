@@ -2,7 +2,7 @@
     .name = .ezi_code,
     .version = "0.2.0",
     .fingerprint = 0x76d817df8f6394d3,
-    .minimum_zig_version = "0.17.0-dev.607+456b2ec07",
+    .minimum_zig_version = "0.17.0-dev.657+2faf8debf",
     .dependencies = .{},
     .paths = .{
         "build.zig",

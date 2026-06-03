@@ -41,7 +41,7 @@ pub const script_extension_sets = generated_extensions.script_extension_sets;
 /// `&singleton_sets[@intFromEnum(s)]` gives a stable `[]const ScriptType` for
 /// the `@missing` fallback without allocating or pointing at a temporary.
 const singleton_sets = blk: {
-    const fields = @typeInfo(ScriptType).@"enum".fields;
+    const fields = @typeInfo(ScriptType).@"enum".field_values;
     var arr: [fields.len][1]ScriptType = undefined;
     for (&arr, 0..) |*slot, i| slot.* = .{@as(ScriptType, @enumFromInt(i))};
     break :blk arr;
@@ -113,7 +113,7 @@ test "scriptType: every codepoint resolves to a defined enum variant" {
         // Round-trips through the integer tag: traps if a page slot held an
         // out-of-bounds index.
         const s = scriptType(cp);
-        try testing.expect(@intFromEnum(s) < @typeInfo(ScriptType).@"enum".fields.len);
+        try testing.expect(@intFromEnum(s) < @typeInfo(ScriptType).@"enum".field_values.len);
     }
 }
 
@@ -201,7 +201,7 @@ test "scriptExtensions: membership is consistent with the returned slice" {
     for (samples) |cp| {
         const set = scriptExtensions(cp);
         var s: u16 = 0;
-        while (s < @typeInfo(ScriptType).@"enum".fields.len) : (s += 1) {
+        while (s < @typeInfo(ScriptType).@"enum".field_values.len) : (s += 1) {
             const script: ScriptType = @enumFromInt(s);
             var in_set = false;
             for (set) |member| {

@@ -502,20 +502,34 @@ fn buildIndexPageTable(arena: std.mem.Allocator, froms: []const u21) !PageTable(
 // Map the long names used in @missing comment lines to the u8 index in
 // bidi_class_table (same index used in the generated page table).
 fn bidiClassIndexFromLongName(name: []const u8) ?u8 {
-    const short: []const u8 = if (std.mem.eql(u8, name, "Left_To_Right")) "L"
-    else if (std.mem.eql(u8, name, "Right_To_Left")) "R"
-    else if (std.mem.eql(u8, name, "Arabic_Letter")) "AL"
-    else if (std.mem.eql(u8, name, "European_Terminator")) "ET"
-    else if (std.mem.eql(u8, name, "Arabic_Number")) "AN"
-    else if (std.mem.eql(u8, name, "European_Number")) "EN"
-    else if (std.mem.eql(u8, name, "Boundary_Neutral")) "BN"
-    else if (std.mem.eql(u8, name, "Other_Neutral")) "ON"
-    else if (std.mem.eql(u8, name, "Non_Spacing_Mark")) "NSM"
-    else if (std.mem.eql(u8, name, "Common_Separator")) "CS"
-    else if (std.mem.eql(u8, name, "Paragraph_Separator")) "B"
-    else if (std.mem.eql(u8, name, "Segment_Separator")) "S"
-    else if (std.mem.eql(u8, name, "White_Space")) "WS"
-    else return null;
+    const short: []const u8 = if (std.mem.eql(u8, name, "Left_To_Right"))
+        "L"
+    else if (std.mem.eql(u8, name, "Right_To_Left"))
+        "R"
+    else if (std.mem.eql(u8, name, "Arabic_Letter"))
+        "AL"
+    else if (std.mem.eql(u8, name, "European_Terminator"))
+        "ET"
+    else if (std.mem.eql(u8, name, "Arabic_Number"))
+        "AN"
+    else if (std.mem.eql(u8, name, "European_Number"))
+        "EN"
+    else if (std.mem.eql(u8, name, "Boundary_Neutral"))
+        "BN"
+    else if (std.mem.eql(u8, name, "Other_Neutral"))
+        "ON"
+    else if (std.mem.eql(u8, name, "Non_Spacing_Mark"))
+        "NSM"
+    else if (std.mem.eql(u8, name, "Common_Separator"))
+        "CS"
+    else if (std.mem.eql(u8, name, "Paragraph_Separator"))
+        "B"
+    else if (std.mem.eql(u8, name, "Segment_Separator"))
+        "S"
+    else if (std.mem.eql(u8, name, "White_Space"))
+        "WS"
+    else
+        return null;
     const idx = lookupCategory(&bidi_class_table, bidi_class_unknown, short);
     return if (idx == bidi_class_unknown) null else idx;
 }

@@ -68,7 +68,7 @@ test "block: out-of-range never traps and is no_block" {
 }
 
 test "block: every codepoint maps to a valid enum variant, never traps" {
-    const field_count = @typeInfo(Block).@"enum".fields.len;
+    const field_count = @typeInfo(Block).@"enum".field_values.len;
     var cp: CodePoint = 0;
     while (cp <= 0x10FFFF) : (cp += 1) {
         const b = block(cp);
@@ -77,8 +77,8 @@ test "block: every codepoint maps to a valid enum variant, never traps" {
 }
 
 test "blockName: round-trips through every enum variant and is non-empty" {
-    inline for (@typeInfo(Block).@"enum".fields) |f| {
-        const b: Block = @enumFromInt(f.value);
+    inline for (@typeInfo(Block).@"enum".field_values) |f| {
+        const b: Block = @enumFromInt(f);
         try testing.expect(blockName(b).len > 0);
     }
     try testing.expectEqualStrings("No_Block", blockName(.no_block));
