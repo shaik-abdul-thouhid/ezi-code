@@ -107,6 +107,17 @@ fn caseSentenceIterator(ctx: *Context) !RunResult {
     return .{ .bytes_processed = @as(u64, corpus.len) * inner, .ops = sentences };
 }
 
+fn caseCodePointSentenceIterator(ctx: *Context) !RunResult {
+    const cps = state(ctx).code_points;
+    var sentences: u64 = 0;
+    var n: u32 = 0;
+    while (n < inner) : (n += 1) {
+        var it = seg.codePointSentenceIterator(cps);
+        while (it.next() != null) sentences += 1;
+    }
+    return .{ .bytes_processed = @as(u64, cps.len) * @sizeOf(CodePoint) * inner, .ops = sentences };
+}
+
 fn caseLineBreakIterator(ctx: *Context) !RunResult {
     const corpus = ctx.corpus.bytes;
     var lines: u64 = 0;
@@ -116,6 +127,17 @@ fn caseLineBreakIterator(ctx: *Context) !RunResult {
         while (it.next() != null) lines += 1;
     }
     return .{ .bytes_processed = @as(u64, corpus.len) * inner, .ops = lines };
+}
+
+fn caseCodePointLineBoundaryIterator(ctx: *Context) !RunResult {
+    const cps = state(ctx).code_points;
+    var lines: u64 = 0;
+    var n: u32 = 0;
+    while (n < inner) : (n += 1) {
+        var it = seg.codePointLineBoundaryIterator(cps);
+        while (it.next() != null) lines += 1;
+    }
+    return .{ .bytes_processed = @as(u64, cps.len) * @sizeOf(CodePoint) * inner, .ops = lines };
 }
 
 fn caseGraphemeBreakProperty(ctx: *Context) !RunResult {
@@ -176,6 +198,8 @@ pub const suite: framework.Suite = .{
         .{ .name = "WordIterator (bytes)", .run = caseWordIterator },
         .{ .name = "CodePointWordIterator", .run = caseCodePointWordIterator, .setup = setup, .teardown = teardown },
         .{ .name = "SentenceIterator (bytes)", .run = caseSentenceIterator },
+        .{ .name = "CodePointSentenceIterator", .run = caseCodePointSentenceIterator, .setup = setup, .teardown = teardown },
         .{ .name = "LineBreakIterator (bytes)", .run = caseLineBreakIterator, .notes = "Allocation-free streaming UAX #14." },
+        .{ .name = "CodePointLineBoundaryIterator", .run = caseCodePointLineBoundaryIterator, .setup = setup, .teardown = teardown },
     },
 };

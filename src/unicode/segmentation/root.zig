@@ -291,7 +291,9 @@ pub const CodePointGraphemeIterator = struct {
     }
 };
 
-/// Creates a `CodePointGraphemeIterator` over `code_points`.
+/// Creates a `CodePointGraphemeIterator` over `code_points`. Each element must
+/// be a valid Unicode scalar value (e.g. as produced by the `encoding`
+/// decoders); the algorithm does not validate its input.
 ///
 /// @stable-since: v0.1.0
 pub fn codePointIterator(code_points: []const CodePoint) CodePointGraphemeIterator {
@@ -308,7 +310,8 @@ pub fn countGraphemes(bytes: []const u8) usize {
     return count;
 }
 
-/// Counts the grapheme clusters in the code point slice `code_points`.
+/// Counts the grapheme clusters in the code point slice `code_points`. Each
+/// element must be a valid Unicode scalar value.
 ///
 /// @stable-since: v0.1.0
 pub fn countGraphemesFromCodePoints(code_points: []const CodePoint) usize {
@@ -622,7 +625,9 @@ pub const CodePointWordIterator = struct {
     }
 };
 
-/// Creates a `CodePointWordIterator` over `code_points`.
+/// Creates a `CodePointWordIterator` over `code_points`. Each element must
+/// be a valid Unicode scalar value (e.g. as produced by the `encoding`
+/// decoders); the algorithm does not validate its input.
 ///
 /// @stable-since: v0.1.0
 pub fn codePointWordIterator(code_points: []const CodePoint) CodePointWordIterator {
@@ -858,7 +863,8 @@ pub fn countWords(bytes: []const u8) usize {
     return count;
 }
 
-/// Counts the words in the code point slice `code_points`.
+/// Counts the words in the code point slice `code_points`. Each element must
+/// be a valid Unicode scalar value.
 ///
 /// @stable-since: v0.1.0
 pub fn countWordsFromCodePoints(code_points: []const CodePoint) usize {
@@ -1255,7 +1261,9 @@ pub const CodePointSentenceIterator = struct {
     }
 };
 
-/// Creates a `CodePointSentenceIterator` over `code_points`.
+/// Creates a `CodePointSentenceIterator` over `code_points`. Each element must
+/// be a valid Unicode scalar value (e.g. as produced by the `encoding`
+/// decoders); the algorithm does not validate its input.
 ///
 /// @stable-since: v0.1.0
 pub fn codePointSentenceIterator(code_points: []const CodePoint) CodePointSentenceIterator {
@@ -1336,7 +1344,8 @@ pub fn countSentences(bytes: []const u8) usize {
     return count;
 }
 
-/// Counts the sentences in the code point slice `code_points`.
+/// Counts the sentences in the code point slice `code_points`. Each element
+/// must be a valid Unicode scalar value.
 ///
 /// @stable-since: v0.1.0
 pub fn countSentencesFromCodePoints(code_points: []const CodePoint) usize {
@@ -1691,165 +1700,136 @@ fn lineStepRules(state: LineStepState, cur_cp: CodePoint, cur_raw: LBProp, cur_r
     const prev = state.eff_prev.?;
     const prev_cp = state.eff_prev_cp;
 
-    // ----- Hard-break / early-exit rules. -----
+    // ── Hard exits (LB4–LB8a): return immediately, no allow_break needed. ──
 
     // LB4: BK !
-    if (prev == .bk) {
+    if (prev == .bk)
         return .{ .kind = .mandatory, .new_state = stateAfterBreak(cur_cp, cur_raw, cur_res) };
-    }
-    // LB5: CR × LF.
-    if (prev == .cr and cur_res == .lf) {
-        return .{ .kind = .prohibited, .new_state = stateAfterContinue(state, cur_cp, cur_raw, cur_res) };
-    }
-    // LB5: lone CR / LF / NL !
-    if (prev == .cr or prev == .lf or prev == .nl) {
-        return .{ .kind = .mandatory, .new_state = stateAfterBreak(cur_cp, cur_raw, cur_res) };
-    }
-    // LB6: × (BK | CR | LF | NL).
-    if (cur_res == .bk or cur_res == .cr or cur_res == .lf or cur_res == .nl) {
-        return .{ .kind = .prohibited, .new_state = stateAfterContinue(state, cur_cp, cur_raw, cur_res) };
-    }
-    // LB7: × SP ; × ZW.
-    if (cur_res == .sp or cur_res == .zw) {
-        return .{ .kind = .prohibited, .new_state = stateAfterContinue(state, cur_cp, cur_raw, cur_res) };
+
+    // LB5: CR × LF ; lone CR / LF / NL !
+    switch (prev) {
+        .cr => return if (cur_res == .lf)
+            .{ .kind = .prohibited, .new_state = stateAfterContinue(state, cur_cp, cur_raw, cur_res) }
+        else
+            .{ .kind = .mandatory, .new_state = stateAfterBreak(cur_cp, cur_raw, cur_res) },
+        .lf, .nl => return .{ .kind = .mandatory, .new_state = stateAfterBreak(cur_cp, cur_raw, cur_res) },
+        else => {},
     }
 
-    // LB8: ZW SP* ÷ — break after the most recent non-SP effective entry
-    // if it is ZW.
-    if (state.last_nonsp) |ns| {
-        if (ns == .zw) {
-            return .{ .kind = .opportunity, .new_state = stateAfterBreak(cur_cp, cur_raw, cur_res) };
-        }
+    // LB6: × (BK | CR | LF | NL) ; LB7: × SP ; × ZW
+    switch (cur_res) {
+        .bk, .cr, .lf, .nl, .sp, .zw => return .{ .kind = .prohibited, .new_state = stateAfterContinue(state, cur_cp, cur_raw, cur_res) },
+        else => {},
     }
 
-    // LB8a: literal ZWJ ×.
-    if (state.raw_prev) |rp| {
-        if (rp == .zwj) {
-            return .{ .kind = .prohibited, .new_state = stateAfterContinue(state, cur_cp, cur_raw, cur_res) };
-        }
-    }
+    // LB8: ZW SP* ÷
+    if (state.last_nonsp == .zw)
+        return .{ .kind = .opportunity, .new_state = stateAfterBreak(cur_cp, cur_raw, cur_res) };
 
-    // ----- LB11..LB31 (default-break unless a × rule suppresses). -----
+    // LB8a: ZWJ ×
+    if (state.raw_prev == .zwj)
+        return .{ .kind = .prohibited, .new_state = stateAfterContinue(state, cur_cp, cur_raw, cur_res) };
+
+    // ── LB11–LB31: default is opportunity; × rules suppress. ──
 
     var allow_break = true;
 
-    // LB11
+    // LB11: × WJ ; WJ ×
     if (cur_res == .wj or prev == .wj) allow_break = false;
 
-    // LB12
+    // LB12: GL ×
     if (allow_break and prev == .gl) allow_break = false;
 
-    // LB12a: [^SP BA HY HH] × GL.
-    if (allow_break and cur_res == .gl) {
-        switch (prev) {
-            .sp, .ba, .hy, .hh => {},
-            else => allow_break = false,
-        }
-    }
+    // LB12a: [^SP BA HY HH] × GL
+    if (allow_break and cur_res == .gl) switch (prev) {
+        .sp, .ba, .hy, .hh => {},
+        else => allow_break = false,
+    };
 
-    // LB13: × CL ; × CP ; × EX ; × SY (IS removed in Unicode 17).
-    if (allow_break and (cur_res == .cl or cur_res == .cp or cur_res == .ex or cur_res == .sy)) {
-        allow_break = false;
-    }
+    // LB13: × CL ; × CP ; × EX ; × SY (IS dropped in Unicode 17)
+    if (allow_break) switch (cur_res) {
+        .cl, .cp, .ex, .sy => allow_break = false,
+        else => {},
+    };
 
-    // LB14: OP SP* × — most recent non-SP is OP.
-    if (allow_break and state.last_nonsp != null and state.last_nonsp.? == .op) {
-        allow_break = false;
-    }
+    // LB14: OP SP* ×
+    if (allow_break and state.last_nonsp == .op) allow_break = false;
 
-    // LB15a: armed Pi-QU window (set at the moment the Pi-QU became
-    // last_nonsp). Trailing SPs preserve the flag.
+    // LB15a: Pi-QU SP* × — flag set when Pi-QU became last_nonsp; SPs preserve it.
     if (allow_break and state.lb15a_armed) allow_break = false;
 
-    // LB15b: × Pf-QU (SP | GL | WJ | CL | QU | CP | EX | IS | SY | BK |
-    //                 CR | LF | NL | ZW | eot).
-    if (allow_break and cur_res == .qu and unicode_data.generalCategory(cur_cp) == .final_punctuation) {
-        const next_in_set = if (lookahead.n1) |n| switch (n.resolved) {
+    // LB15b: × Pf-QU (SP | GL | WJ | CL | QU | CP | EX | IS | SY | BK | CR | LF | NL | ZW | eot)
+    if (allow_break and cur_res == .qu and
+        unicode_data.generalCategory(cur_cp) == .final_punctuation)
+    {
+        const next_ok = if (lookahead.n1) |n| switch (n.resolved) {
             .sp, .gl, .wj, .cl, .qu, .cp, .ex, .is, .sy, .bk, .cr, .lf, .nl, .zw => true,
             else => false,
         } else true; // eot
-        if (next_in_set) allow_break = false;
+        if (next_ok) allow_break = false;
     }
 
-    // LB15c (Unicode 17): SP ÷ IS NU — forced opportunity break, but only
-    // if no earlier × rule suppressed it.
+    // LB15c (Unicode 17): SP ÷ IS NU — forced opportunity; must fire before LB15d's × IS.
     if (allow_break and prev == .sp and cur_res == .is) {
         if (lookahead.n1) |n| {
-            if (n.resolved == .nu) {
+            if (n.resolved == .nu)
                 return .{ .kind = .opportunity, .new_state = stateAfterBreak(cur_cp, cur_raw, cur_res) };
-            }
         }
     }
 
-    // LB15d: × IS.
+    // LB15d: × IS
     if (allow_break and cur_res == .is) allow_break = false;
 
-    // LB16: (CL | CP) SP* × NS.
-    if (allow_break and cur_res == .ns) {
-        if (state.last_nonsp) |ns| {
-            if (ns == .cl or ns == .cp) allow_break = false;
-        }
-    }
+    // LB16: (CL | CP) SP* × NS
+    if (allow_break and cur_res == .ns) switch (state.last_nonsp orelse .xx) {
+        .cl, .cp => allow_break = false,
+        else => {},
+    };
 
-    // LB17: B2 SP* × B2.
-    if (allow_break and cur_res == .b2) {
-        if (state.last_nonsp) |ns| {
-            if (ns == .b2) allow_break = false;
-        }
-    }
+    // LB17: B2 SP* × B2
+    if (allow_break and cur_res == .b2 and state.last_nonsp == .b2) allow_break = false;
 
-    // LB18: SP ÷ — break after a space unless an earlier × rule fired.
-    if (prev == .sp) {
-        if (allow_break) {
-            return .{ .kind = .opportunity, .new_state = stateAfterBreak(cur_cp, cur_raw, cur_res) };
-        } else {
-            return .{ .kind = .prohibited, .new_state = stateAfterContinue(state, cur_cp, cur_raw, cur_res) };
-        }
-    }
+    // LB18: SP ÷ — all SP-lookback rules have fired; commit result now.
+    if (prev == .sp) return if (allow_break)
+        .{ .kind = .opportunity, .new_state = stateAfterBreak(cur_cp, cur_raw, cur_res) }
+    else
+        .{ .kind = .prohibited, .new_state = stateAfterContinue(state, cur_cp, cur_raw, cur_res) };
 
-    // LB19: × [QU - Pi] ; [QU - Pf] ×.
-    if (allow_break and cur_res == .qu and unicode_data.generalCategory(cur_cp) != .initial_punctuation) {
+    // LB19: × [QU - Pi] ; [QU - Pf] ×
+    if (allow_break and cur_res == .qu and
+        unicode_data.generalCategory(cur_cp) != .initial_punctuation)
         allow_break = false;
-    }
-    if (allow_break and prev == .qu and unicode_data.generalCategory(prev_cp) != .final_punctuation) {
+    if (allow_break and prev == .qu and
+        unicode_data.generalCategory(prev_cp) != .final_punctuation)
         allow_break = false;
-    }
 
     // LB19a (Unicode 17): EAW-conditioned QU rules.
-    //   1. [^EastAsian] × QU
-    //   2. × QU ([^EastAsian] | eot)
-    //   3. QU × [^EastAsian]
-    //   4. (sot | [^EastAsian]) QU ×
+    //   Arms 1+2: × QU suppressed when either neighbor is non-EA or next is eot.
+    //   Arms 3+4: QU × suppressed when either neighbor is non-EA or sot precedes QU.
     if (allow_break and cur_res == .qu) {
-        if (!isEastAsianWide(prev_cp)) allow_break = false; // arm 1
+        if (!isEastAsianWide(prev_cp)) allow_break = false; // arm 1: [^EA] × QU
         if (allow_break) {
-            const next_non_ea_or_eot = if (lookahead.n1) |n|
-                !isEastAsianWide(n.cp)
-            else
-                true; // eot
-            if (next_non_ea_or_eot) allow_break = false; // arm 2
+            const next_non_ea = if (lookahead.n1) |n| !isEastAsianWide(n.cp) else true;
+            if (next_non_ea) allow_break = false; // arm 2: × QU ([^EA] | eot)
         }
     }
     if (allow_break and prev == .qu) {
-        if (!isEastAsianWide(cur_cp)) allow_break = false; // arm 3
+        if (!isEastAsianWide(cur_cp)) allow_break = false; // arm 3: QU × [^EA]
         if (allow_break) {
-            // arm 4: the character BEFORE the previous QU. sot or non-EA
-            // suppresses the break.
-            const before_qu_is_ea = if (state.eff_prev_prev != null)
+            // arm 4: (sot | [^EA]) QU × — sot counts as non-EA.
+            const before_ea = if (state.eff_prev_prev != null)
                 isEastAsianWide(state.eff_prev_prev_cp)
             else
-                false; // sot counts as non-EA
-            if (!before_qu_is_ea) allow_break = false;
+                false;
+            if (!before_ea) allow_break = false;
         }
     }
 
-    // LB20: ÷ CB ; CB ÷.
-    if (allow_break and (cur_res == .cb or prev == .cb)) {
+    // LB20: ÷ CB ; CB ÷
+    if (allow_break and (cur_res == .cb or prev == .cb))
         return .{ .kind = .opportunity, .new_state = stateAfterBreak(cur_cp, cur_raw, cur_res) };
-    }
 
-    // LB20a (Unicode 17): (sot | BK | CR | LF | NL | SP | ZW | CB | GL)
-    //                     (HY | HH) × (AL | HL).
+    // LB20a (Unicode 17): (sot | BK | CR | LF | NL | SP | ZW | CB | GL) (HY | HH) × (AL | HL)
     if (allow_break and (cur_res == .al or cur_res == .hl) and (prev == .hy or prev == .hh)) {
         const fresh = if (state.eff_prev_prev) |c| switch (c) {
             .bk, .cr, .lf, .nl, .sp, .zw, .cb, .gl => true,
@@ -1858,78 +1838,97 @@ fn lineStepRules(state: LineStepState, cur_cp: CodePoint, cur_raw: LBProp, cur_r
         if (fresh) allow_break = false;
     }
 
-    // LB21: × BA ; × HH ; × HY ; × NS ; BB ×.
-    if (allow_break and (cur_res == .ba or cur_res == .hh or cur_res == .hy or
-        cur_res == .ns or prev == .bb))
-    {
+    // LB21: × BA ; × HH ; × HY ; × NS ; BB ×
+    if (allow_break) switch (cur_res) {
+        .ba, .hh, .hy, .ns => allow_break = false,
+        else => {
+            if (prev == .bb) allow_break = false;
+        },
+    };
+
+    // LB21a: HL (HY | HH) × [^HL]
+    if (allow_break and cur_res != .hl and
+        state.eff_prev_prev == .hl and (prev == .hy or prev == .hh))
         allow_break = false;
-    }
 
-    // LB21a: HL (HY | HH) × [^HL].
-    if (allow_break and cur_res != .hl) {
-        if (state.eff_prev_prev) |back2| {
-            if (back2 == .hl and (prev == .hy or prev == .hh)) allow_break = false;
-        }
-    }
-
-    // LB21b: SY × HL.
+    // LB21b: SY × HL
     if (allow_break and prev == .sy and cur_res == .hl) allow_break = false;
 
-    // LB22: × IN.
+    // LB22: × IN
     if (allow_break and cur_res == .in) allow_break = false;
 
-    // LB23: (AL | HL) × NU ; NU × (AL | HL).
-    if (allow_break) {
-        const al_hl_to_nu = (prev == .al or prev == .hl) and cur_res == .nu;
-        const nu_to_al_hl = prev == .nu and (cur_res == .al or cur_res == .hl);
-        if (al_hl_to_nu or nu_to_al_hl) allow_break = false;
-    }
+    // LB23–LB30 (pair rules): single switch on prev eliminates repeated prev comparisons.
+    // LB25 and LB28a are kept separate — they use opaque matchers, not inline conditions.
+    if (allow_break) switch (prev) {
+        .al, .hl => switch (cur_res) {
+            .nu, // LB23: (AL|HL) × NU
+            .al,
+            .hl, // LB28: (AL|HL) × (AL|HL)
+            .pr,
+            .po, // LB24: (AL|HL) × (PR|PO)
+            => allow_break = false,
+            .op => {
+                if (!isEastAsianWide(cur_cp)) allow_break = false;
+            }, // LB30: × [OP-EA]
+            else => {},
+        },
+        .nu => switch (cur_res) {
+            .al, .hl => allow_break = false, // LB23: NU × (AL|HL)
+            .op => {
+                if (!isEastAsianWide(cur_cp)) allow_break = false;
+            }, // LB30: × [OP-EA]
+            else => {},
+        },
+        .pr => switch (cur_res) {
+            .id,
+            .eb,
+            .em, // LB23a: PR × (ID|EB|EM)
+            .al,
+            .hl, // LB24: PR × (AL|HL)
+            .jl,
+            .jv,
+            .jt,
+            .h2,
+            .h3, // LB27: PR × Hangul
+            => allow_break = false,
+            else => {},
+        },
+        .po => {
+            if (cur_res == .al or cur_res == .hl) allow_break = false;
+        }, // LB24: PO × (AL|HL)
+        .id, .eb, .em => {
+            if (cur_res == .po) allow_break = false;
+        }, // LB23a: (ID|EB|EM) × PO
+        .cp => {
+            if (!isEastAsianWide(prev_cp)) switch (cur_res) { // LB30: [CP-EA] × (AL|HL|NU)
+                .al, .hl, .nu => allow_break = false,
+                else => {},
+            };
+        },
+        .is => {
+            if (cur_res == .al or cur_res == .hl) allow_break = false;
+        }, // LB29: IS × (AL|HL)
+        .jl => switch (cur_res) {
+            .jl, .jv, .h2, .h3 => allow_break = false, // LB26: JL × (JL|JV|H2|H3)
+            .po => allow_break = false, // LB27: Hangul × PO
+            else => {},
+        },
+        .jv, .h2 => switch (cur_res) {
+            .jv, .jt, .po => allow_break = false, // LB26: (JV|H2) × (JV|JT) ; LB27: × PO
+            else => {},
+        },
+        .jt, .h3 => switch (cur_res) {
+            .jt, .po => allow_break = false, // LB26: (JT|H3) × JT ; LB27: × PO
+            else => {},
+        },
+        else => {},
+    };
 
-    // LB23a: PR × (ID | EB | EM) ; (ID | EB | EM) × PO.
-    if (allow_break) {
-        const pr_to_ideo = prev == .pr and (cur_res == .id or cur_res == .eb or cur_res == .em);
-        const ideo_to_po = (prev == .id or prev == .eb or prev == .em) and cur_res == .po;
-        if (pr_to_ideo or ideo_to_po) allow_break = false;
-    }
-
-    // LB24: (PR | PO) × (AL | HL) ; (AL | HL) × (PR | PO).
-    if (allow_break) {
-        const prpo_to_alhl = (prev == .pr or prev == .po) and (cur_res == .al or cur_res == .hl);
-        const alhl_to_prpo = (prev == .al or prev == .hl) and (cur_res == .pr or cur_res == .po);
-        if (prpo_to_alhl or alhl_to_prpo) allow_break = false;
-    }
-
-    // LB25: closed-form via num_chain plus immediate prev / two-step
-    // lookahead. See `lb25MatchesStream` for the case map.
-    if (allow_break and lb25MatchesStream(state.num_chain, prev, cur_res, lookahead)) {
+    // LB25: numeric chain — multi-class sequence; see lb25MatchesStream for the case map.
+    if (allow_break and lb25MatchesStream(state.num_chain, prev, cur_res, lookahead))
         allow_break = false;
-    }
 
-    // LB26 — Hangul syllable interior.
-    if (allow_break) {
-        if (prev == .jl and (cur_res == .jl or cur_res == .jv or
-            cur_res == .h2 or cur_res == .h3))
-        {
-            allow_break = false;
-        } else if ((prev == .jv or prev == .h2) and (cur_res == .jv or cur_res == .jt)) {
-            allow_break = false;
-        } else if ((prev == .jt or prev == .h3) and cur_res == .jt) {
-            allow_break = false;
-        }
-    }
-
-    // LB27: (JL | JV | JT | H2 | H3) × PO ; PR × (JL | JV | JT | H2 | H3).
-    if (allow_break) {
-        if (isHangulSyllableClass(prev) and cur_res == .po) allow_break = false;
-        if (prev == .pr and isHangulSyllableClass(cur_res)) allow_break = false;
-    }
-
-    // LB28: (AL | HL) × (AL | HL).
-    if (allow_break and (prev == .al or prev == .hl) and (cur_res == .al or cur_res == .hl)) {
-        allow_break = false;
-    }
-
-    // LB28a — Brahmic letter pairs.
+    // LB28a: Brahmic virama/linker sequences; see lb28aMatchesStream.
     if (allow_break and lb28aMatchesStream(
         prev,
         cur_res,
@@ -1938,48 +1937,26 @@ fn lineStepRules(state: LineStepState, cur_cp: CodePoint, cur_raw: LBProp, cur_r
         state.eff_prev_prev,
         state.eff_prev_prev_cp,
         lookahead,
-    )) {
+    )) allow_break = false;
+
+    // LB30a: RI × RI when an odd number of preceding RIs completes a pair.
+    if (allow_break and prev == .ri and cur_res == .ri and state.ri_parity == 1)
         allow_break = false;
-    }
 
-    // LB29: IS × (AL | HL).
-    if (allow_break and prev == .is and (cur_res == .al or cur_res == .hl)) {
-        allow_break = false;
-    }
+    // LB30b: EB × EM ; [Extended_Pictographic & gc=Cn] × EM
+    if (allow_break and cur_res == .em) switch (prev) {
+        .eb => allow_break = false,
+        else => {
+            if (isExtendedPictographic(prev_cp) and
+                unicode_data.generalCategory(prev_cp) == .unassigned)
+                allow_break = false;
+        },
+    };
 
-    // LB30: (AL | HL | NU) × [OP - EastAsian] ;
-    //       [CP - EastAsian] × (AL | HL | NU).
-    if (allow_break) {
-        const left_to_op = (prev == .al or prev == .hl or prev == .nu) and
-            cur_res == .op and !isEastAsianWide(cur_cp);
-        const cp_to_right = prev == .cp and
-            (cur_res == .al or cur_res == .hl or cur_res == .nu) and
-            !isEastAsianWide(prev_cp);
-        if (left_to_op or cp_to_right) allow_break = false;
-    }
-
-    // LB30a — RI parity.
-    if (allow_break and prev == .ri and cur_res == .ri and state.ri_parity == 1) {
-        allow_break = false;
-    }
-
-    // LB30b: EB × EM ; [Extended_Pictographic & gc=Cn] × EM.
-    if (allow_break and cur_res == .em) {
-        if (prev == .eb) {
-            allow_break = false;
-        } else if (isExtendedPictographic(prev_cp) and
-            unicode_data.generalCategory(prev_cp) == .unassigned)
-        {
-            allow_break = false;
-        }
-    }
-
-    // Commit.
-    if (allow_break) {
-        return .{ .kind = .opportunity, .new_state = stateAfterBreak(cur_cp, cur_raw, cur_res) };
-    } else {
-        return .{ .kind = .prohibited, .new_state = stateAfterContinue(state, cur_cp, cur_raw, cur_res) };
-    }
+    return if (allow_break)
+        .{ .kind = .opportunity, .new_state = stateAfterBreak(cur_cp, cur_raw, cur_res) }
+    else
+        .{ .kind = .prohibited, .new_state = stateAfterContinue(state, cur_cp, cur_raw, cur_res) };
 }
 
 /// State immediately after a break (opportunity or mandatory). The new
@@ -2235,7 +2212,9 @@ pub const CodePointLineBoundaryIterator = struct {
     }
 };
 
-/// Creates a `CodePointLineBoundaryIterator` over `code_points`.
+/// Creates a `CodePointLineBoundaryIterator` over `code_points`. Each element
+/// must be a valid Unicode scalar value (e.g. as produced by the `encoding`
+/// decoders); the algorithm does not validate its input.
 ///
 /// @stable-since: v0.1.0
 pub fn codePointLineBoundaryIterator(code_points: []const CodePoint) CodePointLineBoundaryIterator {
@@ -2311,7 +2290,8 @@ pub fn countLineSegments(bytes: []const u8) usize {
     return count;
 }
 
-/// Counts the line-break segments in the code point slice `code_points`.
+/// Counts the line-break segments in the code point slice `code_points`. Each
+/// element must be a valid Unicode scalar value.
 ///
 /// @stable-since: v0.1.0
 pub fn countLineSegmentsFromCodePoints(code_points: []const CodePoint) usize {
@@ -2995,6 +2975,187 @@ test "count helpers: counts match iterator output" {
     try testing.expectEqual(@as(usize, 2), countSentences("One. Two."));
     try testing.expectEqual(@as(usize, 2), countLineSegments("hi there"));
     try testing.expectEqual(@as(usize, 3), countLineSegments("a b\nc"));
+}
+
+// ============================================================================
+// CodePoint-iterator parity. Every grapheme / word / sentence / line algorithm
+// is exposed over both UTF-8 bytes and an explicit `[]const CodePoint`; for the
+// same text the two forms must agree segment-for-segment. The code-point
+// iterators assume each element is a valid Unicode scalar value, so the corpus
+// below is strictly valid UTF-8 (decoded with the strict decoder).
+// ============================================================================
+
+const codepoint_parity_corpus = [_][]const u8{
+    "",
+    "a",
+    "Hello, world!",
+    "café résumé naïve",
+    "Hello. How are you? I am fine.\nA second line.",
+    "Mr. Smith went to Washington. He left at 5 p.m. sharp!",
+    "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466}", // 👨‍👩‍👧‍👦 family ZWJ
+    "flags \u{1F1FA}\u{1F1F8}\u{1F1EB}\u{1F1F7}\u{1F1EE}\u{1F1F3} end", // 🇺🇸🇫🇷🇮🇳
+    "\u{0915}\u{094D}\u{0924} \u{0939}\u{093F}\u{0928}\u{094D}\u{0926}\u{0940}", // Devanagari
+    "\u{AC00}\u{0301}\r\nline two\twith tab", // Hangul + mark + CRLF + tab
+    "1,234.56 plus 7 = lots; see e.g. the U.S.A. today.",
+    "日本語のテキスト。改行\nテスト、終わり。", // CJK + ideographic period + newline
+    "mixed 漢字 and ASCII with \u{200D} stray ZWJ",
+};
+
+/// Decode a strictly-valid UTF-8 test string into owned code points.
+fn decodeParityCps(text: []const u8) ![]CodePoint {
+    return utf8.bytesToUTF8String(testing.allocator, text);
+}
+
+test "grapheme: code-point iterator matches the byte iterator across a diverse corpus" {
+    for (codepoint_parity_corpus) |text| {
+        const cps = try decodeParityCps(text);
+        defer testing.allocator.free(cps);
+
+        var byte_it = iterator(text);
+        var cp_it = codePointIterator(cps);
+        var consumed: usize = 0;
+        while (true) {
+            const b = byte_it.next();
+            const c = cp_it.next();
+            if (b == null and c == null) break;
+            try testing.expect(b != null and c != null);
+            // The code-point segment length equals the scalar count of the byte segment.
+            try testing.expectEqual(utf8.countScalarsLossy(b.?), c.?.len);
+            consumed += c.?.len;
+        }
+        try testing.expectEqual(cps.len, consumed);
+        try testing.expectEqual(countGraphemes(text), countGraphemesFromCodePoints(cps));
+    }
+}
+
+test "sentence: code-point iterator matches the byte iterator across a diverse corpus" {
+    for (codepoint_parity_corpus) |text| {
+        const cps = try decodeParityCps(text);
+        defer testing.allocator.free(cps);
+
+        var byte_it = sentenceIterator(text);
+        var cp_it = codePointSentenceIterator(cps);
+        var consumed: usize = 0;
+        while (true) {
+            const b = byte_it.next();
+            const c = cp_it.next();
+            if (b == null and c == null) break;
+            try testing.expect(b != null and c != null);
+            try testing.expectEqual(utf8.countScalarsLossy(b.?), c.?.len);
+            consumed += c.?.len;
+        }
+        try testing.expectEqual(cps.len, consumed);
+        try testing.expectEqual(countSentences(text), countSentencesFromCodePoints(cps));
+    }
+}
+
+test "line: code-point iterator matches the byte iterator in both slice length and break kind" {
+    for (codepoint_parity_corpus) |text| {
+        const cps = try decodeParityCps(text);
+        defer testing.allocator.free(cps);
+
+        var byte_it = lineBreakIterator(text);
+        var cp_it = codePointLineBoundaryIterator(cps);
+        var consumed: usize = 0;
+        while (true) {
+            const b = byte_it.next();
+            const c = cp_it.next();
+            if (b == null and c == null) break;
+            try testing.expect(b != null and c != null);
+            try testing.expectEqual(utf8.countScalarsLossy(b.?.slice), c.?.slice.len);
+            try testing.expectEqual(b.?.kind, c.?.kind);
+            consumed += c.?.slice.len;
+        }
+        try testing.expectEqual(cps.len, consumed);
+        try testing.expectEqual(countLineSegments(text), countLineSegmentsFromCodePoints(cps));
+    }
+}
+
+test "code-point iterators: empty input yields no segments and zero counts" {
+    const empty = &[_]CodePoint{};
+    var g = codePointIterator(empty);
+    try testing.expect(g.next() == null);
+    var s = codePointSentenceIterator(empty);
+    try testing.expect(s.next() == null);
+    var l = codePointLineBoundaryIterator(empty);
+    try testing.expect(l.next() == null);
+
+    try testing.expectEqual(@as(usize, 0), countGraphemesFromCodePoints(empty));
+    try testing.expectEqual(@as(usize, 0), countSentencesFromCodePoints(empty));
+    try testing.expectEqual(@as(usize, 0), countLineSegmentsFromCodePoints(empty));
+}
+
+test "code-point iterators: reset replays the identical segment sequence" {
+    const cps = [_]CodePoint{ 'H', 'i', '.', ' ', 'Y', 'o', '?', ' ', 'a', '\n', 'b' };
+
+    // Grapheme.
+    {
+        var it = codePointIterator(&cps);
+        const first = it.next().?.len;
+        _ = it.next();
+        it.reset();
+        try testing.expectEqual(first, it.next().?.len);
+    }
+    // Sentence.
+    {
+        var it = codePointSentenceIterator(&cps);
+        const first = it.next().?.len;
+        _ = it.next();
+        it.reset();
+        try testing.expectEqual(first, it.next().?.len);
+    }
+    // Line — reset must restore both the slice length and the break kind.
+    {
+        var it = codePointLineBoundaryIterator(&cps);
+        const first = it.next().?;
+        _ = it.next();
+        it.reset();
+        const again = it.next().?;
+        try testing.expectEqual(first.slice.len, again.slice.len);
+        try testing.expectEqual(first.kind, again.kind);
+    }
+}
+
+test "sentence: code-point iterator splits a multi-sentence paragraph by scalar length" {
+    // "Hello. How are you? I am fine." → "Hello. " / "How are you? " / "I am fine."
+    // Mirrors the byte-iterator test above, but over `[]const CodePoint`.
+    const cps = [_]CodePoint{
+        'H', 'e', 'l', 'l', 'o', '.', ' ',
+        'H', 'o', 'w', ' ', 'a', 'r',  'e', ' ', 'y', 'o', 'u', '?', ' ',
+        'I', ' ', 'a', 'm', ' ', 'f',  'i', 'n', 'e', '.',
+    };
+    var it = codePointSentenceIterator(&cps);
+    try testing.expectEqual(@as(usize, 7), it.next().?.len); // "Hello. "
+    try testing.expectEqual(@as(usize, 13), it.next().?.len); // "How are you? "
+    try testing.expectEqual(@as(usize, 10), it.next().?.len); // "I am fine."
+    try testing.expect(it.next() == null);
+}
+
+test "line: code-point iterator surfaces an opportunity then the final mandatory break" {
+    // "hello world" → "hello " (opportunity, LB18) then "world" (mandatory eot, LB3).
+    const cps = [_]CodePoint{ 'h', 'e', 'l', 'l', 'o', ' ', 'w', 'o', 'r', 'l', 'd' };
+    var it = codePointLineBoundaryIterator(&cps);
+    const s1 = it.next().?;
+    try testing.expectEqual(@as(usize, 6), s1.slice.len);
+    try testing.expectEqual(LineBreakKind.opportunity, s1.kind);
+    const s2 = it.next().?;
+    try testing.expectEqual(@as(usize, 5), s2.slice.len);
+    try testing.expectEqual(LineBreakKind.mandatory, s2.kind);
+    try testing.expect(it.next() == null);
+}
+
+test "grapheme: code-point iterator fuses RI pairs, conjuncts, and ZWJ emoji" {
+    // 🇺🇸 (RI pair) + क्त (Devanagari KA-virama-TA conjunct) + 👨‍👩‍👧 (family ZWJ).
+    const cps = [_]CodePoint{
+        0x1F1FA, 0x1F1F8, // one cluster (GB12/GB13)
+        0x0915,  0x094D,  0x0924, // one cluster (GB9c)
+        0x1F468, 0x200D,  0x1F469, 0x200D, 0x1F467, // one cluster (GB11)
+    };
+    var it = codePointIterator(&cps);
+    try testing.expectEqual(@as(usize, 2), it.next().?.len);
+    try testing.expectEqual(@as(usize, 3), it.next().?.len);
+    try testing.expectEqual(@as(usize, 5), it.next().?.len);
+    try testing.expect(it.next() == null);
 }
 
 // ============================================================================

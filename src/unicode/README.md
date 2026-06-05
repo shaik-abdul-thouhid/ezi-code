@@ -33,8 +33,9 @@ inputs; you only re-run `generate` when bumping the Unicode version.
   `normalize` (and the `nfc`/`nfd`/`nfkc`/`nfkd` wrappers), plus `isNormalized`,
   Quick_Check, and a streaming `Normalizer`.
 - **segmentation** — grapheme cluster, word, sentence, and line breaking (UAX #14,
-  #29), the emoji properties they depend on, and grapheme iterators over both
-  bytes and code points.
+  #29), the emoji properties they depend on, and an iterator for each over both
+  UTF-8 bytes and an explicit `[]const CodePoint`. The code-point iterators
+  assume every element is a valid Unicode scalar value.
 - **width** — East Asian Width.
 - **scripts** — `Script` and `ScriptExtensions`.
 - **bidi** — the Unicode Bidirectional Algorithm (UAX #9): both the character
