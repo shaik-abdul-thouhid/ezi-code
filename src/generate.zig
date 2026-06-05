@@ -3408,6 +3408,7 @@ pub fn main(init: std.process.Init) !void {
     const start = clock.now(io);
 
     var max_memory: u64 = 0;
+    var generation_time: i64 = 0;
 
     const generators = [_]struct {
         file_name: []const u8,
@@ -3614,10 +3615,14 @@ pub fn main(init: std.process.Init) !void {
 
         const file_name = extractFileNameFromPath(gen.url);
 
+        const took_to_generate = local_timer_end.toMilliseconds() - download_timer_end.toMilliseconds();
+
+        generation_time += took_to_generate;
+
         std.debug.print("generating file {s}, took for download: {}ms, took to generate: {}ms\n", .{
             file_name.file_name,
             download_timer_end.toMilliseconds() - local_timer_start.toMilliseconds(),
-            local_timer_end.toMilliseconds() - download_timer_end.toMilliseconds(),
+            took_to_generate,
         });
 
         _ = arena.reset(.{ .retain_with_limit = 1024 * 1024 * 4 });
@@ -3625,5 +3630,5 @@ pub fn main(init: std.process.Init) !void {
 
     const end = clock.now(io);
 
-    std.debug.print("\n\ngenerate command took: {}ms, peak memory: {}MiB\n", .{ end.toMilliseconds() - start.toMilliseconds(), @as(f64, @floatFromInt(max_memory / (1024 * 1024))) });
+    std.debug.print("\n\ngenerate command took: {}ms, file generations took: {}ms, peak memory: {}MiB\n", .{ end.toMilliseconds() - start.toMilliseconds(), generation_time, @as(f64, @floatFromInt(max_memory / (1024 * 1024))) });
 }
