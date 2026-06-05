@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Performance: the UAX #14 line-break steppers (`lineStep`, `lineStepBytes`,
+  and the `LineBreakIterator` / `CodePointLineBoundaryIterator` they drive) now
+  compute the forward look-ahead only when a look-ahead-dependent rule
+  (LB15b, LB15c, LB19a, LB25, LB28a) can actually fire, instead of on every
+  code point. Roughly 25–37% faster line iteration on the benchmark corpora.
+- Performance: the streaming sentence iterators (`SentenceIterator`,
+  `CodePointSentenceIterator`) memoise the SB8 look-ahead across an
+  `ATerm Close* Sp*` window, eliminating repeated forward rescans (~10–15%
+  faster `CodePointSentenceIterator`) and bounding a previously quadratic
+  worst case for long ATerm runs.
+- Performance: deduplicated the `General_Category` lookup shared by LB15b and
+  LB19 within the line-break rule scan.
+- The Regional_Indicator run trackers `BoundaryState.ri_run` and
+  `WordStepState.ri_count` are now a single parity bit (`u1`) rather than a
+  full `usize`; only the run parity was ever consulted, so the per-step state
+  structs are smaller. No behavioural change.
+
 ## [0.2.0] - 2026-06-02
 
 ### Added

@@ -85,8 +85,10 @@ pub inline fn inCB(cp: CodePoint) InCB {
 /// `prev == null` means the cursor sits at start-of-text (sot).
 pub const BoundaryState = struct {
     prev: ?GraphemeBreakProperty = null,
-    /// Number of consecutive Regional_Indicator codepoints ending at `prev`.
-    ri_run: usize = 0,
+    /// Parity of the run of consecutive Regional_Indicator codepoints ending
+    /// at `prev`: 1 = odd (an unpaired RI), 0 = even. Only the parity matters
+    /// to GB12/GB13, so a single bit replaces a full counter.
+    ri_run: u1 = 0,
     /// True while the active position is still inside an InCB conjunct
     /// sequence starting from an InCB=Consonant.
     in_consonant_run: bool = false,
@@ -152,7 +154,7 @@ pub fn checkBoundary(state: BoundaryState, cur: CodePoint) BoundaryDecision {
         if (prev == .zwj and state.ext_pict_active and cur_is_ext_pict) break :decide false;
         // GB12/GB13: RI × RI when the prior RI run length is odd. Odd means
         // `prev` is the start of a fresh pair, so the new RI joins it.
-        if (prev == .regional_indicator and cur_prop == .regional_indicator and (state.ri_run % 2 == 1)) break :decide false;
+        if (prev == .regional_indicator and cur_prop == .regional_indicator and (state.ri_run == 1)) break :decide false;
 
         // GB999: Any ÷ Any
         break :decide true;
@@ -161,7 +163,8 @@ pub fn checkBoundary(state: BoundaryState, cur: CodePoint) BoundaryDecision {
     var new_state = state;
 
     if (cur_prop == .regional_indicator) {
-        new_state.ri_run = if (should_break) 1 else state.ri_run + 1;
+        // u1 wrapping add tracks parity: each extra RI flips odd/even.
+        new_state.ri_run = if (should_break) 1 else state.ri_run +% 1;
     } else {
         new_state.ri_run = 0;
     }
@@ -352,9 +355,10 @@ pub const WordStepState = struct {
     eff_prev: WordProp,
     /// Effective property of the codepoint before that, or null at start of text.
     eff_prev_prev: ?WordProp,
-    /// Number of consecutive Regional_Indicator codepoints ending at the most
-    /// recent non-ignorable position.
-    ri_count: usize,
+    /// Parity of the run of consecutive Regional_Indicator codepoints ending
+    /// at the most recent non-ignorable position: 1 = odd, 0 = even. WB15/WB16
+    /// only consult the parity, so a single bit suffices.
+    ri_count: u1,
     /// Raw (literal, NOT WB4-skipped) property of the immediately previous
     /// codepoint. WB3/WB3a/WB3b/WB3c need the literal, not the effective.
     prev_lit: WordProp,
@@ -537,11 +541,11 @@ pub fn wordStep(state: WordStepState, code_points: []const CodePoint, i: usize) 
     if (!no_break and prev == .extend_num_let and (isAHLetter(curr) or curr == .numeric or curr == .katakana)) no_break = true;
     // WB15/WB16: RI × RI when the count of unbroken RIs ending at prev is odd.
     if (!no_break and prev == .regional_indicator and curr == .regional_indicator) {
-        if (state.ri_count % 2 == 1) no_break = true;
+        if (state.ri_count == 1) no_break = true;
     }
 
-    const next_ri_count: usize = if (curr == .regional_indicator)
-        (if (no_break) state.ri_count + 1 else 1)
+    const next_ri_count: u1 = if (curr == .regional_indicator)
+        (if (no_break) state.ri_count +% 1 else 1)
     else
         0;
 
@@ -822,11 +826,11 @@ fn wordStepBytes(state: WordStepState, bytes: []const u8, byte_pos: usize) WordB
     if (!no_break and (isAHLetter(prev) or prev == .numeric or prev == .katakana or prev == .extend_num_let) and curr == .extend_num_let) no_break = true;
     if (!no_break and prev == .extend_num_let and (isAHLetter(curr) or curr == .numeric or curr == .katakana)) no_break = true;
     if (!no_break and prev == .regional_indicator and curr == .regional_indicator) {
-        if (state.ri_count % 2 == 1) no_break = true;
+        if (state.ri_count == 1) no_break = true;
     }
 
-    const next_ri_count: usize = if (curr == .regional_indicator)
-        (if (no_break) state.ri_count + 1 else 1)
+    const next_ri_count: u1 = if (curr == .regional_indicator)
+        (if (no_break) state.ri_count +% 1 else 1)
     else
         0;
 
@@ -956,39 +960,79 @@ pub const SentenceStepDecision = struct {
     new_state: SentenceStepState,
 };
 
+/// Result of an SB8 lookahead scan: the first qualifying property (or null at
+/// end-of-text) together with the cursor position at which it was found. `pos`
+/// is the index/byte-offset of the qualifying codepoint, or the input length
+/// when none was found. The position lets streaming callers cache the scan:
+/// because every codepoint between the scan start and `pos` is a "skip", any
+/// later start `s <= pos` yields the same property without rescanning.
+const Sb8Scan = struct { prop: ?SBProp, pos: usize };
+
+inline fn sb8Qualifies(p: SBProp) bool {
+    return switch (p) {
+        .oletter, .upper, .lower, .sep, .cr, .lf, .sterm, .aterm => true,
+        else => false,
+    };
+}
+
 /// SB8 lookahead over a code point slice. Starting at `start`, skip any
 /// SB5-ignorable codepoint or codepoint whose property is NOT in
 /// {OLetter, Upper, Lower, ParaSep, SATerm}, and return the first qualifying
-/// property. Returns null at end-of-text.
-fn sb8LookaheadCodePoints(code_points: []const CodePoint, start: usize) ?SBProp {
+/// property plus its index (or null / `len` at end-of-text).
+fn sb8ScanCodePoints(code_points: []const CodePoint, start: usize) Sb8Scan {
     var j = start;
     while (j < code_points.len) : (j += 1) {
         const p = sentenceBreakProperty(code_points[j]);
         if (isSBIgnorable(p)) continue;
-        switch (p) {
-            .oletter, .upper, .lower, .sep, .cr, .lf, .sterm, .aterm => return p,
-            else => continue,
-        }
+        if (sb8Qualifies(p)) return .{ .prop = p, .pos = j };
     }
-    return null;
+    return .{ .prop = null, .pos = code_points.len };
 }
 
-/// SB8 lookahead over a byte stream — same as `sb8LookaheadCodePoints` but
-/// decodes UTF-8 on the fly (lossy for invalid bytes).
-fn sb8LookaheadBytes(bytes: []const u8, start_byte: usize) ?SBProp {
+/// SB8 lookahead over a byte stream — same as `sb8ScanCodePoints` but decodes
+/// UTF-8 on the fly (lossy for invalid bytes). `pos` is the byte offset of the
+/// qualifying codepoint (or `bytes.len` at end-of-text).
+fn sb8ScanBytes(bytes: []const u8, start_byte: usize) Sb8Scan {
     var j = start_byte;
     while (j < bytes.len) {
         const decoded = utf8.validateAndDecodeCodePointBytesLossy(bytes, j) catch @panic("invalid code point bytes");
         const p = sentenceBreakProperty(decoded.code_point);
-        j += decoded.len;
-        if (isSBIgnorable(p)) continue;
-        switch (p) {
-            .oletter, .upper, .lower, .sep, .cr, .lf, .sterm, .aterm => return p,
-            else => continue,
+        if (isSBIgnorable(p)) {
+            j += decoded.len;
+            continue;
         }
+        if (sb8Qualifies(p)) return .{ .prop = p, .pos = j };
+        j += decoded.len;
     }
-    return null;
+    return .{ .prop = null, .pos = bytes.len };
 }
+
+/// Non-caching wrapper used by the stateless `sentenceStep` entry point.
+fn sb8LookaheadCodePoints(code_points: []const CodePoint, start: usize) ?SBProp {
+    return sb8ScanCodePoints(code_points, start).prop;
+}
+
+/// Monotonic-cursor memo for the SB8 lookahead used by the streaming sentence
+/// iterators. While inside an `ATerm Close* Sp*` window the iterator queries
+/// the lookahead on every step; without a memo each query rescans an
+/// overlapping forward range, making a long window quadratic in its length.
+/// Because the scan only skips non-qualifying codepoints, a result found at
+/// `pos` stays valid for any later start `cursor <= pos`, so one scan serves
+/// the whole window. Callers must query with non-decreasing `cursor`.
+const Sb8Cache = struct {
+    valid: bool = false,
+    pos: usize = 0,
+    prop: ?SBProp = null,
+
+    inline fn store(self: *Sb8Cache, scan: Sb8Scan) ?SBProp {
+        self.* = .{ .valid = true, .pos = scan.pos, .prop = scan.prop };
+        return scan.prop;
+    }
+
+    inline fn hit(self: *const Sb8Cache, cursor: usize) bool {
+        return self.valid and cursor <= self.pos;
+    }
+};
 
 /// Shared rule body for sentence stepping. The `lookahead` closure-equivalent
 /// is passed as a `?SBProp` already resolved by the caller (codepoint-slice
@@ -1226,6 +1270,7 @@ pub const CodePointSentenceIterator = struct {
     pos: usize = 0,
     state: SentenceStepState = undefined,
     primed: bool = false,
+    sb8: Sb8Cache = .{},
 
     /// Returns the next sentence as a slice of the source code points, or
     /// `null` once the input is exhausted.
@@ -1241,7 +1286,16 @@ pub const CodePointSentenceIterator = struct {
         }
         var i = self.pos + 1;
         while (i < n) : (i += 1) {
-            const decision = sentenceStep(self.state, self.code_points, i);
+            // Inline of `sentenceStep` with a memoised SB8 lookahead: the
+            // window scan would otherwise be re-run from scratch on every step
+            // while inside an ATerm context.
+            const curr = sentenceBreakProperty(self.code_points[i]);
+            const lookahead = if (self.state.ctx_is_aterm and
+                (self.state.ctx == .saterm or self.state.ctx == .saterm_close or self.state.ctx == .saterm_close_sp))
+                (if (self.sb8.hit(i)) self.sb8.prop else self.sb8.store(sb8ScanCodePoints(self.code_points, i)))
+            else
+                null;
+            const decision = sentenceStepInner(self.state, curr, lookahead);
             self.state = decision.new_state;
             if (decision.is_break) {
                 self.pos = i;
@@ -1258,6 +1312,7 @@ pub const CodePointSentenceIterator = struct {
     pub fn reset(self: *CodePointSentenceIterator) void {
         self.pos = 0;
         self.primed = false;
+        self.sb8 = .{};
     }
 };
 
@@ -1278,6 +1333,7 @@ pub const SentenceIterator = struct {
     pos: usize = 0,
     state: SentenceStepState = undefined,
     primed: bool = false,
+    sb8: Sb8Cache = .{},
 
     /// Returns the next sentence as a sub-slice of the source bytes, or `null`
     /// once the input is exhausted. The slice borrows from the iterator's
@@ -1303,7 +1359,7 @@ pub const SentenceIterator = struct {
             const curr = sentenceBreakProperty(decoded.code_point);
             const lookahead = if (self.state.ctx_is_aterm and
                 (self.state.ctx == .saterm or self.state.ctx == .saterm_close or self.state.ctx == .saterm_close_sp))
-                sb8LookaheadBytes(self.bytes, cursor)
+                (if (self.sb8.hit(cursor)) self.sb8.prop else self.sb8.store(sb8ScanBytes(self.bytes, cursor)))
             else
                 null;
             const decision = sentenceStepInner(self.state, curr, lookahead);
@@ -1324,6 +1380,7 @@ pub const SentenceIterator = struct {
     pub fn reset(self: *SentenceIterator) void {
         self.pos = 0;
         self.primed = false;
+        self.sb8 = .{};
     }
 };
 
@@ -1633,6 +1690,26 @@ pub const LineStepByteDecision = struct {
     consumed: usize,
 };
 
+/// Predicate deciding whether `lineStepRules` can possibly consult the forward
+/// lookahead for the (prev, cur) pair. Only LB15b, LB15c, LB19a arm 2, LB25,
+/// and LB28a rule 4 ever read the lookahead entries; every other step — the
+/// overwhelming majority of real text — can skip the decode-and-classify work
+/// of `lookaheadFrom*` entirely and pass an empty pair. The set below is the
+/// exact union of those rules' trigger conditions, so a `false` here proves the
+/// lookahead is never dereferenced downstream.
+inline fn lineNeedsLookahead(state: LineStepState, cur_cp: CodePoint, cur_res: LBProp) bool {
+    // LB15b (× Pf-QU …) and LB19a arm 2 (× QU ([^EA] | eot)) both gate on cur QU.
+    if (cur_res == .qu) return true;
+    const prev = state.eff_prev orelse return false;
+    // LB15c: SP ÷ IS NU.
+    if (prev == .sp and cur_res == .is) return true;
+    // LB25 rules 7/8/10/11: (PO | PR) × OP (NU | IS NU).
+    if ((prev == .po or prev == .pr) and cur_res == .op) return true;
+    // LB28a rule 4: (AK | DC | AS) × (AK | DC | AS) VF.
+    if (isAKBase(cur_res, cur_cp) and isAKBase(prev, state.eff_prev_cp)) return true;
+    return false;
+}
+
 /// Decide the UAX #14 boundary BEFORE `code_points[i]` given state derived
 /// from positions 0..i-1, and return the state to use after consuming
 /// position `i`. Caller must have invoked `LineStepState.init(code_points[0])`
@@ -1661,7 +1738,10 @@ pub fn lineStep(state: LineStepState, code_points: []const CodePoint, i: usize) 
     // LB10: any unattached CM/ZWJ is promoted to AL for the rule scan.
     const cur_res = promoteLB10IfCmZwj(cur_res_pre10);
 
-    const lookahead = lookaheadFromCodePoints(code_points, i + 1, cur_res);
+    const lookahead = if (lineNeedsLookahead(state, cur_cp, cur_res))
+        lookaheadFromCodePoints(code_points, i + 1, cur_res)
+    else
+        LineLookaheadPair{};
     return lineStepRules(state, cur_cp, cur_raw, cur_res, lookahead);
 }
 
@@ -1687,7 +1767,10 @@ pub fn lineStepBytes(state: LineStepState, bytes: []const u8, byte_pos: usize) L
     }
 
     const cur_res = promoteLB10IfCmZwj(cur_res_pre10);
-    const lookahead = lookaheadFromBytes(bytes, byte_pos + decoded.len, cur_res);
+    const lookahead = if (lineNeedsLookahead(state, cur_cp, cur_res))
+        lookaheadFromBytes(bytes, byte_pos + decoded.len, cur_res)
+    else
+        LineLookaheadPair{};
     const decision = lineStepRules(state, cur_cp, cur_raw, cur_res, lookahead);
     return .{ .kind = decision.kind, .new_state = decision.new_state, .consumed = decoded.len };
 }
@@ -1734,6 +1817,12 @@ fn lineStepRules(state: LineStepState, cur_cp: CodePoint, cur_raw: LBProp, cur_r
 
     var allow_break = true;
 
+    // LB15b and LB19 both read the General_Category of a QU `cur`. Resolve it
+    // a single time here (only when `cur` is actually QU, so the common
+    // non-quote path pays nothing) rather than hitting the table twice.
+    const cur_qu_gc: ?@TypeOf(unicode_data.generalCategory(cur_cp)) =
+        if (cur_res == .qu) unicode_data.generalCategory(cur_cp) else null;
+
     // LB11: × WJ ; WJ ×
     if (cur_res == .wj or prev == .wj) allow_break = false;
 
@@ -1760,7 +1849,7 @@ fn lineStepRules(state: LineStepState, cur_cp: CodePoint, cur_raw: LBProp, cur_r
 
     // LB15b: × Pf-QU (SP | GL | WJ | CL | QU | CP | EX | IS | SY | BK | CR | LF | NL | ZW | eot)
     if (allow_break and cur_res == .qu and
-        unicode_data.generalCategory(cur_cp) == .final_punctuation)
+        cur_qu_gc.? == .final_punctuation)
     {
         const next_ok = if (lookahead.n1) |n| switch (n.resolved) {
             .sp, .gl, .wj, .cl, .qu, .cp, .ex, .is, .sy, .bk, .cr, .lf, .nl, .zw => true,
@@ -1797,7 +1886,7 @@ fn lineStepRules(state: LineStepState, cur_cp: CodePoint, cur_raw: LBProp, cur_r
 
     // LB19: × [QU - Pi] ; [QU - Pf] ×
     if (allow_break and cur_res == .qu and
-        unicode_data.generalCategory(cur_cp) != .initial_punctuation)
+        cur_qu_gc.? != .initial_punctuation)
         allow_break = false;
     if (allow_break and prev == .qu and
         unicode_data.generalCategory(prev_cp) != .final_punctuation)
@@ -3121,8 +3210,10 @@ test "sentence: code-point iterator splits a multi-sentence paragraph by scalar 
     // Mirrors the byte-iterator test above, but over `[]const CodePoint`.
     const cps = [_]CodePoint{
         'H', 'e', 'l', 'l', 'o', '.', ' ',
-        'H', 'o', 'w', ' ', 'a', 'r',  'e', ' ', 'y', 'o', 'u', '?', ' ',
-        'I', ' ', 'a', 'm', ' ', 'f',  'i', 'n', 'e', '.',
+        'H', 'o', 'w', ' ', 'a', 'r', 'e',
+        ' ', 'y', 'o', 'u', '?', ' ', 'I',
+        ' ', 'a', 'm', ' ', 'f', 'i', 'n',
+        'e', '.',
     };
     var it = codePointSentenceIterator(&cps);
     try testing.expectEqual(@as(usize, 7), it.next().?.len); // "Hello. "
@@ -3148,8 +3239,8 @@ test "grapheme: code-point iterator fuses RI pairs, conjuncts, and ZWJ emoji" {
     // 🇺🇸 (RI pair) + क्त (Devanagari KA-virama-TA conjunct) + 👨‍👩‍👧 (family ZWJ).
     const cps = [_]CodePoint{
         0x1F1FA, 0x1F1F8, // one cluster (GB12/GB13)
-        0x0915,  0x094D,  0x0924, // one cluster (GB9c)
-        0x1F468, 0x200D,  0x1F469, 0x200D, 0x1F467, // one cluster (GB11)
+        0x0915, 0x094D, 0x0924, // one cluster (GB9c)
+        0x1F468, 0x200D, 0x1F469, 0x200D, 0x1F467, // one cluster (GB11)
     };
     var it = codePointIterator(&cps);
     try testing.expectEqual(@as(usize, 2), it.next().?.len);
