@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Enumerable code-point **range tables** for Unicode properties, so consumers
+  can resolve property classes into sorted ranges at comptime (the per-code-point
+  page tables cannot be enumerated without walking all 1.1M code points). New
+  `zig build generate-ranges` step (no network; reuses the committed page tables)
+  emits:
+  - `properties.category_runs` (`CategoryRun{ start, end, category }`) — a full
+    partition of 0..=0x10FFFF by `General_Category`, including unassigned runs.
+  - `properties.derived_runs` (`DerivedRun{ start, end, mask }`) —
+    DerivedCoreProperties runs keyed by the same bitmask as `derivedPropertyMask`.
+  - `properties.white_space_ranges` and `properties.join_control_ranges`
+    (`CodePointRange{ start, end }`) — PropList bases for `\s` and `\w`.
+  - `scripts.script_runs` (`ScriptRun{ start, end, script }`) — Script runs for
+    assigned code points.
+- `properties.isWord` — Perl `\w` / word-boundary predicate
+  (`Alphabetic ∪ Mark ∪ Decimal_Number ∪ Connector_Punctuation ∪ Join_Control`).
+
 ### Changed
 
 - Performance: the UAX #14 line-break steppers (`lineStep`, `lineStepBytes`,

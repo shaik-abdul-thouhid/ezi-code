@@ -120,6 +120,23 @@ pub fn build(b: *std.Build) !void {
     const generate_unicode_cmd = b.addRunArtifact(generate_unicode_exe);
     generate_unicode_step.dependOn(&generate_unicode_cmd.step);
 
+    // Range-table generation step. Reuses the committed page tables (no network)
+    // to emit sorted code-point range tables that consumers can enumerate at
+    // comptime. See src/generate_ranges.zig for the rationale.
+    const generate_ranges_exe = b.addExecutable(.{
+        .name = "generate-ranges",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/generate_ranges.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
+            .imports = &.{root},
+        }),
+    });
+
+    const generate_ranges_step = b.step("generate-ranges", "Generate code-point range tables");
+    const generate_ranges_cmd = b.addRunArtifact(generate_ranges_exe);
+    generate_ranges_step.dependOn(&generate_ranges_cmd.step);
+
     const utils_tests = b.addTest(.{ .root_module = utils_module });
     const encoding_tests = b.addTest(.{ .root_module = encoding_module });
     const transcoding_tests = b.addTest(.{ .root_module = transcoding_module });
