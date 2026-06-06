@@ -33,13 +33,13 @@ adversarial test set you'd expect for UAX #9.
 Via git ref (resolves the tag at fetch time):
 
 ```sh
-zig fetch --save git+https://github.com/shaik-abdul-thouhid/ezi-code.git#v0.3.0
+zig fetch --save git+https://github.com/shaik-abdul-thouhid/ezi-code.git#v0.2.0
 ```
 
 Or via plain HTTP tarball (pins the content hash in `build.zig.zon`):
 
 ```sh
-zig fetch --save https://github.com/shaik-abdul-thouhid/ezi-code/archive/refs/tags/v0.3.0.tar.gz
+zig fetch --save https://github.com/shaik-abdul-thouhid/ezi-code/archive/refs/tags/v0.2.0.tar.gz
 ```
 
 Then in `build.zig`:
