@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- SIMD chunked scanners in `encoding.utf8` (additive — every pre-existing API
+  keeps its exact signature and behaviour). All are portable `@Vector` compares
+  and reductions with a scalar tail (no target intrinsics, no dynamic shuffles),
+  striding `std.simd.suggestVectorLength(u8)` bytes at a time. `@stable-since:
+  v0.3.0`:
+  - `asciiRunLength` — length of the leading ASCII run (`<= 0x7F`), the shared
+    primitive behind the others and usable directly for an ASCII fast path.
+  - `countScalarsSimd` — **unchecked** scalar count via the non-continuation-byte
+    rule (`(b & 0xC0) != 0x80`); equals `countScalars` on valid input.
+  - `simdLossyIterator` / `UTF8SimdLossyIterator` — a buffered lossy decode
+    iterator that widens ASCII runs in bulk; output is identical to
+    `lossyIterator` (malformed → U+FFFD, orphaned continuation runs collapse to a
+    single replacement).
 - Enumerable code-point **range tables** for Unicode properties, so consumers
   can resolve property classes into sorted ranges at comptime (the per-code-point
   page tables cannot be enumerated without walking all 1.1M code points). New
@@ -27,6 +40,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Performance: `encoding.utf8.validate` now skips ASCII runs in bulk via SIMD
+  (`asciiRunLength`) while the Höhrmann DFA is on a scalar boundary, instead of
+  feeding every byte through the DFA. ASCII bytes always keep the DFA in accept,
+  so the verdict is identical; only the dominant ASCII case is faster. Signature
+  and result are unchanged.
 - Performance: the UAX #14 line-break steppers (`lineStep`, `lineStepBytes`,
   and the `LineBreakIterator` / `CodePointLineBoundaryIterator` they drive) now
   compute the forward look-ahead only when a look-ahead-dependent rule

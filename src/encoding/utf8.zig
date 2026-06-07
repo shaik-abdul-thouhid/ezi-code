@@ -1005,14 +1005,36 @@ pub fn initUTF8ViewUnchecked(data: []const u8) UTF8View {
 }
 
 /// Returns `true` when `bytes` is well-formed UTF-8 from start to end, `false`
-/// otherwise. Uses the branch-free Höhrmann DFA in a single pass, so it is the
-/// fast path when only a yes/no answer is needed; reach for `countScalars` or
-/// `initUTF8View` when the failure reason or the scalar count matters.
+/// otherwise. The fast path when only a yes/no answer is needed; reach for
+/// `countScalars` or `initUTF8View` when the failure reason or the scalar count
+/// matters.
+///
+/// Runs the branch-free Höhrmann DFA, but while the DFA is in the accept state
+/// (i.e. on a scalar boundary) it skips whole ASCII runs in bulk via
+/// `asciiRunLength` — ASCII bytes always keep the DFA in accept, so skipping them
+/// cannot change the verdict. Multi-byte and malformed sequences still go through
+/// the DFA byte by byte, so the result is identical to a pure DFA scan; the SIMD
+/// skip just accelerates the dominant ASCII case. (Since v0.3.0; the v0.2.0
+/// implementation was a pure scalar DFA pass with the same result.)
 ///
 /// @stable-since: v0.2.0
 pub fn validate(bytes: []const u8) bool {
-    _ = scalarCountDfa(bytes) catch return false;
-    return true;
+    var state: u32 = UTF8_ACCEPT;
+    var cp: CodePoint = 0;
+    var i: usize = 0;
+
+    while (i < bytes.len) {
+        if (state == UTF8_ACCEPT) {
+            // On a boundary: fast-forward past the next ASCII run (all valid,
+            // all leaving the DFA in accept) before resuming byte-wise decoding.
+            i += asciiRunLength(bytes[i..]);
+            if (i >= bytes.len) break;
+        }
+        if (decodeByte(&state, &cp, bytes[i]) == .reject) return false;
+        i += 1;
+    }
+
+    return state == UTF8_ACCEPT;
 }
 
 /// Validates `bytes` and returns the number of Unicode scalars it encodes.
@@ -1076,6 +1098,201 @@ pub fn bytesToUTF8String(allocator: std.mem.Allocator, bytes: []const u8) (UTF8V
     _ = try utf8ViewToUTF8String(&utf8_view, buf);
 
     return buf;
+}
+
+// --- SIMD chunked scanners --------------------------------------------------
+//
+// The functions and iterator below are data-parallel fast paths over the same
+// byte model as the scalar codec above; they are *additive* (every pre-existing
+// API keeps its exact signature and behaviour). The shared idea is that ASCII
+// bytes (`<= 0x7F`) are precisely the one-byte UTF-8 scalars, so a run of them
+// can be located, counted, or widened to code points without any per-byte
+// classification — and a `simd_block`-wide vector locates such runs many bytes
+// at a time. Everything here is portable `@Vector` compares + reductions with a
+// scalar tail; there are no target-specific intrinsics, no dynamic shuffles, and
+// nothing reads past the slice bounds.
+//
+// On *which* paths SIMD applies: counting and the boolean `validate` are fully
+// data-parallel (one "is this block clean" answer per vector). Fine-grained
+// strict decoding — which must name *why* and *where* a sequence is malformed —
+// cannot get that attribution from a vector, so SIMD only fast-forwards the
+// ASCII/clean runs there and the existing scalar path still attributes the
+// error. Decoding to code points is variable-length and only the ASCII sub-case
+// widens 1:1, which is what the chunk iterator exploits.
+
+/// Native vector width for the chunked scanners, in bytes. `suggestVectorLength`
+/// returns the target's preferred SIMD register width for `u8` (e.g. 16 on
+/// baseline x86-64 / NEON, 32 with AVX2, 64 with AVX-512); `orelse 16` keeps a
+/// sane block size on targets that report none. Used purely as a stride — the
+/// scalar tail handles any remainder, so correctness is independent of its value.
+const simd_block: usize = std.simd.suggestVectorLength(u8) orelse 16;
+
+/// Returns the number of leading bytes of `bytes` that are ASCII (`<= 0x7F`),
+/// i.e. the length of the run a decoder can copy 1:1 from bytes to code points
+/// with no classification. Scans `simd_block` bytes per step with a single
+/// compare-and-reduce, then pinpoints the first non-ASCII byte within the
+/// straddling block; a scalar tail finishes the final partial block. Returns
+/// `bytes.len` when every byte is ASCII and `0` when the first byte is not.
+///
+/// This is the shared primitive behind `countScalarsSimd`, the SIMD `validate`
+/// fast path, and `UTF8SimdLossyIterator`; it is also useful directly for
+/// callers that want to take an ASCII fast path of their own.
+///
+/// @stable-since: v0.3.0
+pub fn asciiRunLength(bytes: []const u8) usize {
+    const V = @Vector(simd_block, u8);
+    const limit: V = @splat(MAX_ASCII);
+    var i: usize = 0;
+
+    while (i + simd_block <= bytes.len) : (i += simd_block) {
+        const chunk: V = bytes[i..][0..simd_block].*;
+        // Any lane strictly above 0x7F is a non-ASCII byte somewhere in the block.
+        if (@reduce(.Or, chunk > limit)) {
+            @branchHint(.unlikely);
+            // A non-ASCII byte exists in [i, i + simd_block); the scan terminates
+            // before leaving the block, so it never reads out of bounds.
+            var j = i;
+            while (bytes[j] <= MAX_ASCII) : (j += 1) {}
+            return j;
+        }
+    }
+
+    while (i < bytes.len and bytes[i] <= MAX_ASCII) : (i += 1) {}
+    return i;
+}
+
+/// Counts the Unicode scalars in `bytes` **without validating**, by counting the
+/// bytes that are not UTF-8 continuation bytes (`(b & 0xC0) != 0x80`) — every
+/// scalar, one to four bytes long, has exactly one such lead byte. Scans
+/// `simd_block` bytes per step with a vector mask and a lane sum, with a scalar
+/// tail.
+///
+/// For well-formed UTF-8 this equals `countScalars` / `countScalarsLossy` at a
+/// fraction of the cost. It performs **no** validation: on malformed input the
+/// count is whatever the lead-byte rule yields (a stray continuation byte is not
+/// counted; a truncated lead still is), so reach for the validating counterparts
+/// when the input's validity is unknown and the exact scalar count must be
+/// meaningful.
+///
+/// @stable-since: v0.3.0
+pub fn countScalarsSimd(bytes: []const u8) usize {
+    const V = @Vector(simd_block, u8);
+    const cont_bits: V = @splat(continuation_sequence_mask);
+    const cont_val: V = @splat(continuation_sequence);
+    const zero: @Vector(simd_block, u16) = @splat(0);
+    const one: @Vector(simd_block, u16) = @splat(1);
+
+    var count: usize = 0;
+    var i: usize = 0;
+
+    while (i + simd_block <= bytes.len) : (i += simd_block) {
+        const chunk: V = bytes[i..][0..simd_block].*;
+        const is_cont = (chunk & cont_bits) == cont_val;
+        // 1 for every lead byte, 0 for continuation bytes; widened so the per-block
+        // lane sum cannot overflow regardless of `simd_block`.
+        count += @reduce(.Add, @select(u16, is_cont, zero, one));
+    }
+
+    while (i < bytes.len) : (i += 1) {
+        if (!isContinuationByte(bytes[i])) count += 1;
+    }
+
+    return count;
+}
+
+/// Window size for `UTF8SimdLossyIterator`'s internal decode buffer, in code
+/// points. Larger amortises the per-refill bookkeeping over more scalars; this
+/// fits comfortably in cache and keeps the iterator value small.
+const simd_iter_window: usize = 64;
+
+/// Buffered, SIMD-accelerated forward lossy decoder — a drop-in alternative to
+/// `UTF8LossyIterator` with identical observable output (malformed sequences
+/// become U+FFFD and a run of orphaned continuation bytes collapses to a single
+/// replacement), but it widens ASCII runs in bulk via `asciiRunLength` instead
+/// of classifying every byte. Decoding stays unchecked-fast on the ASCII common
+/// case and falls back to the scalar lossy decoder only for multi-byte and
+/// malformed sequences. Obtain one with `simdLossyIterator`.
+///
+/// @stable-since: v0.3.0
+pub const UTF8SimdLossyIterator = struct {
+    data: []const u8,
+    /// Byte cursor: index of the next byte not yet decoded into `buf`.
+    index: usize = 0,
+    buf: [simd_iter_window]CodePoint = undefined,
+    buf_len: usize = 0,
+    buf_pos: usize = 0,
+
+    /// Refill `buf` from `index`. Establishes the invariant that, whenever
+    /// `index < data.len`, at least one scalar is produced — so `next` always
+    /// makes progress and never spins.
+    fn refill(self: *UTF8SimdLossyIterator) void {
+        self.buf_pos = 0;
+        self.buf_len = 0;
+
+        // Bulk-widen a leading ASCII run (each ASCII byte is its own scalar).
+        const run = @min(asciiRunLength(self.data[self.index..]), simd_iter_window);
+        var k: usize = 0;
+        while (k < run) : (k += 1) {
+            self.buf[k] = self.data[self.index + k];
+        }
+        self.index += run;
+        self.buf_len = run;
+
+        // Fill the rest with scalar lossy decodes, stopping early when the next
+        // byte re-enters an ASCII run so the following refill can widen it.
+        while (self.buf_len < simd_iter_window and self.index < self.data.len) {
+            if (self.data[self.index] <= MAX_ASCII) break;
+            const decoded = validateAndDecodeCodePointBytesLossy(self.data, self.index) catch break;
+            self.buf[self.buf_len] = decoded.code_point;
+            self.buf_len += 1;
+            self.index += decoded.len;
+        }
+    }
+
+    /// Advance to and return the next scalar (replacement on malformed bytes), or
+    /// `null` at the end.
+    ///
+    /// @stable-since: v0.3.0
+    pub fn next(self: *UTF8SimdLossyIterator) ?CodePoint {
+        if (self.buf_pos >= self.buf_len) {
+            if (self.index >= self.data.len) return null;
+            self.refill();
+            if (self.buf_len == 0) return null;
+        }
+        const cp = self.buf[self.buf_pos];
+        self.buf_pos += 1;
+        return cp;
+    }
+
+    /// Rewind the cursor to the start of the input.
+    ///
+    /// @stable-since: v0.3.0
+    pub fn reset(self: *UTF8SimdLossyIterator) void {
+        self.index = 0;
+        self.buf_len = 0;
+        self.buf_pos = 0;
+    }
+};
+
+/// Takes un-validated bytes and returns a buffered, SIMD-accelerated lossy
+/// iterator. Same observable contract as `lossyIterator` (invalid sequences
+/// become U+FFFD; a run of orphaned continuation bytes collapses to a single
+/// replacement), but ASCII runs are widened in bulk. Prefer this over
+/// `lossyIterator` for large, mostly-ASCII inputs.
+///
+/// ## Usage
+///
+/// ```zig
+/// var iter = encoding.utf8.simdLossyIterator(bytes_to_decode);
+///
+/// while (iter.next()) |code_point| {
+///     ...
+/// }
+/// ```
+///
+/// @stable-since: v0.3.0
+pub fn simdLossyIterator(bytes: []const u8) UTF8SimdLossyIterator {
+    return .{ .data = bytes };
 }
 
 // --- tests ------------------------------------------------------------------
@@ -2066,4 +2283,81 @@ test "public view types are reachable as named types" {
     try std.testing.expectEqual(@as(?CodePoint, 'a'), it.next());
     var lossy: UTF8LossyIterator = lossyIterator("ab");
     try std.testing.expectEqual(@as(?CodePoint, 'a'), lossy.next());
+}
+
+// --- SIMD chunked scanner tests ---------------------------------------------
+
+test "asciiRunLength: pure ASCII, boundary, empty, and short-of-block inputs" {
+    try std.testing.expectEqual(@as(usize, 0), asciiRunLength(""));
+    // All ASCII (longer than one simd_block) → full length.
+    const ascii = "the quick brown fox jumps over the lazy dog 0123456789";
+    try std.testing.expectEqual(ascii.len, asciiRunLength(ascii));
+    // First byte non-ASCII → 0.
+    try std.testing.expectEqual(@as(usize, 0), asciiRunLength("é"));
+    // Run that ends mid-block at a multi-byte lead byte ("Hello, " is 7 bytes).
+    try std.testing.expectEqual(@as(usize, 7), asciiRunLength("Hello, мир"));
+    // Run that ends exactly inside the tail (shorter than a block).
+    try std.testing.expectEqual(@as(usize, 3), asciiRunLength("abcé"));
+}
+
+test "asciiRunLength: non-ASCII straddling the block boundary" {
+    // 20 ASCII bytes then a 2-byte scalar — forces the hit in the second block
+    // when simd_block == 16, and in the tail otherwise. Either way the run is 20.
+    const s = "abcdefghijklmnopqrst" ++ "é";
+    try std.testing.expectEqual(@as(usize, 20), asciiRunLength(s));
+}
+
+test "countScalarsSimd: matches countScalars on valid mixed input" {
+    const samples = [_][]const u8{
+        "",
+        "ascii only, several blocks long 0123456789abcdef",
+        "Hello, мир 😀 world",
+        "日本語テキスト",
+        "aé€😀baé€😀baé€😀baé€😀baé€😀baé€😀b", // mixed 1/2/3/4-byte scalars, several blocks long
+    };
+    for (samples) |s| {
+        const expected = try countScalars(s);
+        try std.testing.expectEqual(expected, countScalarsSimd(s));
+    }
+}
+
+test "simdLossyIterator: parity with lossyIterator on valid and malformed bytes" {
+    const samples = [_][]const u8{
+        "",
+        "plain ascii that spans more than a single simd block!!",
+        "Hello, мир 😀 world",
+        &[_]u8{ 'a', 0x80, 'b' }, // orphan continuation byte
+        &[_]u8{ 0xE0, 0x80, 0x80 }, // overlong
+        &[_]u8{ 0xED, 0xA0, 0x80 }, // surrogate
+        &[_]u8{ 'x', 0xF0, 0x9F, 0x98 }, // truncated 4-byte at EOF
+        &[_]u8{ 0x80, 0x80, 0x80, 'z' }, // run of orphans collapses to one U+FFFD
+    };
+    for (samples) |s| {
+        var ref = lossyIterator(s);
+        var simd = simdLossyIterator(s);
+        while (true) {
+            const a = ref.next();
+            const b = simd.next();
+            try std.testing.expectEqual(a, b);
+            if (a == null) break;
+        }
+    }
+}
+
+test "validate: SIMD ASCII fast path agrees with the scalar DFA" {
+    const valid = [_][]const u8{
+        "",
+        "ascii only across multiple simd blocks 0123456789!!",
+        "Hello, мир 😀 world",
+        "日本語",
+    };
+    for (valid) |s| try std.testing.expect(validate(s));
+
+    const invalid = [_][]const u8{
+        &[_]u8{0x80}, // orphan continuation
+        &[_]u8{ 0xE0, 0x80, 0x80 }, // overlong
+        &[_]u8{ 0xED, 0xA0, 0x80 }, // surrogate
+        &[_]u8{ 'a', 'b', 'c', 0xF0, 0x9F, 0x98 }, // truncated tail
+    };
+    for (invalid) |s| try std.testing.expect(!validate(s));
 }

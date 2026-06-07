@@ -75,6 +75,52 @@ The most complete of the three:
 - Bulk conversions to `[]CodePoint`: `bytesToCodePointsBuffer` (strict, v0.2.0) and
   `bytesToCodePointsLossy(Buffer)`, `bytesToUTF8String` (allocating, strict), and
   `bytesToUTF8StringComptime` for building scalar arrays at compile time.
+- SIMD chunked scanners (v0.3.0) — see below.
+
+## SIMD chunked scanners (v0.3.0)
+
+These are **additive** data-parallel fast paths in `utf8.zig`; every pre-existing
+API keeps its exact signature and behaviour. They share one observation: ASCII
+bytes (`<= 0x7F`) are exactly the one-byte UTF-8 scalars, so a run of them can be
+located, counted, or widened to code points with no per-byte classification — and
+a `simd_block`-wide vector (`std.simd.suggestVectorLength(u8)`, e.g. 16/32/64)
+locates such runs many bytes at a time. All are portable `@Vector` compares and
+reductions with a scalar tail: no target intrinsics, no dynamic shuffles, nothing
+reads past the slice.
+
+- `asciiRunLength(bytes) usize` — length of the leading ASCII run (the shared
+  primitive; also useful directly for callers wanting their own ASCII fast path).
+- `countScalarsSimd(bytes) usize` — **unchecked** scalar count via the
+  non-continuation-byte rule (`(b & 0xC0) != 0x80`). Equals `countScalars` on
+  valid input; performs no validation, so use the validating counterparts when
+  validity is unknown.
+- `simdLossyIterator` / `UTF8SimdLossyIterator` — a buffered lossy decode iterator
+  with output identical to `lossyIterator` (malformed → U+FFFD, orphan
+  continuation runs collapse to one replacement) that widens ASCII runs in bulk.
+  Prefer it over `lossyIterator` for large, mostly-ASCII input.
+- `validate` is unchanged in signature and result but, since v0.3.0, skips ASCII
+  runs in bulk while the Höhrmann DFA is on a scalar boundary (ASCII bytes always
+  keep the DFA in accept, so skipping them cannot change the verdict).
+
+### Which paths can be SIMD — validation vs. unchecked
+
+A common misconception is that "only the unchecked variant can be SIMD". In fact
+*validation* is what the well-known SIMD UTF-8 work (Lemire & Keiser; simdjson /
+simdutf) accelerates. Both can be SIMD; the real constraint is **error
+granularity**, not validation-vs-unchecked:
+
+- **Counting and boolean `validate`** are fully data-parallel — a vector yields a
+  single "this block is clean" answer, which is all they need. Largest, simplest
+  wins (`countScalarsSimd`, the `validate` fast path).
+- **Fine-grained strict decoders** must name *which* error (`OverlongEncoding` vs
+  `SurrogateCodePoint` vs `CodePointTooLarge`) at a *specific* offset — a vector
+  cannot produce that attribution, so SIMD only fast-forwards the ASCII/clean
+  runs and the existing scalar path still attributes the error. SIMD *bypasses*
+  the scalar path on the common case; it does not *replace* it.
+- **Decoding to code points** is intrinsically variable-length (output count ≠
+  input count); only the ASCII sub-case widens 1:1 (`u8` → `u21`), which is what
+  the chunk iterator exploits. Reverse decode and single-scalar random-access
+  decode stay scalar.
 
 ## UTF-16 (`utf16.zig`) and UTF-32 (`utf32.zig`)
 
