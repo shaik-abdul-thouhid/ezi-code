@@ -37,8 +37,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     assigned code points.
 - `properties.isWord` — Perl `\w` / word-boundary predicate
   (`Alphabetic ∪ Mark ∪ Decimal_Number ∪ Connector_Punctuation ∪ Join_Control`).
+  Resolved from the enumerable range tables (with an ASCII fast path), not the
+  per-code-point page tries, so a consumer that needs only `isWord` never links
+  the page tables. `@stable-since: v0.3.0`.
+- **Range-table-backed per-code-point queries** — equivalent to the page-table
+  predicates but linking only the enumerable range tables (no two-level page
+  tries), so a size-sensitive consumer can drop the tries entirely. Each is
+  proven equal to its page-table twin for every code point. `@stable-since:
+  v0.3.0`:
+  - `properties.categoryFromRuns` — `General_Category` via binary search over
+    `category_runs` (twin of `generalCategory`).
+  - `properties.derivedMaskFromRuns` — DerivedCoreProperties bitmask via binary
+    search over `derived_runs` (twin of `derivedPropertyMask`).
+  - `properties.isIdentifierStartByRanges` / `isIdentifierContinueByRanges` —
+    twins of `isIdentifierStart` / `isIdentifierContinue`.
 
 ### Changed
+
+- The Unicode range-table re-exports (`properties.category_runs`,
+  `properties.derived_runs`, `properties.white_space_ranges`,
+  `properties.join_control_ranges`, `scripts.script_runs`,
+  `casing.case_folding.common_simple_table`) are now `[]const T` slices over a
+  single backing array instead of by-value array re-exports. Iteration,
+  indexing, slicing and `.len` are unchanged; this removes a duplicate copy of
+  each table that the by-value alias materialized in consumer binaries (and the
+  extra comptime-materialized copy). Still all v0.3.0-unreleased.
 
 - Performance: `encoding.utf8.validate` now skips ASCII runs in bulk via SIMD
   (`asciiRunLength`) while the Höhrmann DFA is on a scalar boundary, instead of

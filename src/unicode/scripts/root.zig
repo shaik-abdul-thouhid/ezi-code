@@ -29,7 +29,7 @@ pub const generated_ranges = @import("generated/script_ranges.zig");
 /// One entry of `script_runs`: an inclusive `[start, end]` run of equal Script.
 pub const ScriptRun = generated_ranges.ScriptRun;
 /// Script runs (assigned scripts only; `.unknown` omitted), sorted by `start`.
-pub const script_runs = generated_ranges.script_runs;
+pub const script_runs: []const ScriptRun = &generated_ranges.script_runs;
 
 /// Enum of every UAX #24 Script value, one variant per script (plus `common`,
 /// `inherited`, and `unknown`). The integer tag matches the page-table layout.

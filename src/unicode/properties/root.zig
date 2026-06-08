@@ -46,18 +46,18 @@ pub const CanonicalCombiningClass = types.CanonicalCombiningClass;
 /// General_Category.
 pub const CategoryRun = category_ranges.CategoryRun;
 /// Whole-code-space partition into General_Category runs, sorted by `start`.
-pub const category_runs = category_ranges.category_runs;
+pub const category_runs: []const CategoryRun = &category_ranges.category_runs;
 /// One entry of `derived_runs`: an inclusive run with a DerivedCoreProperties
 /// bitmask (`& @intFromEnum(DerivedProperty.x)` to test a property).
 pub const DerivedRun = derived_ranges.DerivedRun;
 /// DerivedCoreProperties runs (mask != 0 only), sorted by `start`.
-pub const derived_runs = derived_ranges.derived_runs;
+pub const derived_runs: []const DerivedRun = &derived_ranges.derived_runs;
 /// A plain inclusive `[start, end]` code-point range.
 pub const CodePointRange = prop_list_ranges.Range;
 /// PropList White_Space ranges (basis for `\s`).
-pub const white_space_ranges = prop_list_ranges.white_space_ranges;
+pub const white_space_ranges: []const CodePointRange = &prop_list_ranges.white_space_ranges;
 /// PropList Join_Control ranges (part of `\w`).
-pub const join_control_ranges = prop_list_ranges.join_control_ranges;
+pub const join_control_ranges: []const CodePointRange = &prop_list_ranges.join_control_ranges;
 
 const CodePoint = encoding.CodePoint;
 
@@ -303,15 +303,79 @@ pub fn isJoinControl(code_point: CodePoint) bool {
 /// by the Perl `\w` shorthand and word-boundary (`\b`) tests:
 /// `Alphabetic ∪ Mark ∪ Decimal_Number ∪ Connector_Punctuation ∪ Join_Control`.
 ///
+/// Resolved from the enumerable **range tables** (`derived_runs`/`category_runs`/
+/// `join_control_ranges`) rather than the per-code-point page tables, with an
+/// ASCII fast path. A consumer that only needs `isWord` (and the other
+/// `*FromRuns`/`*ByRanges` queries) therefore never links the two-level page
+/// tries — a large binary-size saving for, e.g., a regex engine. The answer is
+/// identical to the page-table path (proven exhaustively in the property tests).
+///
 /// @stable-since: v0.3.0
 pub fn isWord(code_point: CodePoint) bool {
-    if (isAlphabetic(code_point)) return true;
-    if (isDecimalDigit(code_point)) return true;
-    if (isJoinControl(code_point)) return true;
-    return switch (generalCategory(code_point)) {
-        .non_spacing_mark, .spacing_mark, .enclosing_mark, .connector_punctuation => true,
+    // ASCII fast path: word = [0-9A-Za-z_].
+    if (code_point < 0x80) {
+        return (code_point >= '0' and code_point <= '9') or
+            (code_point >= 'A' and code_point <= 'Z') or
+            (code_point >= 'a' and code_point <= 'z') or
+            code_point == '_';
+    }
+    if (derivedMaskFromRuns(code_point) & @intFromEnum(DerivedProperty.alphabetic) != 0) return true;
+    if (utils.containsInRange(prop_list_ranges.Range, CodePoint, "start", "end", join_control_ranges, code_point)) return true;
+    return switch (categoryFromRuns(code_point)) {
+        .decimal_number, .non_spacing_mark, .spacing_mark, .enclosing_mark, .connector_punctuation => true,
         else => false,
     };
+}
+
+/// The General_Category of `code_point`, resolved by binary search over the
+/// enumerable `category_runs` partition instead of the per-code-point page
+/// tables. Equivalent to `generalCategory` but links only the range table.
+/// Returns `.unassigned` for code points above the assigned range.
+///
+/// @stable-since: v0.3.0
+pub fn categoryFromRuns(code_point: CodePoint) GeneralCategory {
+    const run = utils.searchRange(CategoryRun, CodePoint, "start", "end", category_runs, code_point) orelse return .unassigned;
+    return run.category;
+}
+
+/// The DerivedCoreProperties bitmask of `code_point`, resolved by binary search
+/// over the enumerable `derived_runs` table instead of the per-code-point page
+/// tables. Equivalent to `derivedPropertyMask` but links only the range table;
+/// test a property with `& @intFromEnum(DerivedProperty.<x>)`.
+///
+/// @stable-since: v0.3.0
+pub fn derivedMaskFromRuns(code_point: CodePoint) u32 {
+    const run = utils.searchRange(DerivedRun, CodePoint, "start", "end", derived_runs, code_point) orelse return 0;
+    return run.mask;
+}
+
+/// Range-table-backed twin of `isIdentifierStart` (ID_Start ∪ `_`): resolved
+/// from `derived_runs` with an ASCII fast path, so callers avoid linking the
+/// per-code-point page tries. Identical result to `isIdentifierStart`.
+///
+/// @stable-since: v0.3.0
+pub fn isIdentifierStartByRanges(code_point: CodePoint) bool {
+    if (code_point < 0x80) {
+        return (code_point >= 'A' and code_point <= 'Z') or
+            (code_point >= 'a' and code_point <= 'z') or
+            code_point == '_';
+    }
+    return derivedMaskFromRuns(code_point) & @intFromEnum(DerivedProperty.id_start) != 0;
+}
+
+/// Range-table-backed twin of `isIdentifierContinue` (ID_Continue ∪ `_`):
+/// resolved from `derived_runs` with an ASCII fast path. Identical result to
+/// `isIdentifierContinue`.
+///
+/// @stable-since: v0.3.0
+pub fn isIdentifierContinueByRanges(code_point: CodePoint) bool {
+    if (code_point < 0x80) {
+        return (code_point >= '0' and code_point <= '9') or
+            (code_point >= 'A' and code_point <= 'Z') or
+            (code_point >= 'a' and code_point <= 'z') or
+            code_point == '_';
+    }
+    return derivedMaskFromRuns(code_point) & @intFromEnum(DerivedProperty.id_continue) != 0;
 }
 
 /// Returns whether `code_point` has the Dash property.
@@ -1242,6 +1306,33 @@ test "properties zalgo: only bases are starters and every mark is a combining Ma
         }
         try testing.expectEqual(s.base_count, starters);
     }
+}
+
+test "range-table predicates equal the page-table path over the whole code space" {
+    // The *FromRuns / *ByRanges queries resolve from the enumerable range tables
+    // instead of the per-code-point page tries. They must agree with the page
+    // tables for EVERY code point — that equivalence is what lets a size-sensitive
+    // consumer drop the tries without any behaviour change.
+    var cp: CodePoint = 0;
+    while (cp <= 0x10FFFF) : (cp += 1) {
+        try testing.expectEqual(generalCategory(cp), categoryFromRuns(cp));
+        try testing.expectEqual(derivedPropertyMask(cp), derivedMaskFromRuns(cp));
+        try testing.expectEqual(isWordReference(cp), isWord(cp));
+        try testing.expectEqual(isIdentifierStart(cp), isIdentifierStartByRanges(cp));
+        try testing.expectEqual(isIdentifierContinue(cp), isIdentifierContinueByRanges(cp));
+    }
+}
+
+/// The pre-v0.3.0 page-table definition of `\w`, kept here only as the oracle the
+/// equivalence test above checks the range-table `isWord` against.
+fn isWordReference(code_point: CodePoint) bool {
+    if (isAlphabetic(code_point)) return true;
+    if (isDecimalDigit(code_point)) return true;
+    if (isJoinControl(code_point)) return true;
+    return switch (generalCategory(code_point)) {
+        .non_spacing_mark, .spacing_mark, .enclosing_mark, .connector_punctuation => true,
+        else => false,
+    };
 }
 
 test {
