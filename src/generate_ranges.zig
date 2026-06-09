@@ -24,6 +24,7 @@ const ezi_code = @import("ezi_code");
 
 const properties = ezi_code.unicode.properties;
 const scripts = ezi_code.unicode.scripts;
+const emoji = ezi_code.unicode.emoji;
 const GeneralCategory = properties.GeneralCategory;
 const ScriptType = scripts.ScriptType;
 
@@ -52,6 +53,7 @@ pub fn main(init: std.process.Init) !void {
     try genDerivedRuns(io);
     try genPropListRanges(io);
     try genScriptRuns(io);
+    try genEmojiRanges(io);
 
     const end = clock.now(io);
     std.debug.print("generate-ranges done in {}ms\n", .{end.toMilliseconds() - start.toMilliseconds()});
@@ -243,4 +245,61 @@ fn genScriptRuns(io: std.Io) !void {
     }
     try w.writeAll("};\n");
     std.debug.print("script_runs: {} runs\n", .{count});
+}
+
+// The emoji `is*` lookups are `inline fn`, which cannot coerce to the ordinary
+// `fn(CodePoint) bool` that `emitBoolRanges` expects. Wrap each in a plain
+// (non-inline) function so it passes as a concrete function value.
+const CP = ezi_code.encoding.CodePoint;
+fn isEmoji(cp: CP) bool {
+    return emoji.isEmoji(cp);
+}
+fn isEmojiPresentation(cp: CP) bool {
+    return emoji.isEmojiPresentation(cp);
+}
+fn isEmojiModifier(cp: CP) bool {
+    return emoji.isEmojiModifier(cp);
+}
+fn isEmojiModifierBase(cp: CP) bool {
+    return emoji.isEmojiModifierBase(cp);
+}
+fn isEmojiComponent(cp: CP) bool {
+    return emoji.isEmojiComponent(cp);
+}
+fn isExtendedPictographic(cp: CP) bool {
+    return emoji.isExtendedPictographic(cp);
+}
+
+// ── Emoji ranges (covers \p{Emoji}, \p{Emoji_Presentation}, ...) ───────────────
+// One sorted range list per UTS #51 boolean property, coalesced from the
+// committed page/range predicates. Mirrors the `prop_list` range layout (a plain
+// `Range{ start, end }`), so a consumer enumerates a few-hundred-entry array
+// instead of walking the whole code space to resolve `\p{Emoji}` etc.
+fn genEmojiRanges(io: std.Io) !void {
+    var buf: [1 << 16]u8 = undefined;
+    var h = try openWriter(io, "src/unicode/emoji/generated/emoji_ranges.zig", &buf);
+    defer h.file.close(io);
+    const w = &h.fw.interface;
+    defer w.flush() catch {};
+
+    try w.writeAll(header);
+    try w.writeAll(
+        \\const CodePoint = @import("encoding").CodePoint;
+        \\
+        \\pub const Range = struct { start: CodePoint, end: CodePoint };
+        \\
+        \\/// UTS #51 Emoji ranges (the basis for resolving `\p{Emoji}`).
+        \\
+    );
+    try emitBoolRanges(w, "emoji_ranges", isEmoji);
+    try w.writeAll("\n/// UTS #51 Emoji_Presentation ranges.\n");
+    try emitBoolRanges(w, "emoji_presentation_ranges", isEmojiPresentation);
+    try w.writeAll("\n/// UTS #51 Emoji_Modifier ranges.\n");
+    try emitBoolRanges(w, "emoji_modifier_ranges", isEmojiModifier);
+    try w.writeAll("\n/// UTS #51 Emoji_Modifier_Base ranges.\n");
+    try emitBoolRanges(w, "emoji_modifier_base_ranges", isEmojiModifierBase);
+    try w.writeAll("\n/// UTS #51 Emoji_Component ranges.\n");
+    try emitBoolRanges(w, "emoji_component_ranges", isEmojiComponent);
+    try w.writeAll("\n/// UTS #51 Extended_Pictographic ranges (the UAX #29 GB11 basis).\n");
+    try emitBoolRanges(w, "extended_pictographic_ranges", isExtendedPictographic);
 }

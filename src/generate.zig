@@ -3458,7 +3458,7 @@ pub fn main(init: std.process.Init) !void {
             .generatorFn = generateGraphemeBreakProperty,
         },
         .{
-            .file_name = "src/unicode/segmentation/generated/emoji_data.zig",
+            .file_name = "src/unicode/emoji/generated/emoji_data.zig",
             .url = "https://www.unicode.org/Public/17.0.0/ucd/emoji/emoji-data.txt",
             .generatorFn = generateEmojiData,
         },

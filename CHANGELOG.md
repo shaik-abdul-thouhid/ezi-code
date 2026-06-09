@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.0] - 2026-06-09
 
 ### Added
 
@@ -51,9 +51,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     search over `derived_runs` (twin of `derivedPropertyMask`).
   - `properties.isIdentifierStartByRanges` / `isIdentifierContinueByRanges` —
     twins of `isIdentifierStart` / `isIdentifierContinue`.
+- A dedicated **`unicode.emoji`** module for the UTS #51 emoji character
+  properties (`emoji-data.txt`), promoting the six emoji predicates out of
+  `unicode.segmentation` into a first-class property module alongside `scripts`,
+  `blocks`, etc. The generated page/range tables (`emoji.generated`, regenerated
+  by `zig build generate`) now live under `unicode/emoji/generated/`. All
+  `@stable-since: v0.3.0`:
+  - Per-code-point predicates `emoji.isEmoji`, `isEmojiPresentation`,
+    `isEmojiModifier`, `isEmojiModifierBase`, `isEmojiComponent`, and
+    `isExtendedPictographic` (also surfaced as `unicode.isEmoji`, … ).
+  - `emoji.EmojiProperty` (enum of the six properties), `emoji.EmojiProperties`
+    (a `packed struct` of all six bools with `.any()`), `emoji.emojiProperties`
+    (resolve all six at once), `emoji.hasEmojiProperty` (runtime-selected
+    dispatch), and `emoji.hasAnyEmojiProperty`.
+  - Enumerable code-point **range tables** so consumers can resolve `\p{Emoji}`,
+    `\p{Extended_Pictographic}`, etc. into sorted ranges at comptime without
+    walking all 1.1M code points (same rationale as `scripts.script_runs`).
+    Emitted by an extended `zig build generate-ranges` into
+    `unicode/emoji/generated/emoji_ranges.zig` and re-exported as
+    `emoji.emoji_ranges`, `emoji.emoji_presentation_ranges`,
+    `emoji.emoji_modifier_ranges`, `emoji.emoji_modifier_base_ranges`,
+    `emoji.emoji_component_ranges`, and `emoji.extended_pictographic_ranges`
+    (`EmojiRange{ start, end }`), with `emoji.rangesFor(property)` for
+    runtime selection. Each table is proven (test) to enumerate exactly its
+    predicate over the whole code space.
 
 ### Changed
 
+- The emoji predicates moved from `unicode.segmentation` to the new
+  `unicode.emoji` module (see Added). `segmentation.isEmoji`,
+  `isEmojiPresentation`, `isEmojiModifier`, `isEmojiModifierBase`,
+  `isEmojiComponent`, and `isExtendedPictographic` remain as deprecated
+  re-export aliases (so `segmentation` keeps compiling and UAX #29 grapheme
+  clustering still resolves `Extended_Pictographic`); prefer `unicode.emoji.*`.
+  `unicode.emoji_data` now points at `emoji.generated` rather than
+  `segmentation.emoji_data`. All still v0.3.0-unreleased.
 - The Unicode range-table re-exports (`properties.category_runs`,
   `properties.derived_runs`, `properties.white_space_ranges`,
   `properties.join_control_ranges`, `scripts.script_runs`,

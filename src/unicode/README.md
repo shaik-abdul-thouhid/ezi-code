@@ -33,9 +33,17 @@ inputs; you only re-run `generate` when bumping the Unicode version.
   `normalize` (and the `nfc`/`nfd`/`nfkc`/`nfkd` wrappers), plus `isNormalized`,
   Quick_Check, and a streaming `Normalizer`.
 - **segmentation** — grapheme cluster, word, sentence, and line breaking (UAX #14,
-  #29), the emoji properties they depend on, and an iterator for each over both
-  UTF-8 bytes and an explicit `[]const CodePoint`. The code-point iterators
-  assume every element is a valid Unicode scalar value.
+  #29), and an iterator for each over both UTF-8 bytes and an explicit
+  `[]const CodePoint`. The code-point iterators assume every element is a valid
+  Unicode scalar value. (Grapheme clustering depends on `Extended_Pictographic`
+  from the **emoji** module; the old `segmentation.isEmoji…` predicates remain as
+  deprecated aliases.)
+- **emoji** — the UTS #51 emoji character properties (`emoji-data.txt`):
+  `isEmoji`, `isEmojiPresentation`, `isEmojiModifier`, `isEmojiModifierBase`,
+  `isEmojiComponent`, `isExtendedPictographic`, the combined `emojiProperties` /
+  `EmojiProperties` / `hasEmojiProperty` / `hasAnyEmojiProperty`, and enumerable
+  range tables (`emoji_ranges`, `extended_pictographic_ranges`, …) for resolving
+  `\p{Emoji}` and friends at comptime.
 - **width** — East Asian Width.
 - **scripts** — `Script` and `ScriptExtensions`.
 - **bidi** — the Unicode Bidirectional Algorithm (UAX #9): both the character

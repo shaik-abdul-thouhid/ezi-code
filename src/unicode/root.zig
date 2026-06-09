@@ -22,6 +22,7 @@ pub const numeric = @import("numeric/root.zig");
 pub const blocks = @import("blocks/root.zig");
 pub const hangul = @import("hangul/root.zig");
 pub const age = @import("age/root.zig");
+pub const emoji = @import("emoji/root.zig");
 
 // Generated data table re-exports — useful for callers that want raw
 // table-level access rather than the consumer module's higher-level API.
@@ -31,7 +32,8 @@ pub const prop_list = properties.prop_list;
 pub const case_folding = casing.case_folding;
 pub const special_casing = casing.special_casing;
 pub const grapheme_break = segmentation.generated;
-pub const emoji_data = segmentation.emoji_data;
+pub const emoji_data = emoji.generated;
+pub const emoji_ranges_data = emoji.generated_ranges;
 pub const word_break = segmentation.word_break;
 pub const sentence_break = segmentation.sentence_break;
 pub const line_break = segmentation.line_break;
@@ -82,6 +84,18 @@ pub const hangulSyllableType = hangul.hangulSyllableType;
 pub const Age = age.Age;
 pub const Version = age.Version;
 pub const codePointAge = age.age;
+pub const EmojiProperty = emoji.EmojiProperty;
+pub const EmojiProperties = emoji.EmojiProperties;
+pub const EmojiRange = emoji.EmojiRange;
+pub const isEmoji = emoji.isEmoji;
+pub const isEmojiPresentation = emoji.isEmojiPresentation;
+pub const isEmojiModifier = emoji.isEmojiModifier;
+pub const isEmojiModifierBase = emoji.isEmojiModifierBase;
+pub const isEmojiComponent = emoji.isEmojiComponent;
+pub const isExtendedPictographic = emoji.isExtendedPictographic;
+pub const emojiProperties = emoji.emojiProperties;
+pub const hasEmojiProperty = emoji.hasEmojiProperty;
+pub const hasAnyEmojiProperty = emoji.hasAnyEmojiProperty;
 pub const GraphemeIterator = segmentation.GraphemeIterator;
 pub const CodePointGraphemeIterator = segmentation.CodePointGraphemeIterator;
 pub const InCB = segmentation.InCB;

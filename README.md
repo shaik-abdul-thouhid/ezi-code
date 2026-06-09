@@ -17,7 +17,7 @@ committed, so a normal build doesn't touch the network or the `ucd/` inputs.
 
 ## Status
 
-Version `0.3.0-dev`. Pre-1.0 in the literal sense: the API is allowed to change.
+Version `0.3.0`. Pre-1.0 in the literal sense: the API is allowed to change.
 Tracks a recent Zig dev build (`0.17.0-dev.607+456b2ec07` minimum); it does
 not build against stable 0.16. If your toolchain isn't on a current `master`,
 this will not compile, and that is the intended trade-off until Zig 0.17 lands.
@@ -33,13 +33,13 @@ adversarial test set you'd expect for UAX #9.
 Via git ref (resolves the tag at fetch time):
 
 ```sh
-zig fetch --save git+https://github.com/shaik-abdul-thouhid/ezi-code.git#v0.2.0
+zig fetch --save git+https://github.com/shaik-abdul-thouhid/ezi-code.git#v0.3.0
 ```
 
 Or via plain HTTP tarball (pins the content hash in `build.zig.zon`):
 
 ```sh
-zig fetch --save https://github.com/shaik-abdul-thouhid/ezi-code/archive/refs/tags/v0.2.0.tar.gz
+zig fetch --save https://github.com/shaik-abdul-thouhid/ezi-code/archive/refs/tags/v0.3.0.tar.gz
 ```
 
 Then in `build.zig`:
@@ -115,6 +115,7 @@ the top-level types — the interesting design is at that level, not in the faca
 | `casing`        | Simple / full / special casing (Turkic etc.), case folding                |
 | `normalization` | NFC, NFD, NFKC, NFKD, Quick_Check, streaming `Normalizer`                 |
 | `segmentation`  | Grapheme / word / sentence / line breaking (UAX #14, UAX #29) + iterators |
+| `emoji`         | UTS #51 emoji properties (`Emoji`, `Emoji_Presentation`, `Extended_Pictographic`, …) + range tables |
 | `width`         | East Asian Width                                                          |
 | `scripts`       | Script and Script_Extensions                                              |
 | `bidi`          | UAX #9: mirroring, paired brackets, **and the full reordering algorithm** |
@@ -210,7 +211,7 @@ src/
   encoding/        UTF-8, UTF-16, UTF-32 codecs + per-module README
   transcoding/     Cross-encoding converters and UTF8Stream + per-module README
   unicode/         All UCD-backed properties and algorithms + per-module README
-    age/  bidi/  blocks/  casing/  hangul/  normalization/
+    age/  bidi/  blocks/  casing/  emoji/  hangul/  normalization/
     numeric/  properties/  scripts/  segmentation/  width/
     tests/         UCD conformance test runners
   collation/       UCA/DUCET collation + sort key serialization + per-module README

@@ -24,8 +24,12 @@ pub const GraphemeBreakProperty = generated.GraphemeBreakProperty;
 /// Returns the Grapheme_Cluster_Break property of a code point.
 pub const graphemeBreakProperty = generated.graphemeBreakProperty;
 
+/// The emoji property module (UTS #51). Grapheme clustering (rule GB11) depends
+/// on `Extended_Pictographic` from here; the emoji predicates are re-exported
+/// below for backward compatibility — new code should prefer `unicode.emoji`.
+const emoji = @import("../emoji/root.zig");
 /// Re-export of the generated emoji property tables (UTS #51).
-pub const emoji_data = @import("generated/emoji_data.zig");
+pub const emoji_data = emoji.generated;
 /// Re-export of the generated Word_Break property tables (UAX #29).
 pub const word_break = @import("generated/word_break.zig");
 /// Re-export of the generated Sentence_Break property tables (UAX #29).
@@ -50,17 +54,23 @@ pub const LineBreak = line_break.LineBreak;
 pub const lineBreak = line_break.lineBreak;
 
 /// Reports whether a code point has the Emoji property (UTS #51).
-pub const isEmoji = emoji_data.isEmoji;
+/// Deprecated alias for `unicode.emoji.isEmoji`.
+pub const isEmoji = emoji.isEmoji;
 /// Reports whether a code point has the Emoji_Presentation property.
-pub const isEmojiPresentation = emoji_data.isEmojiPresentation;
+/// Deprecated alias for `unicode.emoji.isEmojiPresentation`.
+pub const isEmojiPresentation = emoji.isEmojiPresentation;
 /// Reports whether a code point has the Emoji_Modifier property.
-pub const isEmojiModifier = emoji_data.isEmojiModifier;
+/// Deprecated alias for `unicode.emoji.isEmojiModifier`.
+pub const isEmojiModifier = emoji.isEmojiModifier;
 /// Reports whether a code point has the Emoji_Modifier_Base property.
-pub const isEmojiModifierBase = emoji_data.isEmojiModifierBase;
+/// Deprecated alias for `unicode.emoji.isEmojiModifierBase`.
+pub const isEmojiModifierBase = emoji.isEmojiModifierBase;
 /// Reports whether a code point has the Emoji_Component property.
-pub const isEmojiComponent = emoji_data.isEmojiComponent;
+/// Deprecated alias for `unicode.emoji.isEmojiComponent`.
+pub const isEmojiComponent = emoji.isEmojiComponent;
 /// Reports whether a code point has the Extended_Pictographic property.
-pub const isExtendedPictographic = emoji_data.isExtendedPictographic;
+/// Deprecated alias for `unicode.emoji.isExtendedPictographic`.
+pub const isExtendedPictographic = emoji.isExtendedPictographic;
 
 const derived_core_properties = @import("../properties/generated/derived_core_properties.zig");
 const DerivedProperty = derived_core_properties.Property;
