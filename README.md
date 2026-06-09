@@ -17,7 +17,8 @@ committed, so a normal build doesn't touch the network or the `ucd/` inputs.
 
 ## Status
 
-Version `0.3.0`. Pre-1.0 in the literal sense: the API is allowed to change.
+Version `0.4.0-dev` in `main` (latest release: `v0.3.0`). Pre-1.0 in the literal
+sense: the API is allowed to change.
 Tracks a recent Zig dev build (`0.17.0-dev.607+456b2ec07` minimum); it does
 not build against stable 0.16. If your toolchain isn't on a current `master`,
 this will not compile, and that is the intended trade-off until Zig 0.17 lands.
