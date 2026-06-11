@@ -685,6 +685,103 @@ pub fn foldFullAlloc(allocator: std.mem.Allocator, code_points: []const CodePoin
     return out;
 }
 
+/// Returns the number of codepoints produced by full uppercase mapping of
+/// `code_points`, accounting for expansions (e.g. U+00DF -> "SS"). Use it to
+/// size an `upperFullBuffer` destination. Uses the default (root) locale, so no
+/// Turkic tailoring is applied.
+///
+/// @stable-since: v0.4.1
+pub fn upperFullLen(code_points: []const CodePoint) usize {
+    var n: usize = 0;
+    for (code_points) |cp| n += toUpperCaseFull(cp, .none, .none).len;
+    return n;
+}
+
+/// Writes the full uppercase mapping of `code_points` into `out`, returning the
+/// count written. Expanding mappings (e.g. U+00DF -> "SS") are honored. Errors
+/// with `error.BufferTooSmall` when `out` cannot hold the result; size it with
+/// `upperFullLen`. Uses the default (root) locale, so no Turkic tailoring is
+/// applied.
+///
+/// @stable-since: v0.4.1
+pub fn upperFullBuffer(code_points: []const CodePoint, out: []CodePoint) error{BufferTooSmall}!usize {
+    var o: usize = 0;
+    for (code_points) |cp| {
+        const mapped = toUpperCaseFull(cp, .none, .none);
+        const sl = mapped.slice();
+        if (o + sl.len > out.len) return error.BufferTooSmall;
+        for (sl) |c| {
+            out[o] = c;
+            o += 1;
+        }
+    }
+    return o;
+}
+
+/// Allocates and returns the full uppercase mapping of `code_points`, honoring
+/// expansions. Uses the default (root) locale, so no Turkic tailoring is
+/// applied. The caller owns and must free the result.
+///
+/// @stable-since: v0.4.1
+pub fn upperFullAlloc(allocator: std.mem.Allocator, code_points: []const CodePoint) error{OutOfMemory}![]CodePoint {
+    const out = try allocator.alloc(CodePoint, upperFullLen(code_points));
+    errdefer allocator.free(out);
+    _ = upperFullBuffer(code_points, out) catch unreachable;
+    return out;
+}
+
+/// Returns the number of codepoints produced by full lowercase mapping of
+/// `code_points`, accounting for expansions. Use it to size a `lowerFullBuffer`
+/// destination. Applies the DEFAULT (context-free) lowercase mapping, so the
+/// Greek Final_Sigma context is not applied (a trailing capital U+03A3
+/// lowercases to medial U+03C3, not final U+03C2). For Final_Sigma use
+/// `titlecaseAlloc` or the per-scalar `toLowerCaseFull` with `.final_sigma`.
+///
+/// @stable-since: v0.4.1
+pub fn lowerFullLen(code_points: []const CodePoint) usize {
+    var n: usize = 0;
+    for (code_points) |cp| n += toLowerCaseFull(cp, .none, .none).len;
+    return n;
+}
+
+/// Writes the full lowercase mapping of `code_points` into `out`, returning the
+/// count written. Errors with `error.BufferTooSmall` when `out` cannot hold the
+/// result; size it with `lowerFullLen`. Applies the DEFAULT (context-free)
+/// lowercase mapping, so the Greek Final_Sigma context is not applied (a
+/// trailing capital U+03A3 lowercases to medial U+03C3, not final U+03C2). For
+/// Final_Sigma use `titlecaseAlloc` or the per-scalar `toLowerCaseFull` with
+/// `.final_sigma`.
+///
+/// @stable-since: v0.4.1
+pub fn lowerFullBuffer(code_points: []const CodePoint, out: []CodePoint) error{BufferTooSmall}!usize {
+    var o: usize = 0;
+    for (code_points) |cp| {
+        const mapped = toLowerCaseFull(cp, .none, .none);
+        const sl = mapped.slice();
+        if (o + sl.len > out.len) return error.BufferTooSmall;
+        for (sl) |c| {
+            out[o] = c;
+            o += 1;
+        }
+    }
+    return o;
+}
+
+/// Allocates and returns the full lowercase mapping of `code_points`, honoring
+/// expansions. Applies the DEFAULT (context-free) lowercase mapping, so the
+/// Greek Final_Sigma context is not applied (a trailing capital U+03A3
+/// lowercases to medial U+03C3, not final U+03C2). For Final_Sigma use
+/// `titlecaseAlloc` or the per-scalar `toLowerCaseFull` with `.final_sigma`. The
+/// caller owns and must free the result.
+///
+/// @stable-since: v0.4.1
+pub fn lowerFullAlloc(allocator: std.mem.Allocator, code_points: []const CodePoint) error{OutOfMemory}![]CodePoint {
+    const out = try allocator.alloc(CodePoint, lowerFullLen(code_points));
+    errdefer allocator.free(out);
+    _ = lowerFullBuffer(code_points, out) catch unreachable;
+    return out;
+}
+
 const UTF8ValidationError = encoding.utf8.UTF8ValidationError;
 
 fn simpleMapUtf8Len(comptime map: SimpleMap, bytes: []const u8) UTF8ValidationError!usize {
@@ -804,6 +901,115 @@ pub fn foldFullUtf8Writer(bytes: []const u8, writer: *std.Io.Writer) (UTF8Valida
         const decoded = try encoding.utf8.validateAndDecodeCodePointBytes(bytes, i);
         const folded = caseFoldFull(decoded.code_point);
         for (folded.slice()) |c| o += try encoding.utf8.encodeCodePointWriter(c, writer);
+        i += decoded.len;
+    }
+    return o;
+}
+
+/// Allocates and returns the full uppercase mapping of the UTF-8 `bytes` as a
+/// new UTF-8 string, honoring expanding mappings (e.g. ß -> "SS"). Unlike
+/// `upperSimpleUtf8Alloc`, this is fully Unicode-conformant for cased text.
+/// Uses the default (root) locale, so no Turkic tailoring is applied. Malformed
+/// input surfaces a `UTF8ValidationError`. The caller owns and must free the
+/// result.
+///
+/// @stable-since: v0.4.1
+pub fn upperFullUtf8Alloc(allocator: std.mem.Allocator, bytes: []const u8) (UTF8ValidationError || error{OutOfMemory})![]u8 {
+    // Size pass: account for mapping expansions and the encoded byte length.
+    var i: usize = 0;
+    var len: usize = 0;
+    while (i < bytes.len) {
+        const decoded = try encoding.utf8.validateAndDecodeCodePointBytes(bytes, i);
+        const mapped = toUpperCaseFull(decoded.code_point, .none, .none);
+        for (mapped.slice()) |c| len += encoding.utf8.utf8EncodeLen(c);
+        i += decoded.len;
+    }
+
+    const out = try allocator.alloc(u8, len);
+    errdefer allocator.free(out);
+
+    i = 0;
+    var o: usize = 0;
+    while (i < bytes.len) {
+        const decoded = encoding.utf8.validateAndDecodeCodePointBytes(bytes, i) catch unreachable;
+        const mapped = toUpperCaseFull(decoded.code_point, .none, .none);
+        for (mapped.slice()) |c| o += encoding.utf8.encodeCodePointUnchecked(c, out[o..]);
+        i += decoded.len;
+    }
+    return out;
+}
+
+/// Maps the UTF-8 `bytes` to full uppercase and writes the result as UTF-8 to
+/// `writer`, returning the number of bytes written. Expanding mappings (e.g.
+/// ß -> "SS") are honored. Uses the default (root) locale, so no Turkic
+/// tailoring is applied. Surfaces a `UTF8ValidationError` for malformed source
+/// or the writer's `error.WriteFailed`.
+///
+/// @stable-since: v0.4.1
+pub fn upperFullUtf8Writer(bytes: []const u8, writer: *std.Io.Writer) (UTF8ValidationError || std.Io.Writer.Error)!usize {
+    var i: usize = 0;
+    var o: usize = 0;
+    while (i < bytes.len) {
+        const decoded = try encoding.utf8.validateAndDecodeCodePointBytes(bytes, i);
+        const mapped = toUpperCaseFull(decoded.code_point, .none, .none);
+        for (mapped.slice()) |c| o += try encoding.utf8.encodeCodePointWriter(c, writer);
+        i += decoded.len;
+    }
+    return o;
+}
+
+/// Allocates and returns the full lowercase mapping of the UTF-8 `bytes` as a
+/// new UTF-8 string, honoring expanding mappings. Unlike `lowerSimpleUtf8Alloc`,
+/// this honors expansions, but it applies the DEFAULT (context-free) lowercase
+/// mapping, so the Greek Final_Sigma context is not applied (a trailing capital
+/// Σ lowercases to medial σ, not final ς). Direct users needing Final_Sigma
+/// should use `titlecaseUtf8Alloc` or the per-scalar `toLowerCaseFull` with
+/// `.final_sigma`. Malformed input surfaces a `UTF8ValidationError`. The caller
+/// owns and must free the result.
+///
+/// @stable-since: v0.4.1
+pub fn lowerFullUtf8Alloc(allocator: std.mem.Allocator, bytes: []const u8) (UTF8ValidationError || error{OutOfMemory})![]u8 {
+    // Size pass: account for mapping expansions and the encoded byte length.
+    var i: usize = 0;
+    var len: usize = 0;
+    while (i < bytes.len) {
+        const decoded = try encoding.utf8.validateAndDecodeCodePointBytes(bytes, i);
+        const mapped = toLowerCaseFull(decoded.code_point, .none, .none);
+        for (mapped.slice()) |c| len += encoding.utf8.utf8EncodeLen(c);
+        i += decoded.len;
+    }
+
+    const out = try allocator.alloc(u8, len);
+    errdefer allocator.free(out);
+
+    i = 0;
+    var o: usize = 0;
+    while (i < bytes.len) {
+        const decoded = encoding.utf8.validateAndDecodeCodePointBytes(bytes, i) catch unreachable;
+        const mapped = toLowerCaseFull(decoded.code_point, .none, .none);
+        for (mapped.slice()) |c| o += encoding.utf8.encodeCodePointUnchecked(c, out[o..]);
+        i += decoded.len;
+    }
+    return out;
+}
+
+/// Maps the UTF-8 `bytes` to full lowercase and writes the result as UTF-8 to
+/// `writer`, returning the number of bytes written. Expanding mappings are
+/// honored, but this applies the DEFAULT (context-free) lowercase mapping, so
+/// the Greek Final_Sigma context is not applied (a trailing capital Σ lowercases
+/// to medial σ, not final ς). Direct users needing Final_Sigma should use
+/// `titlecaseUtf8Alloc` or the per-scalar `toLowerCaseFull` with `.final_sigma`.
+/// Surfaces a `UTF8ValidationError` for malformed source or the writer's
+/// `error.WriteFailed`.
+///
+/// @stable-since: v0.4.1
+pub fn lowerFullUtf8Writer(bytes: []const u8, writer: *std.Io.Writer) (UTF8ValidationError || std.Io.Writer.Error)!usize {
+    var i: usize = 0;
+    var o: usize = 0;
+    while (i < bytes.len) {
+        const decoded = try encoding.utf8.validateAndDecodeCodePointBytes(bytes, i);
+        const mapped = toLowerCaseFull(decoded.code_point, .none, .none);
+        for (mapped.slice()) |c| o += try encoding.utf8.encodeCodePointWriter(c, writer);
         i += decoded.len;
     }
     return o;
@@ -1709,6 +1915,84 @@ test "full case folding over UTF-8: Alloc and Writer expand ß" {
 
     // Result is caseless-equal to the original per equalFoldBytes.
     try testing.expect(try equalFoldBytes(.full, "Straße", ff));
+}
+
+test "full uppercase over UTF-8: Alloc expands ß where simple does not" {
+    // The full driver expands ß -> "SS" (audit finding C2); the simple driver
+    // leaves ß intact. Assert both to document the contrast.
+    const full = try upperFullUtf8Alloc(testing.allocator, "straße");
+    defer testing.allocator.free(full);
+    try testing.expectEqualStrings("STRASSE", full);
+
+    const simple = try upperSimpleUtf8Alloc(testing.allocator, "straße");
+    defer testing.allocator.free(simple);
+    try testing.expectEqualStrings("STRAßE", simple);
+
+    // U+FB00 LATIN SMALL LIGATURE FF uppercases (full) to "FF".
+    const lig = try upperFullUtf8Alloc(testing.allocator, "\u{FB00}");
+    defer testing.allocator.free(lig);
+    try testing.expectEqualStrings("FF", lig);
+}
+
+test "full lowercase over UTF-8: Alloc and mixed round-trip" {
+    const lo = try lowerFullUtf8Alloc(testing.allocator, "HELLO");
+    defer testing.allocator.free(lo);
+    try testing.expectEqualStrings("hello", lo);
+
+    // Mixed string round-trips: lowercasing an already-lowercase string is a
+    // no-op, and re-uppercasing recovers the all-caps form.
+    const mixed = "HeLLo WoRLD";
+    const down = try lowerFullUtf8Alloc(testing.allocator, mixed);
+    defer testing.allocator.free(down);
+    try testing.expectEqualStrings("hello world", down);
+
+    const down_again = try lowerFullUtf8Alloc(testing.allocator, down);
+    defer testing.allocator.free(down_again);
+    try testing.expectEqualStrings(down, down_again);
+
+    const up = try upperFullUtf8Alloc(testing.allocator, down);
+    defer testing.allocator.free(up);
+    try testing.expectEqualStrings("HELLO WORLD", up);
+}
+
+test "full uppercase: codepoint variant agrees with the UTF-8 variant" {
+    const cps = try encoding.utf8.bytesToUTF8String(testing.allocator, "straße");
+    defer testing.allocator.free(cps);
+
+    const upper_cps = try upperFullAlloc(testing.allocator, cps);
+    defer testing.allocator.free(upper_cps);
+    const from_cps = try encoding.utf8.encodeCodePointsAlloc(testing.allocator, upper_cps);
+    defer testing.allocator.free(from_cps);
+
+    const from_bytes = try upperFullUtf8Alloc(testing.allocator, "straße");
+    defer testing.allocator.free(from_bytes);
+
+    try testing.expectEqualStrings(from_bytes, from_cps);
+    try testing.expectEqualStrings("STRASSE", from_cps);
+}
+
+test "upperFullLen and upperFullBuffer honor expansion and report shortfall" {
+    // ß -> "SS" is the canonical 1->2 expansion.
+    try testing.expectEqual(@as(usize, 2), upperFullLen(&.{0x00DF}));
+    // Empty input produces no codepoints.
+    try testing.expectEqual(@as(usize, 0), upperFullLen(&.{}));
+
+    // A length-1 buffer cannot hold the 2-codepoint expansion of ß.
+    var tiny: [1]CodePoint = undefined;
+    try testing.expectError(error.BufferTooSmall, upperFullBuffer(&.{0x00DF}, &tiny));
+
+    // A length-2 buffer holds it exactly.
+    var buf: [2]CodePoint = undefined;
+    try testing.expectEqual(@as(usize, 2), try upperFullBuffer(&.{0x00DF}, &buf));
+    try testing.expectEqualSlices(CodePoint, &.{ 'S', 'S' }, buf[0..2]);
+}
+
+test "full uppercase over UTF-8: Writer expands ß" {
+    var backing: [32]u8 = undefined;
+    var w = std.Io.Writer.fixed(&backing);
+    const n = try upperFullUtf8Writer("straße", &w);
+    try testing.expectEqualStrings("STRASSE", w.buffered());
+    try testing.expectEqual(w.buffered().len, n);
 }
 
 test {
