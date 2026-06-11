@@ -261,24 +261,41 @@ pub fn isDecimalDigit(code_point: CodePoint) bool {
     return generalCategory(code_point) == .decimal_number;
 }
 
-/// Returns whether `code_point` is an ASCII hex digit (0-9, a-f, A-F).
-/// For the full Unicode Hex_Digit property use `isHexDigitWide`.
+/// Returns whether `code_point` is an **ASCII** hex digit — exactly the 22
+/// characters `0`-`9`, `a`-`f`, `A`-`F` (the ASCII_Hex_Digit property). It is
+/// `false` for every non-ASCII code point, including the fullwidth forms
+/// `U+FF10`..`U+FF19` / `U+FF21`..`U+FF26` / `U+FF41`..`U+FF46`.
+///
+/// WARNING: despite the bare name, this is ASCII-only. If you mean the full
+/// Unicode Hex_Digit property (which also matches the fullwidth forms above),
+/// use `isHexDigitWide` instead. This is the same set as `isAsciiHexDigit`.
 ///
 /// @stable-since: v0.1.0
 pub fn isHexDigit(code_point: CodePoint) bool {
     return prop_list.isAsciiHexDigit(code_point);
 }
 
-/// Returns whether `code_point` has the Hex_Digit property, which includes the
-/// fullwidth forms in addition to the ASCII hex digits.
+/// Returns whether `code_point` has the full Unicode **Hex_Digit** property:
+/// the ASCII hex digits `0`-`9`/`a`-`f`/`A`-`F` **and** their fullwidth
+/// counterparts `U+FF10`..`U+FF19` / `U+FF21`..`U+FF26` / `U+FF41`..`U+FF46`.
+///
+/// This is the wide superset of `isHexDigit` / `isAsciiHexDigit` (which are
+/// ASCII-only): every code point those accept is accepted here, plus the
+/// fullwidth forms. Use this when you want Hex_Digit; use `isHexDigit` when you
+/// deliberately want ASCII only.
 ///
 /// @stable-since: v0.1.0
 pub fn isHexDigitWide(code_point: CodePoint) bool {
     return prop_list.isHexDigit(code_point);
 }
 
-/// Returns whether `code_point` has the ASCII_Hex_Digit property (0-9, a-f,
-/// A-F). Equivalent to `isHexDigit`.
+/// Returns whether `code_point` has the **ASCII_Hex_Digit** property — exactly
+/// `0`-`9`, `a`-`f`, `A`-`F`, and nothing outside ASCII (the fullwidth forms are
+/// excluded). This is the explicitly-named twin of `isHexDigit`: the two match
+/// the identical ASCII-only set.
+///
+/// For the full Unicode Hex_Digit property (ASCII **plus** the fullwidth forms)
+/// use `isHexDigitWide` instead.
 ///
 /// @stable-since: v0.1.0
 pub fn isAsciiHexDigit(code_point: CodePoint) bool {
@@ -313,7 +330,7 @@ pub fn isJoinControl(code_point: CodePoint) bool {
 /// @stable-since: v0.3.0
 pub fn isWord(code_point: CodePoint) bool {
     // ASCII fast path: word = [0-9A-Za-z_].
-    if (code_point < 0x80) {
+    if (encoding.isAscii(code_point)) {
         return (code_point >= '0' and code_point <= '9') or
             (code_point >= 'A' and code_point <= 'Z') or
             (code_point >= 'a' and code_point <= 'z') or
@@ -355,7 +372,7 @@ pub fn derivedMaskFromRuns(code_point: CodePoint) u32 {
 ///
 /// @stable-since: v0.3.0
 pub fn isIdentifierStartByRanges(code_point: CodePoint) bool {
-    if (code_point < 0x80) {
+    if (encoding.isAscii(code_point)) {
         return (code_point >= 'A' and code_point <= 'Z') or
             (code_point >= 'a' and code_point <= 'z') or
             code_point == '_';
@@ -369,7 +386,7 @@ pub fn isIdentifierStartByRanges(code_point: CodePoint) bool {
 ///
 /// @stable-since: v0.3.0
 pub fn isIdentifierContinueByRanges(code_point: CodePoint) bool {
-    if (code_point < 0x80) {
+    if (encoding.isAscii(code_point)) {
         return (code_point >= '0' and code_point <= '9') or
             (code_point >= 'A' and code_point <= 'Z') or
             (code_point >= 'a' and code_point <= 'z') or
@@ -743,9 +760,13 @@ pub fn isSymbol(code_point: CodePoint) bool {
 
 /// Returns whether `code_point` is in the ASCII range U+0000..U+007F.
 ///
+/// This is the same predicate as `encoding.isAscii` (`code_point <=
+/// encoding.MAX_ASCII`), re-exported here for convenience in the properties
+/// namespace so callers need not reach into `encoding`.
+///
 /// @stable-since: v0.1.0
 pub fn isAscii(code_point: CodePoint) bool {
-    return code_point <= 0x7F;
+    return encoding.isAscii(code_point);
 }
 
 // ============================================================================
@@ -1333,6 +1354,55 @@ fn isWordReference(code_point: CodePoint) bool {
         .non_spacing_mark, .spacing_mark, .enclosing_mark, .connector_punctuation => true,
         else => false,
     };
+}
+
+test "isAscii: re-export agrees with encoding.isAscii across the code space" {
+    // Full 0..=0xFF loop pins down the 0x7F/0x80 boundary exactly.
+    for (0..0x100) |cp_usize| {
+        const cp: CodePoint = @intCast(cp_usize);
+        try testing.expectEqual(encoding.isAscii(cp), isAscii(cp));
+        try testing.expectEqual(cp <= 0x7F, isAscii(cp));
+    }
+    // Explicit boundary code points, then a stepped sweep up to U+110000 so the
+    // re-export tracks `encoding.isAscii` (and the `<= 0x7F` truth) everywhere,
+    // not just near ASCII.
+    for ([_]CodePoint{ 0x00, 0x7E, 0x7F, 0x80, 0x81, 0xFF, 0x100 }) |cp| {
+        try testing.expectEqual(encoding.isAscii(cp), isAscii(cp));
+        try testing.expectEqual(cp <= 0x7F, isAscii(cp));
+    }
+    var cp: CodePoint = 0;
+    while (cp <= 0x110000) : (cp += 0x40) {
+        try testing.expectEqual(encoding.isAscii(cp), isAscii(cp));
+        try testing.expectEqual(cp <= 0x7F, isAscii(cp));
+    }
+}
+
+test "hex predicates: ASCII-only vs Unicode Hex_Digit footgun" {
+    // The ASCII-only predicates accept exactly 0-9, a-f, A-F.
+    for ("0123456789abcdefABCDEF") |cp| {
+        try testing.expect(isHexDigit(cp));
+        try testing.expect(isAsciiHexDigit(cp));
+        try testing.expect(isHexDigitWide(cp)); // wide is a superset of ASCII
+    }
+    // Neighbours just outside the hex set are rejected by all three.
+    for ([_]CodePoint{ 'g', 'G', '/', ':', '@', '`' }) |cp| {
+        try testing.expect(!isHexDigit(cp));
+        try testing.expect(!isAsciiHexDigit(cp));
+        try testing.expect(!isHexDigitWide(cp));
+    }
+    // The footgun the docs warn about: the fullwidth forms have the Hex_Digit
+    // property (so `isHexDigitWide` is true) but are NOT ASCII, so the
+    // bare-named `isHexDigit` (and `isAsciiHexDigit`) are false for them.
+    const fullwidth = [_]CodePoint{
+        0xFF10, 0xFF11, 0xFF12, 0xFF13, 0xFF14, 0xFF15, 0xFF16, 0xFF17, 0xFF18, 0xFF19, // ０-９
+        0xFF21, 0xFF22, 0xFF23, 0xFF24, 0xFF25, 0xFF26, // Ａ-Ｆ
+        0xFF41, 0xFF42, 0xFF43, 0xFF44, 0xFF45, 0xFF46, // ａ-ｆ
+    };
+    for (fullwidth) |cp| {
+        try testing.expect(isHexDigitWide(cp));
+        try testing.expect(!isHexDigit(cp));
+        try testing.expect(!isAsciiHexDigit(cp));
+    }
 }
 
 test {
