@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-06-11
+
 ### Added
 
 - String-level **full-expansion upper/lower case** drivers in `unicode.casing`
