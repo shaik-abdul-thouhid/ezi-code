@@ -43,7 +43,7 @@ pub fn utf8ToUtf16Len(bytes: []const u8) utf8.UTF8ValidationError!usize {
 
     while (i < bytes.len) {
         const decoded = try utf8.validateAndDecodeCodePointBytes(bytes, i);
-        out_len += utf16.utf16EncodeLen(decoded.code_point) catch @panic("invalid code point");
+        out_len += utf16.utf16EncodeLen(decoded.code_point) catch unreachable;
         i += decoded.len;
     }
 
@@ -313,7 +313,7 @@ pub fn utf32ToUtf16Len(units: []const u32) (utf32.UTF32ValidationError || utf16.
 
     while (i < units.len) {
         const decoded = try utf32.validateAndDecodeU32CodePoint(units, i);
-        out_len += utf16.utf16EncodeLen(decoded.code_point) catch @panic("invalid code point");
+        out_len += utf16.utf16EncodeLen(decoded.code_point) catch unreachable;
         i += decoded.len;
     }
 
@@ -366,7 +366,7 @@ pub fn utf8ToUtf16LossyLen(bytes: []const u8) usize {
     var iter = utf8.lossyIterator(bytes);
 
     while (iter.next()) |code_point| {
-        out_len += utf16.utf16EncodeLen(code_point) catch @panic("invalid code point");
+        out_len += utf16.utf16EncodeLen(code_point) catch unreachable;
     }
 
     return out_len;
@@ -602,7 +602,7 @@ pub fn utf32ToUtf16LossyLen(units: []const u32) TranscodingError!usize {
     var iter = utf32.lossyIterator(units);
 
     while (iter.next()) |code_point| {
-        out_len += utf16.utf16EncodeLen(code_point) catch @panic("invalid code point");
+        out_len += utf16.utf16EncodeLen(code_point) catch unreachable;
     }
 
     return out_len;
@@ -1038,4 +1038,26 @@ test "writer transcoding propagates source validation and write errors" {
     var tiny_backing: [1]u8 = undefined;
     var tiny = std.Io.Writer.fixed(&tiny_backing);
     try std.testing.expectError(error.WriteFailed, utf16ToUtf8Writer(&.{0x20AC}, &tiny));
+}
+
+test "regression: utf8->utf16 length over BMP + supplementary never traps (infallible utf16EncodeLen)" {
+    const allocator = std.testing.allocator;
+    // Covers the encode-length branches the old catch @panic guarded:
+    // 1-unit BMP scalars and 2-unit supplementary scalars.
+    const inputs = [_][]const u8{
+        "ascii",
+        "café",
+        "Καλημέρα",
+        "コード",
+        "👨‍👩‍👧 family with ZWJ",      // supplementary (surrogate pairs in UTF-16)
+        "𐐷𤭢 supplementary examples",
+    };
+    for (inputs) |bytes| {
+        const units = try utf8ToUtf16(allocator, bytes);
+        defer allocator.free(units);
+        // round-trip back and confirm equality (proves lengths + content correct)
+        const back = try utf16ToUtf8(allocator, units);
+        defer allocator.free(back);
+        try std.testing.expectEqualStrings(bytes, back);
+    }
 }
