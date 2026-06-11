@@ -409,6 +409,44 @@ pub inline fn nfkc(allocator: Allocator, input: []const CodePoint) Allocator.Err
     return normalize(.nfkc, allocator, input);
 }
 
+/// NFKC_Casefold of `input`, per the UCD definition
+/// `NFKC_CF(X) = NFC(toNFKC_Casefold(X))`: every scalar is replaced by its
+/// `NFKC_CF` mapping (compatibility-normalized, case-folded; Default_Ignorable
+/// scalars map away entirely), then the result is canonically composed. This
+/// is the identifier-caseless form used by UAX #31 and security profiles —
+/// e.g. fullwidth `"ＡＢＣ"` becomes `"abc"` and soft hyphens vanish. The
+/// operation is idempotent.
+///
+/// Result is allocated; caller frees. Since the input is already decoded, no
+/// decoding or validation is paid (`CodePoint` contract). Use
+/// `nfkcCaseFoldMap` for the raw per-scalar mapping.
+///
+/// @stable-since: v0.4.0
+pub fn nfkcCaseFold(allocator: Allocator, input: []const CodePoint) Allocator.Error![]CodePoint {
+    var mapped_len: usize = 0;
+    for (input) |cp| {
+        mapped_len += if (nfkcCaseFoldMap(cp)) |m| m.len else 1;
+    }
+
+    const mapped = try allocator.alloc(CodePoint, mapped_len);
+    defer allocator.free(mapped);
+
+    var o: usize = 0;
+    for (input) |cp| {
+        if (nfkcCaseFoldMap(cp)) |m| {
+            for (m) |c| {
+                mapped[o] = c;
+                o += 1;
+            }
+        } else {
+            mapped[o] = cp;
+            o += 1;
+        }
+    }
+
+    return nfc(allocator, mapped);
+}
+
 // ----------------------------------------------------------------------------
 // Streaming Normalizer
 // ----------------------------------------------------------------------------
@@ -979,4 +1017,40 @@ test "normalizeBuffer: BufferTooSmall when destination is undersized" {
 
 test {
     testing.refAllDecls(@This());
+}
+
+test "nfkcCaseFold: identifier-caseless form" {
+    const cases = [_]struct { input: []const CodePoint, expected: []const CodePoint }{
+        // Fullwidth letters compatibility-normalize and fold.
+        .{ .input = &.{ 0xFF21, 0xFF22, 0xFF23 }, .expected = &.{ 'a', 'b', 'c' } },
+        // Default-ignorable soft hyphen maps away entirely.
+        .{ .input = &.{ 'a', 0x00AD, 'b' }, .expected = &.{ 'a', 'b' } },
+        // Capital sharp s folds to "ss".
+        .{ .input = &.{0x1E9E}, .expected = &.{ 's', 's' } },
+        // fi ligature decomposes.
+        .{ .input = &.{0xFB01}, .expected = &.{ 'f', 'i' } },
+        // Angstrom sign normalizes to precomposed lowercase a-ring.
+        .{ .input = &.{0x212B}, .expected = &.{0x00E5} },
+        .{ .input = &.{}, .expected = &.{} },
+    };
+
+    for (cases) |case| {
+        const got = try nfkcCaseFold(testing.allocator, case.input);
+        defer testing.allocator.free(got);
+        try testing.expectEqualSlices(CodePoint, case.expected, got);
+    }
+}
+
+test "nfkcCaseFold: idempotent over the BMP" {
+    var cp: CodePoint = 0;
+    while (cp <= 0xFFFF) : (cp += 1) {
+        if (cp >= 0xD800 and cp <= 0xDFFF) continue;
+
+        const once = try nfkcCaseFold(testing.allocator, &.{cp});
+        defer testing.allocator.free(once);
+        const twice = try nfkcCaseFold(testing.allocator, once);
+        defer testing.allocator.free(twice);
+
+        try testing.expectEqualSlices(CodePoint, once, twice);
+    }
 }

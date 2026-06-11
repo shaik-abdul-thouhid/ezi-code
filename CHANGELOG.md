@@ -41,6 +41,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `unicode.normalization.nfkcCaseFold` — sequence-level **NFKC_Casefold**
+  (`@stable-since: v0.4.0`), per the UCD definition
+  `NFKC_CF(X) = NFC(toNFKC_Casefold(X))`, built on the already-shipped
+  per-scalar `nfkcCaseFoldMap` table. The identifier-caseless form used by
+  UAX #31 and security profiles: fullwidth compatibility variants fold
+  (`ＡＢＣ` → `abc`), Default_Ignorables map away, and the result is
+  idempotent (verified by a BMP-wide sweep).
 - String-level **titlecase** in `unicode.casing`
   (`@stable-since: v0.4.0`): `titlecaseAlloc` (`[]const CodePoint`) and
   `titlecaseUtf8Alloc` (UTF-8), implementing the Unicode default algorithm
