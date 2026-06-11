@@ -290,6 +290,26 @@ pub fn validateAndDecodeU32CodePointLossy(buf: []const u32, offset: usize) UTF32
     return .{ .code_point = code_point, .len = 1 };
 }
 
+/// Decodes the scalar at `offset` leniently: a surrogate or out-of-range unit
+/// yields the Unicode Replacement Character (U+FFFD) and is never reported as
+/// an error, so the return type carries no error union. The UTF-32
+/// counterpart of `utf8.decodeCodePointLossy`.
+///
+/// Contract: `offset < buf.len`. The precondition is asserted (safety-checked:
+/// traps in Debug/ReleaseSafe, undefined in ReleaseFast/ReleaseSmall); it is
+/// never reported as an error. `len` is always 1.
+///
+/// This is the primitive behind `UTF32LossyIterator`. Use
+/// `validateAndDecodeU32CodePointLossy` when misuse (empty slice,
+/// out-of-bounds offset) should surface as an error instead.
+///
+/// @stable-since: v0.4.1
+pub fn decodeU32CodePointLossy(buf: []const u32, offset: usize) DecodedCodePointLossy {
+    std.debug.assert(offset < buf.len);
+    const code_point = validateStoredUnit(buf[offset]) catch INVALID_CODE_POINT;
+    return .{ .code_point = code_point, .len = 1 };
+}
+
 /// Validate and decode the scalar ending at the last unit of `buf`.
 /// Reverse counterpart of `validateAndDecodeU32CodePoint`, for backward
 /// traversal.
@@ -458,7 +478,7 @@ pub const UTF32LossyIterator = struct {
             return null;
         }
 
-        const decoded = validateAndDecodeU32CodePointLossy(self.data, self.index) catch @panic("invalid decode code point lossy");
+        const decoded = decodeU32CodePointLossy(self.data, self.index);
         std.debug.assert(decoded.len > 0);
         self.index += decoded.len;
         self.curr = decoded.code_point;
@@ -474,7 +494,7 @@ pub const UTF32LossyIterator = struct {
             return null;
         }
 
-        return (validateAndDecodeU32CodePointLossy(self.data, self.index) catch @panic("invalid decode code point lossy")).code_point;
+        return decodeU32CodePointLossy(self.data, self.index).code_point;
     }
 };
 
@@ -1162,4 +1182,29 @@ test "A1 regression: unchecked reverse decode never traps over the valid scalar 
     while (it.previous()) |cp| : (c += 1) seen[c] = cp;
     try std.testing.expectEqual(@as(usize, 4), c);
     try std.testing.expectEqualSlices(CodePoint, &.{ 'z', 0x1F600, 0x00E9, 'a' }, seen[0..c]);
+}
+
+test "A2 regression: decodeU32CodePointLossy agrees with fallible variant and iterator never traps" {
+    const inputs = [_][]const u32{
+        &.{ 'a', 0x00E9, 0x1F600, 'z' },
+        &.{0xD800}, // surrogate
+        &.{0x110000}, // out of range
+        &.{ 'x', 0xDFFF, 0x200000, 'y' }, // mixed valid/invalid
+    };
+
+    for (inputs) |units| {
+        var offset: usize = 0;
+        while (offset < units.len) : (offset += 1) {
+            const expected = try validateAndDecodeU32CodePointLossy(units, offset);
+            const actual = decodeU32CodePointLossy(units, offset);
+            try std.testing.expectEqual(expected.code_point, actual.code_point);
+            try std.testing.expectEqual(expected.len, actual.len);
+            try std.testing.expect(actual.len >= 1);
+        }
+
+        var it = lossyIterator(units);
+        var n: usize = 0;
+        while (it.next()) |_| n += 1;
+        try std.testing.expectEqual(units.len, n); // 1 scalar per unit, invalid -> U+FFFD
+    }
 }

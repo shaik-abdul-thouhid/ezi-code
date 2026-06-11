@@ -470,6 +470,28 @@ pub fn validateAndDecodeU16CodePointLossy(buf: []const u16, offset: usize) UTF16
     return .{ .code_point = INVALID_CODE_POINT, .len = i };
 }
 
+/// Decodes the scalar at `offset` leniently: malformed units (lone or swapped
+/// surrogates) yield the Unicode Replacement Character (U+FFFD) and are never
+/// reported as errors, so the return type carries no error union. The UTF-16
+/// counterpart of `utf8.decodeCodePointLossy`.
+///
+/// Contract: `offset < buf.len`. The precondition is asserted (safety-checked:
+/// traps in Debug/ReleaseSafe, undefined in ReleaseFast/ReleaseSmall); it is
+/// never reported as an error. The returned `len` is always >= 1, so a forward
+/// scan that advances by `len` is guaranteed to make progress.
+///
+/// This is the primitive behind `UTF16LossyIterator`. Use
+/// `validateAndDecodeU16CodePointLossy` when misuse (empty slice,
+/// out-of-bounds offset) should surface as an error instead.
+///
+/// @stable-since: v0.4.1
+pub fn decodeU16CodePointLossy(buf: []const u16, offset: usize) DecodedCodePointLossy {
+    std.debug.assert(offset < buf.len);
+    // validateAndDecodeU16CodePointLossy only errors on empty/out-of-bounds,
+    // both excluded by the asserted precondition; the unreachable can't fire.
+    return validateAndDecodeU16CodePointLossy(buf, offset) catch unreachable;
+}
+
 /// Validates the given buffer and returns the length and CodePoint from end_index(inclusive).
 ///
 /// @stable-since: v0.1.0
@@ -722,7 +744,7 @@ pub const UTF16LossyIterator = struct {
             return null;
         }
 
-        const decoded = validateAndDecodeU16CodePointLossy(self.data, self.index) catch @panic("invalid decode code point lossy");
+        const decoded = decodeU16CodePointLossy(self.data, self.index);
         std.debug.assert(decoded.len > 0);
         self.index += decoded.len;
         self.curr = decoded.code_point;
@@ -738,7 +760,7 @@ pub const UTF16LossyIterator = struct {
             return null;
         }
 
-        return (validateAndDecodeU16CodePointLossy(self.data, self.index) catch @panic("invalid decode code point lossy")).code_point;
+        return decodeU16CodePointLossy(self.data, self.index).code_point;
     }
 };
 
@@ -1709,5 +1731,45 @@ test "validate: SIMD path agrees with the view-based strict path" {
         // error kind is its own contract, not this test's).
         var n: usize = 0;
         try std.testing.expect(std.meta.isError(initUTF16View(units, &n)));
+    }
+}
+
+test "A2 regression: decodeU16CodePointLossy agrees with fallible variant and iterators never trap" {
+    const inputs = [_][]const u16{
+        &.{ 'a', 'b', 'c' },
+        &.{ 'a', 0x00E9, 0x20AC, 0xD83D, 0xDE00, 'z' }, // BMP + supplementary pair
+        &.{0xD800}, // lone high surrogate
+        &.{0xDC00}, // lone low surrogate
+        &.{ 0xD800, 'a' }, // high not followed by low
+        &.{ 0xDC00, 0xD800 }, // swapped pair
+        &.{ 0xD83D, 0xD83D, 0xDE00 }, // high, then a valid pair
+    };
+
+    for (inputs) |units| {
+        // The infallible primitive matches the fallible one at every offset.
+        var offset: usize = 0;
+        while (offset < units.len) {
+            const expected = try validateAndDecodeU16CodePointLossy(units, offset);
+            const actual = decodeU16CodePointLossy(units, offset);
+            try std.testing.expectEqual(expected.code_point, actual.code_point);
+            try std.testing.expectEqual(expected.len, actual.len);
+            try std.testing.expect(actual.len >= 1); // always advances
+            offset += actual.len;
+        }
+        try std.testing.expectEqual(units.len, offset);
+
+        // The lossy iterator consumes the whole input and never traps; peek
+        // agrees with next.
+        var it = lossyIterator(units);
+        var consumed: usize = 0;
+        while (true) {
+            const p = it.peek();
+            const nx = it.next();
+            try std.testing.expectEqual(p, nx);
+            if (nx == null) break;
+            consumed += 1;
+        }
+        // every malformed unit collapses to exactly one replacement scalar here
+        try std.testing.expect(consumed >= 1);
     }
 }
