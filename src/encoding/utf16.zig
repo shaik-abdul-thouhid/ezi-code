@@ -757,6 +757,26 @@ pub fn validate(units: []const u16) bool {
     return true;
 }
 
+/// Returns the unit offset where the first malformed sequence starts (a lone
+/// surrogate, or a high surrogate not followed by a low one), or `null` when
+/// `units` is valid UTF-16. The position-reporting counterpart of `validate`.
+///
+/// To recover the precise failure kind, decode at the reported offset:
+/// `validateAndDecodeU16CodePoint(units, invalidIndex(units).?)` returns the
+/// fine-grained `UTF16ValidationError` for that sequence.
+///
+/// @stable-since: v0.4.0
+pub fn invalidIndex(units: []const u16) ?usize {
+    var i: usize = 0;
+
+    while (i < units.len) {
+        const decoded = validateAndDecodeU16CodePoint(units, i) catch return i;
+        i += decoded.len;
+    }
+
+    return null;
+}
+
 /// Validates `units` and returns the number of Unicode scalars it encodes.
 /// Strict counterpart of `countScalarsLossy`: a malformed unit surfaces the
 /// corresponding `UTF16ValidationError` instead of being counted as a
@@ -1431,4 +1451,13 @@ test "decodeU16CodePointUnchecked: agrees with strict decode over valid UTF-16" 
         offset += actual.len;
     }
     try std.testing.expectEqual(units.len, offset);
+}
+
+test "invalidIndex: null on valid input, exact offset on lone surrogates" {
+    try std.testing.expectEqual(@as(?usize, null), invalidIndex(&[_]u16{}));
+    try std.testing.expectEqual(@as(?usize, null), invalidIndex(&[_]u16{ 'a', 0x00E9, 0xD83D, 0xDE00 }));
+
+    try std.testing.expectEqual(@as(?usize, 0), invalidIndex(&[_]u16{0xDC00}));
+    try std.testing.expectEqual(@as(?usize, 2), invalidIndex(&[_]u16{ 'o', 'k', 0xD800, 'x' }));
+    try std.testing.expectEqual(@as(?usize, 1), invalidIndex(&[_]u16{ 'a', 0xD83D })); // truncated pair at end
 }

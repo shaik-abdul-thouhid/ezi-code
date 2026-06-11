@@ -41,6 +41,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Error **position** reporting (`@stable-since: v0.4.0`): `invalidIndex` on
+  all three codecs returns the unit/byte offset where the first malformed
+  sequence starts (`null` when valid), so diagnostics no longer require a
+  re-scan. Decoding strictly at the reported offset recovers the fine-grained
+  error. The UTF-8 variant skips ASCII runs in SIMD strides.
 - Unchecked **forward** decode entry points, completing the strict / unchecked
   / lossy matrix in the forward direction (`@stable-since: v0.4.0`): callers
   holding already-validated text can decode without re-validating and without

@@ -1096,6 +1096,33 @@ pub fn validate(bytes: []const u8) bool {
     return state == UTF8_ACCEPT;
 }
 
+/// Returns the byte offset where the first malformed sequence starts, or
+/// `null` when `bytes` is valid UTF-8. The position-reporting counterpart of
+/// `validate`: where `validate` answers *whether*, this answers *where*, so a
+/// caller can produce a diagnostic without re-scanning.
+///
+/// To recover the precise failure kind, decode at the reported offset:
+/// `validateAndDecodeCodePointBytes(bytes, invalidIndex(bytes).?)` returns the
+/// fine-grained `UTF8ValidationError` for that sequence.
+///
+/// ASCII runs are skipped in SIMD strides, so well-formed mostly-ASCII input
+/// pays close to the `validate` fast path.
+///
+/// @stable-since: v0.4.0
+pub fn invalidIndex(bytes: []const u8) ?usize {
+    var i: usize = 0;
+
+    while (i < bytes.len) {
+        i += asciiRunLength(bytes[i..]);
+        if (i >= bytes.len) break;
+
+        const decoded = validateAndDecodeCodePointBytes(bytes, i) catch return i;
+        i += decoded.len;
+    }
+
+    return null;
+}
+
 /// Validates `bytes` and returns the number of Unicode scalars it encodes.
 /// Strict counterpart of `countScalarsLossy`: a malformed sequence returns the
 /// corresponding `UTF8ValidationError` instead of being counted as a
@@ -2474,4 +2501,23 @@ test "decodeCodePointUnchecked: agrees with strict decode over valid UTF-8" {
         offset += actual.len;
     }
     try std.testing.expectEqual(s.len, offset);
+}
+
+test "invalidIndex: null on valid input, exact offset on malformed" {
+    try std.testing.expectEqual(@as(?usize, null), invalidIndex(""));
+    try std.testing.expectEqual(@as(?usize, null), invalidIndex("plain ascii"));
+    try std.testing.expectEqual(@as(?usize, null), invalidIndex("héllo, мир — コード👍🏽"));
+
+    // Malformed sequence start is reported, not the offending trail byte.
+    try std.testing.expectEqual(@as(?usize, 0), invalidIndex(&.{0x80}));
+    try std.testing.expectEqual(@as(?usize, 5), invalidIndex("valid" ++ [_]u8{ 0xED, 0xA0, 0x80 } ++ "tail"));
+    try std.testing.expectEqual(@as(?usize, 2), invalidIndex(&.{ 'o', 'k', 0xC0, 0xAF }));
+    try std.testing.expectEqual(@as(?usize, 1), invalidIndex(&.{ 'a', 0xE2, 0x82 })); // truncated at end
+
+    // The reported offset yields the fine-grained error on strict decode.
+    const idx = invalidIndex("valid" ++ [_]u8{ 0xED, 0xA0, 0x80 }).?;
+    try std.testing.expectError(
+        error.SurrogateCodePoint,
+        validateAndDecodeCodePointBytes("valid" ++ [_]u8{ 0xED, 0xA0, 0x80 }, idx),
+    );
 }

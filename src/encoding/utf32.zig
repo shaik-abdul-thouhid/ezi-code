@@ -469,6 +469,22 @@ pub fn validate(units: []const u32) bool {
     return true;
 }
 
+/// Returns the unit offset of the first invalid unit (a surrogate, or a value
+/// above U+10FFFF), or `null` when `units` is valid UTF-32. The
+/// position-reporting counterpart of `validate`.
+///
+/// To recover the precise failure kind, decode at the reported offset:
+/// `validateAndDecodeU32CodePoint(units, invalidIndex(units).?)` returns the
+/// fine-grained `UTF32ValidationError` for that unit.
+///
+/// @stable-since: v0.4.0
+pub fn invalidIndex(units: []const u32) ?usize {
+    for (units, 0..) |unit, i| {
+        _ = validateStoredUnit(unit) catch return i;
+    }
+    return null;
+}
+
 /// Validates `units` and returns the number of Unicode scalars it encodes (one
 /// per unit). Strict counterpart of `countScalarsLossy`: a surrogate or
 /// out-of-range unit surfaces the corresponding `UTF32ValidationError` instead
@@ -1050,4 +1066,12 @@ test "decodeU32CodePointUnchecked: agrees with strict decode over valid UTF-32" 
         try std.testing.expectEqual(expected.code_point, actual.code_point);
         try std.testing.expectEqual(expected.len, actual.len);
     }
+}
+
+test "invalidIndex: null on valid input, exact offset on bad units" {
+    try std.testing.expectEqual(@as(?usize, null), invalidIndex(&[_]u32{}));
+    try std.testing.expectEqual(@as(?usize, null), invalidIndex(&[_]u32{ 'a', 0x1F600 }));
+
+    try std.testing.expectEqual(@as(?usize, 0), invalidIndex(&[_]u32{0xD800}));
+    try std.testing.expectEqual(@as(?usize, 2), invalidIndex(&[_]u32{ 'o', 'k', 0x110000 }));
 }
