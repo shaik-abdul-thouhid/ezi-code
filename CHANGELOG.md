@@ -41,6 +41,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Case-insensitive search** in `unicode.casing`
+  (`@stable-since: v0.4.0`): `indexOfFold` / `containsFold` over UTF-8 bytes
+  and `indexOfFoldCodePoints` / `containsFoldCodePoints` over scalar slices.
+  Both sides fold lazily during the scan — no allocation — honoring expanding
+  folds in `.full` mode (`"STRASSE"` matches `"Straße"`), with a whole-scalar
+  boundary rule (needle `"s"` never matches inside `"ß"`'s expansion). The
+  CodePoint variants skip decoding/validation entirely per the `CodePoint`
+  contract.
 - SIMD chunked scanners for **UTF-16**, mirroring the v0.3.0 UTF-8 set
   (`@stable-since: v0.4.0`, portable `@Vector` compares with scalar tails, no
   target intrinsics): `utf16.nonSurrogateRunLength` (length of the leading

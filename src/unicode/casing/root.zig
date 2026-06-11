@@ -809,6 +809,197 @@ pub fn foldFullUtf8Writer(bytes: []const u8, writer: *std.Io.Writer) (UTF8Valida
     return o;
 }
 
+/// Lazily yields the case-folded codepoint stream of a UTF-8 string, one
+/// folded scalar at a time, without allocating: expanding folds (ß -> "ss")
+/// are buffered in a fixed `caseFoldFullCap`-sized window. The streaming
+/// primitive behind `indexOfFold`; the same shape `equalFoldBytes` uses
+/// inline.
+fn FoldedUtf8Stream(comptime mode: EqualFoldMode) type {
+    const cap = switch (mode) {
+        .simple => 1,
+        .full => caseFoldFullCap(.default),
+    };
+
+    return struct {
+        bytes: []const u8,
+        i: usize = 0,
+        buf: [cap]CodePoint = undefined,
+        buf_len: usize = 0,
+        buf_pos: usize = 0,
+
+        const Self = @This();
+
+        /// True when no fold expansion is half-consumed, i.e. the stream sits
+        /// exactly on a scalar boundary of the underlying bytes.
+        fn atBoundary(self: *const Self) bool {
+            return self.buf_pos >= self.buf_len;
+        }
+
+        fn next(self: *Self) UTF8ValidationError!?CodePoint {
+            if (self.buf_pos >= self.buf_len) {
+                if (self.i >= self.bytes.len) return null;
+
+                if (encoding.isAscii(self.bytes[self.i])) {
+                    self.buf[0] = asciiFoldLower(self.bytes[self.i]);
+                    self.buf_len = 1;
+                    self.i += 1;
+                } else {
+                    const decoded = try encoding.utf8.validateAndDecodeCodePointBytes(self.bytes, self.i);
+                    self.i += decoded.len;
+                    switch (mode) {
+                        .simple => {
+                            self.buf[0] = caseFoldSimple(decoded.code_point);
+                            self.buf_len = 1;
+                        },
+                        .full => {
+                            const folded = caseFoldFull(decoded.code_point);
+                            const sl = folded.slice();
+                            for (sl, 0..) |cp, k| self.buf[k] = cp;
+                            self.buf_len = sl.len;
+                        },
+                    }
+                }
+                self.buf_pos = 0;
+            }
+
+            const cp = self.buf[self.buf_pos];
+            self.buf_pos += 1;
+            return cp;
+        }
+    };
+}
+
+/// Codepoint-slice twin of `FoldedUtf8Stream`: no decoding, no errors.
+fn FoldedCodePointStream(comptime mode: EqualFoldMode) type {
+    const cap = switch (mode) {
+        .simple => 1,
+        .full => caseFoldFullCap(.default),
+    };
+
+    return struct {
+        code_points: []const CodePoint,
+        i: usize = 0,
+        buf: [cap]CodePoint = undefined,
+        buf_len: usize = 0,
+        buf_pos: usize = 0,
+
+        const Self = @This();
+
+        fn atBoundary(self: *const Self) bool {
+            return self.buf_pos >= self.buf_len;
+        }
+
+        fn next(self: *Self) ?CodePoint {
+            if (self.buf_pos >= self.buf_len) {
+                if (self.i >= self.code_points.len) return null;
+
+                const code_point = self.code_points[self.i];
+                self.i += 1;
+                switch (mode) {
+                    .simple => {
+                        self.buf[0] = caseFoldSimple(code_point);
+                        self.buf_len = 1;
+                    },
+                    .full => {
+                        const folded = caseFoldFull(code_point);
+                        const sl = folded.slice();
+                        for (sl, 0..) |cp, k| self.buf[k] = cp;
+                        self.buf_len = sl.len;
+                    },
+                }
+                self.buf_pos = 0;
+            }
+
+            const cp = self.buf[self.buf_pos];
+            self.buf_pos += 1;
+            return cp;
+        }
+    };
+}
+
+/// Returns the byte offset of the first caseless occurrence of `needle` in
+/// `haystack`, or `null`. Comparison folds both sides on the fly (`mode`
+/// selects simple or full folding) without allocating, so `"STRASSE"` is
+/// found in `"…straße…"` under `.full`. An occurrence always covers whole
+/// haystack scalars: a needle that ends midway through one scalar's fold
+/// expansion (e.g. needle `"s"` against haystack `"ß"`) does not match.
+///
+/// An empty needle matches at offset 0. Both inputs must be valid UTF-8;
+/// malformed bytes surface a `UTF8ValidationError`. Worst-case cost is
+/// `O(haystack scalars × needle scalars)`.
+///
+/// @stable-since: v0.4.0
+pub fn indexOfFold(comptime mode: EqualFoldMode, haystack: []const u8, needle: []const u8) UTF8ValidationError!?usize {
+    if (needle.len == 0) return 0;
+
+    var start: usize = 0;
+    while (start < haystack.len) {
+        var h = FoldedUtf8Stream(mode){ .bytes = haystack[start..] };
+        var n = FoldedUtf8Stream(mode){ .bytes = needle };
+
+        const matched = blk: {
+            while (try n.next()) |ncp| {
+                const hcp = (try h.next()) orelse break :blk false;
+                if (hcp != ncp) break :blk false;
+            }
+            // The needle is exhausted; a real occurrence must also end on a
+            // haystack scalar boundary.
+            break :blk h.atBoundary();
+        };
+        if (matched) return start;
+
+        const decoded = try encoding.utf8.validateAndDecodeCodePointBytes(haystack, start);
+        start += decoded.len;
+    }
+
+    return null;
+}
+
+/// Returns `true` when `needle` occurs caselessly anywhere in `haystack`.
+/// Convenience wrapper over `indexOfFold`; same folding, boundary, and
+/// validity rules.
+///
+/// @stable-since: v0.4.0
+pub fn containsFold(comptime mode: EqualFoldMode, haystack: []const u8, needle: []const u8) UTF8ValidationError!bool {
+    return (try indexOfFold(mode, haystack, needle)) != null;
+}
+
+/// Codepoint-slice twin of `indexOfFold`: returns the scalar index of the
+/// first caseless occurrence of `needle` in `haystack`, or `null`. Since the
+/// input is already decoded, no decoding or validation is paid and the
+/// function cannot fail (`CodePoint` contract). Same whole-scalar boundary
+/// rule as `indexOfFold`.
+///
+/// @stable-since: v0.4.0
+pub fn indexOfFoldCodePoints(comptime mode: EqualFoldMode, haystack: []const CodePoint, needle: []const CodePoint) ?usize {
+    if (needle.len == 0) return 0;
+
+    var start: usize = 0;
+    while (start < haystack.len) : (start += 1) {
+        var h = FoldedCodePointStream(mode){ .code_points = haystack[start..] };
+        var n = FoldedCodePointStream(mode){ .code_points = needle };
+
+        const matched = blk: {
+            while (n.next()) |ncp| {
+                const hcp = h.next() orelse break :blk false;
+                if (hcp != ncp) break :blk false;
+            }
+            break :blk h.atBoundary();
+        };
+        if (matched) return start;
+    }
+
+    return null;
+}
+
+/// Returns `true` when `needle` occurs caselessly anywhere in `haystack`.
+/// Codepoint-slice twin of `containsFold`; cannot fail.
+///
+/// @stable-since: v0.4.0
+pub fn containsFoldCodePoints(comptime mode: EqualFoldMode, haystack: []const CodePoint, needle: []const CodePoint) bool {
+    return indexOfFoldCodePoints(mode, haystack, needle) != null;
+}
+
 // ============================================================================
 // Tests (relocated from unicode/root.zig during the slim-facade refactor)
 // ============================================================================
@@ -1414,4 +1605,50 @@ test "full case folding over UTF-8: Alloc and Writer expand ß" {
 
 test {
     std.testing.refAllDecls(@This());
+}
+
+test "indexOfFold: caseless search with expanding folds and boundary rule" {
+    // Plain ASCII, both modes.
+    inline for ([_]EqualFoldMode{ .simple, .full }) |mode| {
+        try testing.expectEqual(@as(?usize, 6), try indexOfFold(mode, "Hello WORLD", "world"));
+        try testing.expectEqual(@as(?usize, 0), try indexOfFold(mode, "abc", ""));
+        try testing.expectEqual(@as(?usize, null), try indexOfFold(mode, "abc", "zzz"));
+        try testing.expectEqual(@as(?usize, null), try indexOfFold(mode, "", "a"));
+    }
+
+    // Full folding: ß <-> ss in either direction.
+    try testing.expectEqual(@as(?usize, 4), try indexOfFold(.full, "die Straße hier", "STRASSE"));
+    try testing.expectEqual(@as(?usize, 4), try indexOfFold(.full, "die STRASSE hier", "straße"));
+    // Simple folding does not expand ß, so no match.
+    try testing.expectEqual(@as(?usize, null), try indexOfFold(.simple, "die Straße hier", "STRASSE"));
+
+    // Boundary rule: a needle ending inside one scalar's expansion is not a hit.
+    try testing.expectEqual(@as(?usize, null), try indexOfFold(.full, "ß", "s"));
+    try testing.expectEqual(@as(?usize, 0), try indexOfFold(.full, "ß", "ss"));
+
+    // Greek: final sigma folds together with capital sigma.
+    try testing.expectEqual(@as(?usize, 0), try indexOfFold(.full, "ΣΟΦΟΣ", "σοφος"));
+
+    // Invalid UTF-8 surfaces an error.
+    try testing.expectError(
+        error.InvalidByteSequence,
+        indexOfFold(.full, "ab" ++ [_]u8{0xC0} ++ "cd", "zz"),
+    );
+
+    try testing.expect(try containsFold(.full, "die Straße hier", "STRASSE"));
+    try testing.expect(!try containsFold(.full, "die Straße hier", "autobahn"));
+}
+
+test "indexOfFoldCodePoints: scalar-index twin agrees with the byte search" {
+    const haystack = [_]CodePoint{ 'd', 'i', 'e', ' ', 'S', 't', 'r', 'a', 0x00DF, 'e' };
+    const needle = [_]CodePoint{ 'S', 'T', 'R', 'A', 'S', 'S', 'E' };
+
+    try testing.expectEqual(@as(?usize, 4), indexOfFoldCodePoints(.full, &haystack, &needle));
+    try testing.expectEqual(@as(?usize, null), indexOfFoldCodePoints(.simple, &haystack, &needle));
+    try testing.expectEqual(@as(?usize, 0), indexOfFoldCodePoints(.full, &haystack, &.{}));
+    try testing.expect(containsFoldCodePoints(.full, &haystack, &needle));
+
+    // Boundary rule holds for slices too.
+    const eszett = [_]CodePoint{0x00DF};
+    try testing.expectEqual(@as(?usize, null), indexOfFoldCodePoints(.full, &eszett, &.{'s'}));
 }
