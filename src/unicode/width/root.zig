@@ -11,6 +11,7 @@
 
 const std = @import("std");
 const encoding = @import("encoding");
+const segmentation = @import("../segmentation/root.zig");
 
 const CodePoint = encoding.CodePoint;
 
@@ -94,6 +95,151 @@ pub fn stringWidthLossy(bytes: []const u8) usize {
     var iter = encoding.utf8.lossyIterator(bytes);
     while (iter.next()) |cp| total += terminalColumnWidth(cp);
     return total;
+}
+
+// ============================================================================
+// Grapheme-cluster-aware width
+//
+// The `stringWidth*` functions above sum `terminalColumnWidth` over every
+// scalar, so a single user-perceived character spread across several scalars is
+// over-counted: a ZWJ emoji such as 👨‍👩‍👧 (U+1F468 U+200D U+1F469 U+200D
+// U+1F467) sums 2+0+2+0+2 = 6 columns but renders in 2. The functions in this
+// section first group scalars into extended grapheme clusters (UAX #29, via the
+// `segmentation` module) and charge each cluster a single cell-run, so the same
+// emoji counts as 2. They remain estimates: the true on-screen advance of an
+// exotic emoji sequence is ultimately terminal- and font-dependent.
+// ============================================================================
+
+/// The emoji variation selector, U+FE0F (VS16). When it follows an otherwise
+/// text-presentation base, the base is rendered as a (wide) emoji.
+const VARIATION_SELECTOR_16: CodePoint = 0xFE0F;
+/// Inclusive bounds of the Regional_Indicator block (U+1F1E6..U+1F1FF). A pair
+/// of these forms a flag, which renders in 2 columns.
+const REGIONAL_INDICATOR_FIRST: CodePoint = 0x1F1E6;
+const REGIONAL_INDICATOR_LAST: CodePoint = 0x1F1FF;
+
+/// Folds one scalar of a grapheme cluster into the running width signals shared
+/// by `graphemeClusterWidth` and `graphemeClusterWidthBytes`: the maximum
+/// per-scalar `terminalColumnWidth`, whether an emoji variation selector
+/// (U+FE0F) was seen, and the count of Regional_Indicator scalars.
+const ClusterWidthAccum = struct {
+    max_w: u2 = 0,
+    has_vs16: bool = false,
+    ri: usize = 0,
+
+    inline fn add(self: *ClusterWidthAccum, cp: CodePoint) void {
+        const w = terminalColumnWidth(cp);
+        if (w > self.max_w) self.max_w = w;
+        if (cp == VARIATION_SELECTOR_16) self.has_vs16 = true;
+        if (cp >= REGIONAL_INDICATOR_FIRST and cp <= REGIONAL_INDICATOR_LAST) self.ri += 1;
+    }
+
+    /// Resolves the accumulated signals to the cluster's column width.
+    inline fn resolve(self: ClusterWidthAccum) u2 {
+        // An emoji-presentation sequence (base + VS16, e.g. ❤️ = U+2764 U+FE0F)
+        // renders wide regardless of the base's text-presentation width.
+        if (self.has_vs16) return 2;
+        // A flag is a pair of Regional_Indicators and renders in 2 columns.
+        if (self.ri >= 2) return 2;
+        // Otherwise the base (or the emoji the sequence forms) governs the
+        // width; combining marks, ZWJ, and variation selectors are zero-width
+        // and so never lift `max_w` above the base.
+        return self.max_w;
+    }
+};
+
+/// Estimated monospace column width of a single grapheme cluster (a slice of
+/// already-decoded scalars belonging to one cluster, e.g. as produced by
+/// `segmentation.codePointIterator`). A cluster renders in one cell-run:
+/// combining marks, ZWJ, and variation selectors are zero-width, so the base —
+/// or the emoji the whole sequence forms — governs the width. Concretely:
+///   - a base + emoji variation selector (U+FE0F) sequence renders wide (2);
+///   - a pair of Regional_Indicators (a flag) renders wide (2);
+///   - otherwise the width is the maximum `terminalColumnWidth` of the
+///     cluster's scalars.
+/// An empty cluster is 0 columns. Allocation-free and never traps. This is the
+/// per-cluster primitive behind the `stringWidthGraphemes*` functions; unlike
+/// summing `terminalColumnWidth` per scalar it counts a multi-scalar emoji such
+/// as 👨‍👩‍👧 (U+1F468 U+200D U+1F469 U+200D U+1F467) once (2, not 6). The
+/// result is an estimate — exotic emoji are ultimately terminal-dependent.
+///
+/// @stable-since: v0.4.1
+pub fn graphemeClusterWidth(cluster: []const CodePoint) u2 {
+    if (cluster.len == 0) return 0;
+    var accum: ClusterWidthAccum = .{};
+    for (cluster) |cp| accum.add(cp);
+    return accum.resolve();
+}
+
+/// Width of a grapheme cluster supplied as the UTF-8 `cluster` bytes (one
+/// cluster, e.g. as produced by `segmentation.iterator`). Decodes the cluster's
+/// scalars leniently (U+FFFD for malformed sequences) and applies the same
+/// max / VS16 / Regional_Indicator logic as `graphemeClusterWidth`. An empty
+/// cluster is 0 columns.
+fn graphemeClusterWidthBytes(cluster: []const u8) u2 {
+    if (cluster.len == 0) return 0;
+    var accum: ClusterWidthAccum = .{};
+    var i: usize = 0;
+    while (i < cluster.len) {
+        const decoded = encoding.utf8.decodeCodePointLossy(cluster, i);
+        accum.add(decoded.code_point);
+        i += decoded.len;
+    }
+    return accum.resolve();
+}
+
+/// Estimated monospace column width of `code_points`, grouping the scalars into
+/// extended grapheme clusters (via `segmentation.codePointIterator`) and
+/// charging each cluster one cell-run with `graphemeClusterWidth`. Unlike the
+/// per-scalar `stringWidthCodePoints`, a multi-scalar emoji such as 👨‍👩‍👧
+/// (U+1F468 U+200D U+1F469 U+200D U+1F467) is counted once (2, not 6).
+/// Allocation-free and never traps. The result is an estimate — the on-screen
+/// advance of exotic emoji is ultimately terminal-dependent.
+///
+/// @stable-since: v0.4.1
+pub fn stringWidthGraphemesCodePoints(code_points: []const CodePoint) usize {
+    var total: usize = 0;
+    var iter = segmentation.codePointIterator(code_points);
+    while (iter.next()) |cluster| total += graphemeClusterWidth(cluster);
+    return total;
+}
+
+/// Estimated monospace column width of the UTF-8 `bytes`, grouping the decoded
+/// scalars into extended grapheme clusters (via `segmentation.iterator`) and
+/// charging each cluster one cell-run. Decodes leniently: malformed sequences
+/// are treated as one replacement scalar (U+FFFD, width 1) rather than raising
+/// an error, so it never fails. Unlike the per-scalar `stringWidthLossy`, a
+/// multi-scalar emoji such as 👨‍👩‍👧 (U+1F468 U+200D U+1F469 U+200D U+1F467)
+/// is counted once (2, not 6). Strict counterpart: `stringWidthGraphemes`. The
+/// result is an estimate — exotic emoji are ultimately terminal-dependent.
+///
+/// @stable-since: v0.4.1
+pub fn stringWidthGraphemesLossy(bytes: []const u8) usize {
+    var total: usize = 0;
+    var iter = segmentation.iterator(bytes);
+    while (iter.next()) |cluster| total += graphemeClusterWidthBytes(cluster);
+    return total;
+}
+
+/// Estimated monospace column width of the UTF-8 `bytes`, grouping the decoded
+/// scalars into extended grapheme clusters and charging each cluster one
+/// cell-run — the grapheme-aware counterpart of `stringWidth`. Validates the
+/// input and surfaces a `UTF8ValidationError` on malformed sequences; use
+/// `stringWidthGraphemesLossy` to measure possibly-malformed input instead.
+/// Unlike the per-scalar `stringWidth`, a multi-scalar emoji such as 👨‍👩‍👧
+/// (U+1F468 U+200D U+1F469 U+200D U+1F467) is counted once (2, not 6). The
+/// result is an estimate — exotic emoji are ultimately terminal-dependent.
+///
+/// @stable-since: v0.4.1
+pub fn stringWidthGraphemes(bytes: []const u8) encoding.utf8.UTF8ValidationError!usize {
+    // Validate up front: on valid input the lossy clustering below is identical,
+    // so a single strict decode pass is enough to gate the lenient measurement.
+    var i: usize = 0;
+    while (i < bytes.len) {
+        const decoded = try encoding.utf8.validateAndDecodeCodePointBytes(bytes, i);
+        i += decoded.len;
+    }
+    return stringWidthGraphemesLossy(bytes);
 }
 
 // ============================================================================
@@ -212,6 +358,63 @@ test "stringWidthLossy: malformed bytes count as one replacement column" {
     // 'A' + invalid byte (→ U+FFFD, width 1) + 'B' = 3.
     try testing.expectEqual(@as(usize, 3), stringWidthLossy("A\xFFB"));
     try testing.expectEqual(@as(usize, 3), stringWidthLossy("Aあ"));
+}
+
+// ============================================================================
+// Grapheme-cluster-aware width tests
+// ============================================================================
+
+test "stringWidthGraphemes: ASCII + wide parity with per-scalar stringWidth" {
+    // "Aあ" = 1 (A) + 2 (Wide HIRAGANA A) = 3 columns, matching the per-scalar
+    // case above — no clustering changes anything when every cluster is one
+    // scalar.
+    try testing.expectEqual(@as(usize, 3), try stringWidthGraphemes("Aあ"));
+}
+
+test "stringWidthGraphemes: ZWJ family counts once (the C1 fix)" {
+    // 👨‍👩‍👧 = U+1F468 U+200D U+1F469 U+200D U+1F467. It renders in 2 columns,
+    // but the per-scalar estimator sums 2+0+2+0+2 = 6. The grapheme-aware
+    // functions charge the single cluster once.
+    const family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}";
+
+    try testing.expectEqual(@as(usize, 2), try stringWidthGraphemes(family));
+
+    const cps = try encoding.utf8.bytesToUTF8String(testing.allocator, family);
+    defer testing.allocator.free(cps);
+    try testing.expectEqual(@as(usize, 2), stringWidthGraphemesCodePoints(cps));
+
+    // Document the divergence from the old per-scalar API explicitly: the same
+    // bytes still measure 6 columns under `stringWidth`, which the new API fixes.
+    try testing.expectEqual(@as(usize, 6), try stringWidth(family));
+    try testing.expect((try stringWidth(family)) != (try stringWidthGraphemes(family)));
+}
+
+test "stringWidthGraphemes: emoji presentation, flags, and modifiers are 2" {
+    // ❤️ = U+2764 U+FE0F — text-presentation heart promoted to emoji by VS16.
+    try testing.expectEqual(@as(usize, 2), try stringWidthGraphemes("\u{2764}\u{FE0F}"));
+    // 🇺🇸 = U+1F1FA U+1F1F8 — a flag is a Regional_Indicator pair.
+    try testing.expectEqual(@as(usize, 2), try stringWidthGraphemes("\u{1F1FA}\u{1F1F8}"));
+    // 👍🏽 = U+1F44D U+1F3FD — emoji base + skin-tone modifier, one cluster.
+    try testing.expectEqual(@as(usize, 2), try stringWidthGraphemes("\u{1F44D}\u{1F3FD}"));
+}
+
+test "stringWidthGraphemes: combining-mark clusters count as the base" {
+    // "é" as e + COMBINING ACUTE ACCENT (U+0065 U+0301) → 1 column.
+    try testing.expectEqual(@as(usize, 1), try stringWidthGraphemes("e\u{0301}"));
+    // "café" with a decomposed é (cafe + combining acute) → 4 columns.
+    try testing.expectEqual(@as(usize, 4), try stringWidthGraphemes("cafe\u{0301}"));
+}
+
+test "stringWidthGraphemesLossy: invalid bytes do not trap, yield a sane width" {
+    // 'a' + lone 0xFF (→ U+FFFD, width 1) + 'b' = 3 columns, and no trap.
+    try testing.expectEqual(@as(usize, 3), stringWidthGraphemesLossy(&.{ 'a', 0xFF, 'b' }));
+}
+
+test "stringWidthGraphemes*: empty input is zero columns" {
+    try testing.expectEqual(@as(usize, 0), try stringWidthGraphemes(""));
+    try testing.expectEqual(@as(usize, 0), stringWidthGraphemesLossy(""));
+    try testing.expectEqual(@as(usize, 0), stringWidthGraphemesCodePoints(&[_]CodePoint{}));
+    try testing.expectEqual(@as(u2, 0), graphemeClusterWidth(&[_]CodePoint{}));
 }
 
 test {
