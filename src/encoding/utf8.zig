@@ -559,7 +559,7 @@ fn decode(bytes: []const u8, offset: usize, len: u3) DecodedCodePoint {
         2 => codePointFromLen(2, bytes, offset),
         3 => codePointFromLen(3, bytes, offset),
         4 => codePointFromLen(4, bytes, offset),
-        else => @panic("unknown code point length"),
+        else => unreachable,
     };
 }
 
@@ -865,7 +865,7 @@ pub const UTF8View = struct {
                 continue;
             }
 
-            const len = codePointLen(byte) catch @panic("invalid code point length");
+            const len = codePointLen(byte) catch unreachable;
 
             i += @as(usize, len);
             count += 1;
@@ -921,7 +921,7 @@ pub const UTF8View = struct {
             if (encoding.isAscii(byte)) {
                 byte_index += 1;
             } else {
-                const len = codePointLen(byte) catch @panic("invalid code point length");
+                const len = codePointLen(byte) catch unreachable;
                 byte_index += len;
             }
 
@@ -2732,4 +2732,63 @@ test "encodeCodePoints: round-trips through bytesToUTF8String" {
     const back = try bytesToUTF8String(std.testing.allocator, owned);
     defer std.testing.allocator.free(back);
     try std.testing.expectEqualSlices(CodePoint, &cps, back);
+}
+
+test "A1 regression: unchecked reverse + UTF8View paths never trap over a thorough valid corpus" {
+    // Exercises decodeCodePointReverseUnchecked, codePointLenReverseUnchecked,
+    // and UTF8View.{countScalar,sliceScalars} — the paths whose internal
+    // `unreachable` (formerly `@panic`) must never fire on valid UTF-8.
+    const samples = [_][]const u8{
+        "",
+        "ascii only, 1-byte",
+        "\u{00E9}",                       // 2-byte
+        "\u{20AC}",                       // 3-byte
+        "\u{1F600}",                      // 4-byte
+        "aé€😀z mixed 1/2/3/4-byte",
+        "héllo, мир — コード👍🏽 end",
+    };
+
+    for (samples) |bytes| {
+        // Forward decode to collect every scalar and its boundary, then walk
+        // the same boundaries in reverse via the unchecked reverse decoder.
+        var ends: [64]usize = undefined; // byte index just past each scalar
+        var starts: [64]usize = undefined;
+        var cps: [64]CodePoint = undefined;
+        var n: usize = 0;
+        var i: usize = 0;
+        while (i < bytes.len) {
+            const d = try validateAndDecodeCodePointBytes(bytes, i);
+            starts[n] = i;
+            cps[n] = d.code_point;
+            i += d.len;
+            ends[n] = i;
+            n += 1;
+        }
+
+        // UTF8View.countScalar agrees with the forward decode count.
+        var scalar_len: usize = 0;
+        const view = try initUTF8View(bytes, &scalar_len);
+        try std.testing.expectEqual(n, view.countScalar());
+        try std.testing.expectEqual(n, scalar_len);
+
+        // Reverse-decode at each scalar's last byte; must recover the scalar.
+        var k: usize = 0;
+        while (k < n) : (k += 1) {
+            const end_index = ends[k] - 1;
+            const rev = decodeCodePointReverseUnchecked(bytes, end_index);
+            try std.testing.expectEqual(cps[k], rev.code_point);
+            try std.testing.expectEqual(ends[k] - starts[k], @as(usize, rev.len));
+            try std.testing.expectEqual(ends[k] - starts[k], @as(usize, codePointLenReverseUnchecked(bytes, end_index)));
+        }
+
+        // sliceScalars over every sub-range round-trips through the view.
+        var a: usize = 0;
+        while (a <= n) : (a += 1) {
+            var b: usize = a;
+            while (b <= n) : (b += 1) {
+                const sub = try view.sliceScalars(a, b);
+                try std.testing.expectEqual(b - a, sub.countScalar());
+            }
+        }
+    }
 }

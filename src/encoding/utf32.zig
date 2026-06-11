@@ -302,7 +302,7 @@ pub fn validateAndDecodeU32CodePointReverse(buf: []const u32) UTF32ValidationErr
 }
 
 fn decodeCodePointReverse(buf: []const u32) DecodedCodePoint {
-    const len = utf32SequenceLenReverse(buf) catch @panic("invalid point reverse unchecked len");
+    const len = utf32SequenceLenReverse(buf) catch unreachable;
     const start = buf.len - @as(usize, len);
     return .{
         .code_point = @intCast(buf[start]),
@@ -1137,4 +1137,29 @@ test "encodeCodePoints: round-trips through bufToUTF32String" {
     const back = try bufToUTF32String(std.testing.allocator, owned, .little);
     defer std.testing.allocator.free(back);
     try std.testing.expectEqualSlices(CodePoint, &cps, back);
+}
+
+test "A1 regression: unchecked reverse decode never traps over the valid scalar range" {
+    // decodeCodePointReverse (private, drives the reverse view iterator) must
+    // recover every valid scalar without tripping its internal `unreachable`.
+    const samples = [_]u32{ 0x0000, 'a', 0x007F, 0x0080, 0x00E9, 0x20AC, 0xFFFF, 0x10000, 0x1F600, 0x10FFFF };
+    for (samples) |cp| {
+        const buf = [_]u32{cp};
+        const rev = decodeCodePointReverse(&buf);
+        try std.testing.expectEqual(@as(CodePoint, @intCast(cp)), rev.code_point);
+        try std.testing.expectEqual(@as(usize, 1), rev.len);
+    }
+
+    // Reverse iteration (UTF32ViewIterator.previous, which drives
+    // decodeCodePointReverse) yields scalars back-to-front.
+    const units = [_]u32{ 'a', 0x00E9, 0x1F600, 'z' };
+    var n: usize = 0;
+    const view = try initUTF32View(&units, .little, &n);
+    var it = view.iter();
+    while (it.next()) |_| {} // advance to the end
+    var seen: [4]CodePoint = undefined;
+    var c: usize = 0;
+    while (it.previous()) |cp| : (c += 1) seen[c] = cp;
+    try std.testing.expectEqual(@as(usize, 4), c);
+    try std.testing.expectEqualSlices(CodePoint, &.{ 'z', 0x1F600, 0x00E9, 'a' }, seen[0..c]);
 }
