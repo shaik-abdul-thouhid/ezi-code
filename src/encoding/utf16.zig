@@ -158,23 +158,24 @@ pub fn utf16SequenceLenReverse(buf: []const u16, end_index: usize) UTF16Validati
     return 1;
 }
 
-/// Returns optimistic length required for decoding a valid CodePoint from the end_index(inclusive)
-/// of the given buffer. This is unchecked variant. Use it if caller is certain of the
-/// buffer's validity
+/// Returns the unit length of the code point ending at `end_index` (inclusive).
+/// This is the unchecked variant: it never returns an error.
+///
+/// Contract: `end_index < buf.len` and `buf` is valid UTF-16 around
+/// `end_index`. Preconditions are asserted / safety-checked (trap in
+/// Debug/ReleaseSafe, undefined in ReleaseFast/ReleaseSmall), never
+/// error-returned. Use the checked `utf16SequenceLenReverse` when the units'
+/// validity is uncertain.
 ///
 /// @stable-since: v0.1.0
-pub fn utf16SequenceLenReverseUnchecked(buf: []const u16, end_index: usize) UTF16ValidationError!u2 {
-    if (buf.len == 0) {
-        return error.ZeroLengthUnits;
-    }
+pub fn utf16SequenceLenReverseUnchecked(buf: []const u16, end_index: usize) u2 {
+    std.debug.assert(end_index < buf.len);
 
     if (buf[end_index] <= MAX_ASCII) {
         return 1;
     }
 
-    const last = end_index;
-
-    if (isLowSurrogate(buf[last])) {
+    if (isLowSurrogate(buf[end_index])) {
         return 2;
     }
 
@@ -429,7 +430,7 @@ pub fn validateAndDecodeU16CodePointReverse(buf: []const u16, end_index: usize) 
 }
 
 fn decodeCodePointReverse(buf: []const u16, end_index: usize) DecodedCodePoint {
-    const len = utf16SequenceLenReverseUnchecked(buf, end_index) catch unreachable;
+    const len = utf16SequenceLenReverseUnchecked(buf, end_index);
 
     if (len == 1) {
         @branchHint(.likely);

@@ -495,20 +495,19 @@ pub fn codePointLenReverse(bytes: []const u8, end_index: usize) UTF8ValidationEr
     return len;
 }
 
-/// Returns optimistic length of the codepoint from the end_index(inclusive) of the given buffer. It is a unchecked
-/// variant where only the bytes length checks are in place. Use checked variant `codePointLenReverse` if caller
-/// is uncertain about the bytes validity. To decode and get the len of the bytes consumed, use
-/// `validateAndDecodeCodePointBytesReverse`
+/// Returns the length of the codepoint ending at `end_index` (inclusive). It is the unchecked
+/// variant of `codePointLenReverse`: it never returns an error.
+///
+/// Contract: `end_index < bytes.len` and `bytes` is valid UTF-8 around
+/// `end_index`. Preconditions are asserted / safety-checked (trap in
+/// Debug/ReleaseSafe, undefined in ReleaseFast/ReleaseSmall), never
+/// error-returned. Use the checked `codePointLenReverse` when the bytes'
+/// validity is uncertain. To decode and get the len of the bytes consumed, use
+/// `validateAndDecodeCodePointBytesReverse`.
 ///
 /// @stable-since: v0.1.0
-pub fn codePointLenReverseUnchecked(bytes: []const u8, end_index: usize) UTF8ValidationError!u3 {
-    if (bytes.len == 0) {
-        @branchHint(.unlikely);
-        return UTF8ValidationError.ZeroLengthBytes;
-    } else if (end_index >= bytes.len) {
-        @branchHint(.unlikely);
-        return UTF8ValidationError.IndexOutOfBounds;
-    }
+pub fn codePointLenReverseUnchecked(bytes: []const u8, end_index: usize) u3 {
+    std.debug.assert(end_index < bytes.len);
 
     var start = end_index;
 
@@ -661,14 +660,18 @@ pub fn encodeCodePointWriter(code_point: CodePoint, writer: *std.Io.Writer) std.
     return len;
 }
 
-/// This function validates and decodes code point from buffer. This is the unchecked variant
-/// of decode reverse, use strict variant `validateAndDecodeCodePointBytesReverse` if caller is uncertain the bytes are valid.
+/// Decodes the code point ending at `end_index` (inclusive). This is the unchecked variant
+/// of decode reverse; use the strict `validateAndDecodeCodePointBytesReverse` if the caller
+/// is uncertain the bytes are valid.
 ///
-/// Note: **this function panics in case the buffer length is zero or end_index > bytes.len**
+/// Contract: `end_index < bytes.len` and `bytes` is valid UTF-8 around
+/// `end_index`. Preconditions are asserted / safety-checked (trap in
+/// Debug/ReleaseSafe, undefined in ReleaseFast/ReleaseSmall), never panicked
+/// or error-returned.
 ///
 /// @stable-since: v0.1.0
 pub fn decodeCodePointReverseUnchecked(bytes: []const u8, end_index: usize) DecodedCodePoint {
-    const len = codePointLenReverseUnchecked(bytes, end_index) catch @panic("invalid decode reverse unchecked code point length");
+    const len = codePointLenReverseUnchecked(bytes, end_index);
     const start = end_index + 1 - @as(usize, len);
 
     return decode(bytes, start, len);

@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** "unchecked" now means one thing everywhere — *the caller
+  guarantees the documented preconditions; violations are asserted /
+  safety-checked (trap in Debug/ReleaseSafe, undefined in
+  ReleaseFast/ReleaseSmall); unchecked functions never return errors or
+  panic.* Accordingly:
+  - `encoding.utf8.codePointLenReverseUnchecked` returns plain `u3`
+    (was `UTF8ValidationError!u3`).
+  - `encoding.utf16.utf16SequenceLenReverseUnchecked` returns plain `u2`
+    (was `UTF16ValidationError!u2`) and asserts `end_index < buf.len`
+    instead of returning `ZeroLengthUnits`.
+  - `encoding.utf8.decodeCodePointReverseUnchecked` no longer documents (or
+    contains) a panic path; its preconditions are asserted.
+
 ### Removed
 
 - **Breaking:** the `Undefined` member is gone from all six UTF-16/UTF-32
