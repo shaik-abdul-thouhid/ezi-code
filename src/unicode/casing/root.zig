@@ -1000,6 +1000,114 @@ pub fn containsFoldCodePoints(comptime mode: EqualFoldMode, haystack: []const Co
     return indexOfFoldCodePoints(mode, haystack, needle) != null;
 }
 
+const segmentation = @import("../segmentation/root.zig");
+
+/// True when `code_points[i]` sits in Final_Sigma context (Unicode Table
+/// 3-17): preceded by a cased scalar (skipping case-ignorables), and not
+/// followed by one (skipping case-ignorables). Only meaningful for U+03A3.
+fn isFinalSigmaContext(code_points: []const CodePoint, i: usize) bool {
+    var has_cased_before = false;
+    var j = i;
+    while (j > 0) {
+        j -= 1;
+        if (properties.isCaseIgnorable(code_points[j])) continue;
+        has_cased_before = properties.isCased(code_points[j]);
+        break;
+    }
+    if (!has_cased_before) return false;
+
+    var k = i + 1;
+    while (k < code_points.len) : (k += 1) {
+        if (properties.isCaseIgnorable(code_points[k])) continue;
+        return !properties.isCased(code_points[k]);
+    }
+    return true;
+}
+
+/// Shared walk for the titlecase APIs: when `out` is null only counts the
+/// mapped length, otherwise writes into it (sized by the counting pass).
+fn titlecaseEmit(code_points: []const CodePoint, out: ?[]CodePoint) usize {
+    var o: usize = 0;
+    var words = segmentation.codePointWordIterator(code_points);
+
+    while (words.next()) |word| {
+        const word_base = (@intFromPtr(word.ptr) - @intFromPtr(code_points.ptr)) / @sizeOf(CodePoint);
+        var seen_cased = false;
+
+        for (word, 0..) |code_point, wi| {
+            if (!seen_cased) {
+                if (properties.isCased(code_point)) {
+                    seen_cased = true;
+                    const mapped = toTitleCaseFull(code_point, .none, .none);
+                    for (mapped.slice()) |cp| {
+                        if (out) |buf| buf[o] = cp;
+                        o += 1;
+                    }
+                } else {
+                    // Before the word's first cased scalar: unchanged (R3).
+                    if (out) |buf| buf[o] = code_point;
+                    o += 1;
+                }
+                continue;
+            }
+
+            // U+03A3 is the only scalar whose default lowercase mapping is
+            // context-sensitive (Final_Sigma -> U+03C2).
+            if (code_point == 0x03A3 and isFinalSigmaContext(code_points, word_base + wi)) {
+                const mapped = toLowerCaseFull(code_point, .none, .final_sigma);
+                for (mapped.slice()) |cp| {
+                    if (out) |buf| buf[o] = cp;
+                    o += 1;
+                }
+            } else {
+                const mapped = toLowerCaseFull(code_point, .none, .none);
+                for (mapped.slice()) |cp| {
+                    if (out) |buf| buf[o] = cp;
+                    o += 1;
+                }
+            }
+        }
+    }
+
+    return o;
+}
+
+/// Titlecases `code_points` as a string per the Unicode default algorithm
+/// (R3): words are found with UAX #29 word segmentation, the first cased
+/// scalar of each word maps through the full titlecase mapping, every scalar
+/// after it through the full lowercase mapping (with Final_Sigma context for
+/// U+03A3), and scalars before the first cased one pass through unchanged.
+/// Default (root-locale) mappings; no Turkic/Lithuanian tailoring.
+///
+/// Returns a freshly-allocated, exactly-sized slice the caller owns. Since
+/// the input is already decoded, no decoding or validation is paid
+/// (`CodePoint` contract).
+///
+/// @stable-since: v0.4.0
+pub fn titlecaseAlloc(allocator: std.mem.Allocator, code_points: []const CodePoint) error{OutOfMemory}![]CodePoint {
+    const len = titlecaseEmit(code_points, null);
+    const out = try allocator.alloc(CodePoint, len);
+    errdefer allocator.free(out);
+
+    _ = titlecaseEmit(code_points, out);
+    return out;
+}
+
+/// UTF-8 convenience over `titlecaseAlloc`: decodes `bytes` strictly,
+/// titlecases, and re-encodes into a freshly-allocated UTF-8 string the
+/// caller owns. Malformed input surfaces a `UTF8ValidationError`.
+///
+/// @stable-since: v0.4.0
+pub fn titlecaseUtf8Alloc(allocator: std.mem.Allocator, bytes: []const u8) (UTF8ValidationError || error{ BufferTooSmall, OutOfMemory })![]u8 {
+    const code_points = try encoding.utf8.bytesToUTF8String(allocator, bytes);
+    defer allocator.free(code_points);
+
+    const titled = try titlecaseAlloc(allocator, code_points);
+    defer allocator.free(titled);
+
+    return encoding.utf8.encodeCodePointsAlloc(allocator, titled);
+}
+
 // ============================================================================
 // Tests (relocated from unicode/root.zig during the slim-facade refactor)
 // ============================================================================
@@ -1651,4 +1759,46 @@ test "indexOfFoldCodePoints: scalar-index twin agrees with the byte search" {
     // Boundary rule holds for slices too.
     const eszett = [_]CodePoint{0x00DF};
     try testing.expectEqual(@as(?usize, null), indexOfFoldCodePoints(.full, &eszett, &.{'s'}));
+}
+
+test "titlecaseUtf8Alloc: word-segmented titlecase with full mappings" {
+    const cases = [_]struct { input: []const u8, expected: []const u8 }{
+        .{ .input = "hello world", .expected = "Hello World" },
+        .{ .input = "STRASSE pizza", .expected = "Strasse Pizza" },
+        // MidLetter apostrophe keeps the word together (no "Don'T").
+        .{ .input = "don't stop", .expected = "Don't Stop" },
+        // ß titlecases to "Ss" per SpecialCasing.
+        .{ .input = "ßorn free", .expected = "Ssorn Free" },
+        // Greek: trailing capital sigma lowercases to final sigma.
+        .{ .input = "ΜΕΓΑΣ ΣΟΦΟΣ", .expected = "Μεγας Σοφος" },
+        // Uncased leading characters pass through; the first cased character
+        // of each word gets the title map — hence "42Nd", which is the
+        // R3-conformant result ('4' and '2' are not cased).
+        .{ .input = "'tis 42nd street", .expected = "'Tis 42Nd Street" },
+        .{ .input = "", .expected = "" },
+        .{ .input = "123 456", .expected = "123 456" },
+    };
+
+    for (cases) |case| {
+        const got = try titlecaseUtf8Alloc(testing.allocator, case.input);
+        defer testing.allocator.free(got);
+        try testing.expectEqualStrings(case.expected, got);
+    }
+}
+
+test "titlecaseAlloc: codepoint-slice variant agrees with the byte variant" {
+    const input = "ΜΕΓΑΣ don't ßtraße";
+
+    const cps = try encoding.utf8.bytesToUTF8String(testing.allocator, input);
+    defer testing.allocator.free(cps);
+
+    const titled_cps = try titlecaseAlloc(testing.allocator, cps);
+    defer testing.allocator.free(titled_cps);
+    const from_cps = try encoding.utf8.encodeCodePointsAlloc(testing.allocator, titled_cps);
+    defer testing.allocator.free(from_cps);
+
+    const from_bytes = try titlecaseUtf8Alloc(testing.allocator, input);
+    defer testing.allocator.free(from_bytes);
+
+    try testing.expectEqualStrings(from_bytes, from_cps);
 }

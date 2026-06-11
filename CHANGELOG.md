@@ -41,6 +41,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- String-level **titlecase** in `unicode.casing`
+  (`@stable-since: v0.4.0`): `titlecaseAlloc` (`[]const CodePoint`) and
+  `titlecaseUtf8Alloc` (UTF-8), implementing the Unicode default algorithm
+  (R3) — UAX #29 word segmentation, full titlecase mapping on each word's
+  first cased scalar, full lowercase on the rest, with Final_Sigma context
+  for U+03A3 (`"ΜΕΓΑΣ"` → `"Μεγας"`). Default root-locale mappings; no
+  Turkic/Lithuanian tailoring.
 - **Case-insensitive search** in `unicode.casing`
   (`@stable-since: v0.4.0`): `indexOfFold` / `containsFold` over UTF-8 bytes
   and `indexOfFoldCodePoints` / `containsFoldCodePoints` over scalar slices.
