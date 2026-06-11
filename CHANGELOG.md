@@ -7,6 +7,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- String-level **full-expansion upper/lower case** drivers in `unicode.casing`
+  (`@stable-since: v0.4.1`): `upperFull{Len,Buffer,Alloc}` /
+  `lowerFull{Len,Buffer,Alloc}` over `[]const CodePoint` and
+  `upperFullUtf8{Alloc,Writer}` / `lowerFullUtf8{Alloc,Writer}` over UTF-8,
+  mirroring the existing `foldFull*` surface. These apply expanding case
+  mappings the simple drivers cannot — `"straße"` upper-cases to `"STRASSE"`,
+  `"ﬀ"` to `"FF"`. Default root locale (no Turkic tailoring); the lower
+  drivers use the context-free mapping (no Greek Final_Sigma — use
+  `titlecaseUtf8Alloc` or the per-scalar API for that).
+- Grapheme-cluster-aware **display width** in `unicode.width`
+  (`@stable-since: v0.4.1`): `stringWidthGraphemes` / `stringWidthGraphemesLossy`
+  / `stringWidthGraphemesCodePoints` and the per-cluster `graphemeClusterWidth`.
+  Unlike the per-scalar `stringWidth*` estimators (unchanged), these count each
+  UAX #29 grapheme cluster once, so a ZWJ emoji family (👨‍👩‍👧) measures 2
+  columns instead of 6. Emoji-presentation sequences (VS16) and flags (regional
+  indicator pairs) are counted as 2.
+- Infallible lossy decode primitives `encoding.utf16.decodeU16CodePointLossy`
+  and `encoding.utf32.decodeU32CodePointLossy` (`@stable-since: v0.4.1`),
+  mirroring `utf8.decodeCodePointLossy`: malformed units yield U+FFFD with no
+  error union, preconditions asserted. The UTF-16/UTF-32 lossy iterators now
+  decode through them, so the "lossy never errors, structurally" guarantee
+  (previously UTF-8 only) holds for all three codecs — no `catch @panic`
+  remains on any lossy path.
+
+### Changed
+
+- **Breaking:** the UTF-8 stream's `OutputBufferTooSmall` error is renamed to
+  `BufferTooSmall`, the name the encoding, transcoding, casing, and collation
+  layers already use, so the whole library reports one error for "output
+  buffer too small" (`UTF8Stream.nextCodePoint` / `nextCodePointLossy`). The
+  sibling `NeedMoreBytes` / `EOFReached` keep input-side starvation distinct.
+- `unicode.properties.isAscii` now delegates to `encoding.isAscii` instead of
+  hardcoding `<= 0x7F`; every scalar ASCII check in the library now routes
+  through the single `encoding.isAscii` predicate. The hex-digit predicate docs
+  (`isHexDigit`, `isHexDigitWide`, `isAsciiHexDigit`) were clarified so the
+  ASCII-vs-Unicode distinction is explicit (no renames).
+- Internal: collation-element generation is unified behind one
+  `Collator.recordAt`, shared by `buildKey` and the incremental comparator, so
+  DUCET record lookup, discontiguous-contraction extension, and implicit
+  weighting cannot diverge between the sort-key and early-exit paths (closes a
+  divergence risk from 0.4.0; no API change).
+- Internal: `build.zig` no longer imports library source (`src/utils/root.zig`)
+  for its `some` build-option predicate — it carries a local copy, decoupling
+  the build graph from module layout.
+
+### Removed
+
+- **Breaking:** the dead `BufferIsEmpty` error variant is gone from
+  `UTF8Stream.nextCodePoint` / `nextCodePointLossy` — it was declared but
+  returned by no code path (the same cleanup as 0.4.0's `error.Undefined`).
+
+### Fixed
+
+- The unchecked-decode contract ("never panics … undefined in ReleaseFast") is
+  now honored uniformly: three internal sites used `@panic` (which traps in all
+  modes) instead of `unreachable` — most visibly `decodeCodePointReverseUnchecked`,
+  whose doc promised no panic. Replaced with `unreachable` so behavior matches
+  the documented contract.
+
 ## [0.4.0] - 2026-06-11
 
 ### Changed
@@ -269,6 +330,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Benchmark infrastructure
 - UCD 17.0.0 data frozen and code-generated tables
 
-[Unreleased]: https://github.com/shaik-abdul-thouhid/ezi-code/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/shaik-abdul-thouhid/ezi-code/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/shaik-abdul-thouhid/ezi-code/compare/v0.4.0...v0.4.1
+[0.4.0]: https://github.com/shaik-abdul-thouhid/ezi-code/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/shaik-abdul-thouhid/ezi-code/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/shaik-abdul-thouhid/ezi-code/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/shaik-abdul-thouhid/ezi-code/releases/tag/v0.1.0

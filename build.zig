@@ -1,5 +1,14 @@
 const std = @import("std");
-const some = @import("src/utils/root.zig").some;
+
+/// Local copy of the `any`-style predicate used for build-option logic. Kept
+/// in the build script itself so `build.zig` never imports library source
+/// (`src/`) — the build graph stays decoupled from internal module layout.
+fn some(comptime T: type, context: anytype, elements: []const T, predicate: fn (ctx: @TypeOf(context), T, index: usize) bool) bool {
+    for (elements, 0..) |element, i| {
+        if (predicate(context, element, i)) return true;
+    }
+    return false;
+}
 
 const TestEnum = enum {
     all,
