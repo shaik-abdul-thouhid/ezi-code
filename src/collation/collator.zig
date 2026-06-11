@@ -474,40 +474,11 @@ pub const Collator = struct {
 
         var i: usize = 0;
         var after_variable = false;
+        var implicit_buf: [2]ducet.CE = undefined;
         while (i < out.work.items.len) {
-            var record: u32 = 0;
-            var s_len: usize = 1;
-
-            if (i + 2 < out.work.items.len) {
-                if (ducet.lookupTriple(out.work.items[i], out.work.items[i + 1], out.work.items[i + 2])) |rec| {
-                    record = rec;
-                    s_len = 3;
-                }
-            }
-            if (record == 0 and i + 1 < out.work.items.len) {
-                if (ducet.lookupDouble(out.work.items[i], out.work.items[i + 1])) |rec| {
-                    record = rec;
-                    s_len = 2;
-                }
-            }
-            if (record == 0) {
-                record = ducet.mappingRecord(out.work.items[i]);
-                s_len = 1;
-            }
-
-            if (record != 0 and self.options.normalization) {
-                try self.extendDiscontiguous(allocator, &out.work, i, &s_len, &record);
-            }
-
-            if (record != 0) {
-                for (ducet.ceSlice(record)) |ce| {
-                    try self.appendCE(allocator, out, ce, &after_variable);
-                }
-            } else {
-                try self.appendImplicit(allocator, out, out.work.items[i], &after_variable);
-            }
-
-            i += s_len;
+            const r = try self.recordAt(allocator, &out.work, i, &implicit_buf);
+            for (r.ces) |ce| try self.appendCE(allocator, out, ce, &after_variable);
+            i += r.s_len;
         }
     }
 
@@ -655,26 +626,48 @@ pub const Collator = struct {
         if (resolved.quaternary != 0) try out.quaternary.append(allocator, resolved.quaternary);
     }
 
-    fn appendImplicit(self: Collator, allocator: Allocator, out: *Key, cp: CodePoint, after_variable: *bool) error{OutOfMemory}!void {
-        const weights = implicitWeights(cp);
-
-        const ce1: ducet.CE = .{
-            .primary = weights.aaaa,
-            .secondary = 0x0020,
-            .tertiary = 0x0002,
-            .variable = 0,
-            ._ = 0,
+    /// Resolves the collation elements for the code point(s) starting at `i` in
+    /// `work`: DUCET contraction/record lookup (triple, then double, then single),
+    /// the discontiguous-match extension (when normalization is on), and the
+    /// implicit-weight fallback. Returns the CE slice to emit and how many code
+    /// points were consumed. For an unmapped code point the two implicit CEs are
+    /// written into `implicit_buf` (caller-owned scratch) and returned as the
+    /// slice, so both the sort-key and incremental paths emit identical elements.
+    fn recordAt(
+        self: Collator,
+        allocator: Allocator,
+        work: *std.ArrayListUnmanaged(CodePoint),
+        i: usize,
+        implicit_buf: *[2]ducet.CE,
+    ) error{OutOfMemory}!RecordCEs {
+        var record: u32 = 0;
+        var s_len: usize = 1;
+        if (i + 2 < work.items.len) {
+            if (ducet.lookupTriple(work.items[i], work.items[i + 1], work.items[i + 2])) |rec| {
+                record = rec;
+                s_len = 3;
+            }
+        }
+        if (record == 0 and i + 1 < work.items.len) {
+            if (ducet.lookupDouble(work.items[i], work.items[i + 1])) |rec| {
+                record = rec;
+                s_len = 2;
+            }
+        }
+        if (record == 0) {
+            record = ducet.mappingRecord(work.items[i]);
+            s_len = 1;
+        }
+        if (record != 0 and self.options.normalization) {
+            try self.extendDiscontiguous(allocator, work, i, &s_len, &record);
+        }
+        if (record != 0) return .{ .ces = ducet.ceSlice(record), .s_len = s_len };
+        const weights = implicitWeights(work.items[i]);
+        implicit_buf.* = .{
+            .{ .primary = weights.aaaa, .secondary = 0x0020, .tertiary = 0x0002, .variable = 0, ._ = 0 },
+            .{ .primary = weights.bbbb, .secondary = 0x0000, .tertiary = 0x0000, .variable = 0, ._ = 0 },
         };
-        const ce2: ducet.CE = .{
-            .primary = weights.bbbb,
-            .secondary = 0x0000,
-            .tertiary = 0x0000,
-            .variable = 0,
-            ._ = 0,
-        };
-
-        try self.appendCE(allocator, out, ce1, after_variable);
-        try self.appendCE(allocator, out, ce2, after_variable);
+        return .{ .ces = implicit_buf[0..2], .s_len = s_len };
     }
 
     fn extendDiscontiguous(
@@ -733,6 +726,11 @@ const ResolvedCE = struct {
     quaternary: u16,
 };
 
+/// The collation elements resolved for one input position by `Collator.recordAt`,
+/// plus how many code points they consumed (`s_len`). The CE slice points either
+/// into the DUCET tables or at the caller's implicit-CE scratch buffer.
+const RecordCEs = struct { ces: []const ducet.CE, s_len: usize };
+
 /// Lazily yields the resolved collation elements of one input, in order,
 /// without materializing sort keys. Powers `compareCodePointsIncremental`:
 /// the stream is rewound and re-run once per compared level, which trades up
@@ -750,9 +748,7 @@ const CeStream = struct {
     after_variable: bool = false,
     ces: []const ducet.CE = &.{},
     ce_pos: usize = 0,
-    implicit: [2]ducet.CE = undefined,
-    implicit_len: usize = 0,
-    implicit_pos: usize = 0,
+    implicit_buf: [2]ducet.CE = undefined,
 
     fn init(collator: Collator, allocator: Allocator, input: []const CodePoint) error{OutOfMemory}!CeStream {
         var self = CeStream{ .collator = collator, .allocator = allocator };
@@ -786,8 +782,6 @@ const CeStream = struct {
         self.after_variable = false;
         self.ces = &.{};
         self.ce_pos = 0;
-        self.implicit_len = 0;
-        self.implicit_pos = 0;
     }
 
     /// The next non-ignorable resolved CE, or null at end of input. The same
@@ -802,52 +796,11 @@ const CeStream = struct {
                 if (self.collator.resolveCE(ce, &self.after_variable)) |resolved| return resolved;
                 continue;
             }
-            if (self.implicit_pos < self.implicit_len) {
-                const ce = self.implicit[self.implicit_pos];
-                self.implicit_pos += 1;
-                if (self.collator.resolveCE(ce, &self.after_variable)) |resolved| return resolved;
-                continue;
-            }
             if (self.i >= self.work.items.len) return null;
-
-            var record: u32 = 0;
-            var s_len: usize = 1;
-
-            if (self.i + 2 < self.work.items.len) {
-                if (ducet.lookupTriple(self.work.items[self.i], self.work.items[self.i + 1], self.work.items[self.i + 2])) |rec| {
-                    record = rec;
-                    s_len = 3;
-                }
-            }
-            if (record == 0 and self.i + 1 < self.work.items.len) {
-                if (ducet.lookupDouble(self.work.items[self.i], self.work.items[self.i + 1])) |rec| {
-                    record = rec;
-                    s_len = 2;
-                }
-            }
-            if (record == 0) {
-                record = ducet.mappingRecord(self.work.items[self.i]);
-                s_len = 1;
-            }
-
-            if (record != 0 and self.collator.options.normalization) {
-                try self.collator.extendDiscontiguous(self.allocator, &self.work, self.i, &s_len, &record);
-            }
-
-            if (record != 0) {
-                self.ces = ducet.ceSlice(record);
-                self.ce_pos = 0;
-            } else {
-                const weights = implicitWeights(self.work.items[self.i]);
-                self.implicit = .{
-                    .{ .primary = weights.aaaa, .secondary = 0x0020, .tertiary = 0x0002, .variable = 0, ._ = 0 },
-                    .{ .primary = weights.bbbb, .secondary = 0x0000, .tertiary = 0x0000, .variable = 0, ._ = 0 },
-                };
-                self.implicit_len = 2;
-                self.implicit_pos = 0;
-            }
-
-            self.i += s_len;
+            const r = try self.collator.recordAt(self.allocator, &self.work, self.i, &self.implicit_buf);
+            self.ces = r.ces;
+            self.ce_pos = 0;
+            self.i += r.s_len;
         }
     }
 };
@@ -1120,4 +1073,80 @@ test "compareCodePointsIncremental: agrees with key-based compare over the optio
             }
         }
     }
+}
+
+test "collation F1: recordAt unifies key and incremental CE generation across contractions/implicit/Hangul" {
+    const testing = std.testing;
+
+    // F1 guard: the sort-key path (`buildKey` → `compareUtf8`) and the
+    // incremental path (`CeStream` → `compareUtf8Incremental`) now share one
+    // CE generator (`recordAt`). This corpus exercises every branch that used
+    // to be duplicated: pure literals, accent-only vs composed/decomposed
+    // (contraction + discontiguous match under NFD), case-only, implicit
+    // weights (CJK ideographs), and Hangul (algorithmic decomposition). If the
+    // two paths ever disagree for any ordered pair under any strength/variable
+    // weighting, the unified generator has diverged.
+    const corpus = [_][]const u8{
+        "cafe",
+        "café",
+        "cafe\u{0301}", // cafe + combining acute → discontiguous/contraction territory
+        "CAFÉ",
+        "und",
+        "u\u{0308}ber", // u + combining diaeresis (decomposed)
+        "über", // precomposed ü
+        "Å",
+        "A\u{030A}", // A + combining ring above (decomposes to Å)
+        "你好",
+        "你好吗",
+        "한국",
+        "한",
+    };
+
+    const strengths = [_]Strength{ .primary, .secondary, .tertiary, .quaternary, .identical };
+    const weightings = [_]VariableWeighting{ .non_ignorable, .shifted };
+
+    inline for (weightings) |vw| {
+        inline for (strengths) |st| {
+            const collator = Collator.init(.{ .strength = st, .variable_weighting = vw });
+            for (corpus) |a| {
+                for (corpus) |b| {
+                    const key_based = try collator.compareUtf8(testing.allocator, a, b);
+                    const stream_based = try collator.compareUtf8Incremental(testing.allocator, a, b);
+                    try testing.expectEqual(key_based, stream_based);
+                }
+            }
+        }
+    }
+}
+
+test "collation F1: buildKey emits non-empty keys for contraction and implicit-weight strings" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+    var collator = Collator.init(.{ .strength = .identical });
+
+    // A contraction/discontiguous-bearing string (decomposed ü) and a CJK
+    // ideograph that takes the implicit-weight fallback inside `recordAt`. Both
+    // must yield a non-empty serialized key, and each must compare equal to
+    // itself through `compareKeys` (the unified generator is deterministic).
+    const contraction = try encoding.utf8.bytesToUTF8String(allocator, "u\u{0308}ber");
+    defer allocator.free(contraction);
+    const implicit = try encoding.utf8.bytesToUTF8String(allocator, "你");
+    defer allocator.free(implicit);
+
+    var key: Key = .{};
+    defer key.deinit(allocator);
+
+    try collator.buildKey(allocator, contraction, &key);
+    try testing.expect(key.primaryWeights().len > 0);
+    const contraction_bytes = try key.serializeAlloc(allocator, collator.options);
+    defer allocator.free(contraction_bytes);
+    try testing.expect(contraction_bytes.len > 0);
+    try testing.expectEqual(Order.eq, collator.compareKeys(&key, &key));
+
+    try collator.buildKey(allocator, implicit, &key);
+    try testing.expect(key.primaryWeights().len > 0);
+    const implicit_bytes = try key.serializeAlloc(allocator, collator.options);
+    defer allocator.free(implicit_bytes);
+    try testing.expect(implicit_bytes.len > 0);
+    try testing.expectEqual(Order.eq, collator.compareKeys(&key, &key));
 }
