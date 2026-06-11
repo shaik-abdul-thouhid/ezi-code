@@ -115,7 +115,7 @@ const UTF8Stream = struct {
     /// drained. If `out_buf` is non-null the raw bytes of the scalar are copied
     /// into it; pass `null` to decode without copying.
     ///
-    /// Errors: `OutputBufferTooSmall` if `out_buf` cannot hold the scalar;
+    /// Errors: `BufferTooSmall` if `out_buf` cannot hold the scalar;
     /// `NeedMoreBytes` if a scalar is split and more input may still be pushed;
     /// `EOFReached` if a trailing partial scalar remains after `finish`; plus
     /// the `UTF8ValidationError` set for malformed input. On any error the
@@ -123,7 +123,7 @@ const UTF8Stream = struct {
     /// `nextCodePointLossy` when invalid bytes should be tolerated.
     ///
     /// @stable-since: v0.1.0
-    pub fn nextCodePoint(self: *UTF8Stream, out_buf: ?[]u8) (error{ BufferIsEmpty, OutputBufferTooSmall, NeedMoreBytes, EOFReached } || utf8.UTF8ValidationError)!?encoding.utf8.DecodedCodePoint {
+    pub fn nextCodePoint(self: *UTF8Stream, out_buf: ?[]u8) (error{ BufferTooSmall, NeedMoreBytes, EOFReached } || utf8.UTF8ValidationError)!?encoding.utf8.DecodedCodePoint {
         if (self.buffers == null or self.buffers_filled == 0) return null;
 
         const buffers = self.buffers.?;
@@ -168,7 +168,7 @@ const UTF8Stream = struct {
                 const expected_len = self.cached_partial_expected_len;
 
                 if (out_buf != null and out_buf.?.len < expected_len) {
-                    return error.OutputBufferTooSmall;
+                    return error.BufferTooSmall;
                 }
 
                 const next_buffer_idx = current_buffer_idx + 1;
@@ -245,7 +245,7 @@ const UTF8Stream = struct {
             if (encoding.isAscii(leading_byte)) {
                 if (out_buf) |out| {
                     if (out.len < 1) {
-                        return error.OutputBufferTooSmall;
+                        return error.BufferTooSmall;
                     }
                     out[0] = leading_byte;
                 }
@@ -284,7 +284,7 @@ const UTF8Stream = struct {
 
             if (out_buf) |out| {
                 if (out.len < decoded_len) {
-                    return error.OutputBufferTooSmall;
+                    return error.BufferTooSmall;
                 }
 
                 @memcpy(out[0..decoded_len], current_buffer[current_byte_idx .. current_byte_idx + decoded_len]);
@@ -317,14 +317,14 @@ const UTF8Stream = struct {
     /// is fully drained. If `out_buf` is non-null the raw bytes are copied into
     /// it; pass `null` to decode without copying.
     ///
-    /// Errors: `OutputBufferTooSmall` if `out_buf` cannot hold the bytes;
+    /// Errors: `BufferTooSmall` if `out_buf` cannot hold the bytes;
     /// `NeedMoreBytes` if a sequence is split and more input may still arrive.
     /// After `finish`, a trailing partial sequence is emitted as a single
     /// replacement code point instead. Prefer the strict `nextCodePoint` when
     /// invalid input should surface as an error.
     ///
     /// @stable-since: v0.1.0
-    pub fn nextCodePointLossy(self: *UTF8Stream, out_buf: ?[]u8) (error{ BufferIsEmpty, OutputBufferTooSmall, NeedMoreBytes, EOFReached } || utf8.UTF8ValidationLossyError)!?encoding.utf8.DecodedCodePointLossy {
+    pub fn nextCodePointLossy(self: *UTF8Stream, out_buf: ?[]u8) (error{ BufferTooSmall, NeedMoreBytes, EOFReached } || utf8.UTF8ValidationLossyError)!?encoding.utf8.DecodedCodePointLossy {
         if (self.buffers == null or self.buffers_filled == 0) return null;
 
         const buffers = self.buffers.?;
@@ -369,7 +369,7 @@ const UTF8Stream = struct {
                 const expected_len = self.cached_partial_expected_len;
 
                 if (out_buf != null and out_buf.?.len < expected_len) {
-                    return error.OutputBufferTooSmall;
+                    return error.BufferTooSmall;
                 }
 
                 const next_buffer_idx = current_buffer_idx + 1;
@@ -378,7 +378,7 @@ const UTF8Stream = struct {
                     if (self.eof) {
                         if (out_buf) |out| {
                             if (out.len < self.partial_buffer_len) {
-                                return error.OutputBufferTooSmall;
+                                return error.BufferTooSmall;
                             }
 
                             @memcpy(
@@ -409,7 +409,7 @@ const UTF8Stream = struct {
 
                             if (out_buf) |out| {
                                 if (out.len < self.partial_buffer_len) {
-                                    return error.OutputBufferTooSmall;
+                                    return error.BufferTooSmall;
                                 }
                                 @memcpy(
                                     out[0..self.partial_buffer_len],
@@ -475,7 +475,7 @@ const UTF8Stream = struct {
             if (encoding.isAscii(leading_byte)) {
                 if (out_buf) |out| {
                     if (out.len < 1) {
-                        return error.OutputBufferTooSmall;
+                        return error.BufferTooSmall;
                     }
                     out[0] = leading_byte;
                 }
@@ -520,7 +520,7 @@ const UTF8Stream = struct {
 
                 if (out_buf) |out| {
                     if (out.len < i) {
-                        return error.OutputBufferTooSmall;
+                        return error.BufferTooSmall;
                     }
 
                     i = 0;
@@ -555,7 +555,7 @@ const UTF8Stream = struct {
                     if (self.eof) {
                         if (out_buf) |out| {
                             if (out.len < self.partial_buffer_len) {
-                                return error.OutputBufferTooSmall;
+                                return error.BufferTooSmall;
                             }
 
                             @memcpy(
@@ -578,7 +578,7 @@ const UTF8Stream = struct {
 
             if (out_buf) |out| {
                 if (out.len < decoded_len) {
-                    return error.OutputBufferTooSmall;
+                    return error.BufferTooSmall;
                 }
 
                 @memcpy(out[0..decoded_len], current_buffer[current_byte_idx .. current_byte_idx + decoded_len]);
@@ -683,7 +683,7 @@ test "UTF8Stream.nextCodePoint preserves state when output buffer is too small" 
     try stream.push(allocator, bytes[0..3]);
 
     var out_small: [2]u8 = undefined;
-    try std.testing.expectError(error.OutputBufferTooSmall, stream.nextCodePoint(&out_small));
+    try std.testing.expectError(error.BufferTooSmall, stream.nextCodePoint(&out_small));
 
     var out_full: [3]u8 = undefined;
     const decoded_opt = try stream.nextCodePoint(&out_full);
@@ -732,7 +732,7 @@ test "UTF8Stream.nextCodePointLossy preserves state when output buffer is too sm
     try stream.push(allocator, bytes[0..3]);
 
     var out_small: [2]u8 = undefined;
-    try std.testing.expectError(error.OutputBufferTooSmall, stream.nextCodePointLossy(&out_small));
+    try std.testing.expectError(error.BufferTooSmall, stream.nextCodePointLossy(&out_small));
 
     var out_full: [3]u8 = undefined;
     const decoded_opt = try stream.nextCodePointLossy(&out_full);
@@ -781,7 +781,7 @@ test "UTF8Stream.nextCodePoint handles null output buffer on split scalar" {
     try std.testing.expectEqual(decoded.code_point, @as(encoding.CodePoint, 0x1F60A));
 }
 
-test "UTF8Stream.nextCodePointLossy reports OutputBufferTooSmall on orphaned continuation across buffers" {
+test "UTF8Stream.nextCodePointLossy reports BufferTooSmall on orphaned continuation across buffers" {
     const allocator = std.testing.allocator;
     var stream = try initUTF8Stream(allocator, .{});
     defer stream.deinit(allocator);
@@ -790,7 +790,7 @@ test "UTF8Stream.nextCodePointLossy reports OutputBufferTooSmall on orphaned con
     try stream.push(allocator, &.{0x80});
 
     var out_small: [1]u8 = undefined;
-    try std.testing.expectError(error.OutputBufferTooSmall, stream.nextCodePointLossy(&out_small));
+    try std.testing.expectError(error.BufferTooSmall, stream.nextCodePointLossy(&out_small));
 }
 
 test "UTF8Stream.nextCodePoint can be reused after full drain" {
@@ -841,4 +841,35 @@ test "UTF8Stream push grows internal buffer and preserves read order" {
         idx += 1;
     }
     try std.testing.expectEqual(idx, @as(usize, 20));
+}
+
+test "B1/B2 regression: stream error set is { BufferTooSmall, NeedMoreBytes, EOFReached } (no dead BufferIsEmpty)" {
+    const allocator = std.testing.allocator;
+    var stream = try initUTF8Stream(allocator, .{});
+    defer stream.deinit(allocator);
+
+    // A 3-byte euro sign with a 2-byte output buffer: the unified
+    // BufferTooSmall is raised (formerly the layer-local OutputBufferTooSmall).
+    const euro: [3]u8 = .{ 0xE2, 0x82, 0xAC };
+    try stream.push(allocator, euro[0..3]);
+    var out_small: [2]u8 = undefined;
+
+    // Exhaustively switching the strict error set WITHOUT a BufferIsEmpty arm
+    // only compiles because that dead variant was removed — this is the
+    // compile-time proof, with a runtime check that BufferTooSmall is the path.
+    if (stream.nextCodePoint(&out_small)) |_| {
+        try std.testing.expect(false);
+    } else |err| switch (err) {
+        error.BufferTooSmall => {}, // expected
+        error.NeedMoreBytes,
+        error.EOFReached,
+        error.OverlongEncoding,
+        error.InvalidContinuationByte,
+        error.InvalidByteSequence,
+        error.SurrogateCodePoint,
+        error.CodePointTooLarge,
+        error.ZeroLengthBytes,
+        error.IndexOutOfBounds,
+        => try std.testing.expect(false),
+    }
 }
