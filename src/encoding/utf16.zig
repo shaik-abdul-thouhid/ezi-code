@@ -249,6 +249,61 @@ pub fn encodeCodePointWriter(code_point: CodePoint, endian: Endian, writer: *std
     return len;
 }
 
+/// Returns the number of `u16` code units `code_points` occupies when encoded
+/// as UTF-16. Pair with `encodeCodePointsBuffer` to size the output exactly.
+///
+/// Contract: every element is a valid Unicode scalar (`CodePoint` contract);
+/// the scalars are not validated. Since the input is already decoded, no
+/// decoding or validation is paid here — this is the bulk counterpart of
+/// `utf16EncodeLen`.
+///
+/// @stable-since: v0.4.0
+pub fn encodeCodePointsLen(code_points: []const CodePoint) usize {
+    var len: usize = 0;
+    for (code_points) |code_point| {
+        len += @as(usize, utf16EncodeLen(code_point) catch unreachable);
+    }
+    return len;
+}
+
+/// Encodes `code_points` as UTF-16 into `buf` (native unit order), returning
+/// the units written. Returns `error.BufferTooSmall` when `buf` cannot hold
+/// the encoded form; pair with `encodeCodePointsLen` to size it exactly.
+/// Allocation-free; use `encodeCodePointsAlloc` for an owned slice.
+///
+/// Contract: every element is a valid Unicode scalar (`CodePoint` contract);
+/// the scalars are not validated.
+///
+/// @stable-since: v0.4.0
+pub fn encodeCodePointsBuffer(code_points: []const CodePoint, buf: []u16) error{BufferTooSmall}!usize {
+    var o: usize = 0;
+    for (code_points) |code_point| {
+        const len = utf16EncodeLen(code_point) catch unreachable;
+        if (buf.len - o < @as(usize, len)) {
+            return error.BufferTooSmall;
+        }
+        _ = encodeCodePointUnchecked(code_point, buf[o..]);
+        o += len;
+    }
+    return o;
+}
+
+/// Encodes `code_points` as UTF-16 (native unit order) into a
+/// freshly-allocated, exactly-sized unit slice. Caller owns (and frees) the
+/// result. The encode-direction inverse of `bufToUTF16String`.
+///
+/// Contract: every element is a valid Unicode scalar (`CodePoint` contract);
+/// the scalars are not validated.
+///
+/// @stable-since: v0.4.0
+pub fn encodeCodePointsAlloc(allocator: std.mem.Allocator, code_points: []const CodePoint) error{OutOfMemory}![]u16 {
+    const out = try allocator.alloc(u16, encodeCodePointsLen(code_points));
+    errdefer allocator.free(out);
+
+    _ = encodeCodePointsBuffer(code_points, out) catch unreachable;
+    return out;
+}
+
 fn decode(buf: []const u16, offset: usize, len: u2) DecodedCodePoint {
     return switch (len) {
         1 => .{ .code_point = @as(CodePoint, buf[offset]), .len = 1 },
@@ -1460,4 +1515,23 @@ test "invalidIndex: null on valid input, exact offset on lone surrogates" {
     try std.testing.expectEqual(@as(?usize, 0), invalidIndex(&[_]u16{0xDC00}));
     try std.testing.expectEqual(@as(?usize, 2), invalidIndex(&[_]u16{ 'o', 'k', 0xD800, 'x' }));
     try std.testing.expectEqual(@as(?usize, 1), invalidIndex(&[_]u16{ 'a', 0xD83D })); // truncated pair at end
+}
+
+test "encodeCodePoints: round-trips through bufToUTF16String" {
+    const cps = [_]CodePoint{ 'a', 0x00E9, 0x1F600, 'z' };
+
+    try std.testing.expectEqual(@as(usize, 1 + 1 + 2 + 1), encodeCodePointsLen(&cps));
+
+    var buf: [8]u16 = undefined;
+    const written = try encodeCodePointsBuffer(&cps, &buf);
+    try std.testing.expectEqualSlices(u16, &[_]u16{ 'a', 0x00E9, 0xD83D, 0xDE00, 'z' }, buf[0..written]);
+
+    var small: [3]u16 = undefined;
+    try std.testing.expectError(error.BufferTooSmall, encodeCodePointsBuffer(&cps, &small));
+
+    const owned = try encodeCodePointsAlloc(std.testing.allocator, &cps);
+    defer std.testing.allocator.free(owned);
+    const back = try bufToUTF16String(std.testing.allocator, owned);
+    defer std.testing.allocator.free(back);
+    try std.testing.expectEqualSlices(CodePoint, &cps, back);
 }

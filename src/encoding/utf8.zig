@@ -660,6 +660,61 @@ pub fn encodeCodePointWriter(code_point: CodePoint, writer: *std.Io.Writer) std.
     return len;
 }
 
+/// Returns the number of bytes `code_points` occupies when encoded as UTF-8.
+/// Pair with `encodeCodePointsBuffer` to size the output exactly.
+///
+/// Contract: every element is a valid Unicode scalar (`CodePoint` contract);
+/// the scalars are not validated. Since the input is already decoded, no
+/// decoding or validation is paid here — this is the bulk counterpart of
+/// `utf8EncodeLen`.
+///
+/// @stable-since: v0.4.0
+pub fn encodeCodePointsLen(code_points: []const CodePoint) usize {
+    var len: usize = 0;
+    for (code_points) |code_point| {
+        len += @as(usize, utf8EncodeLen(code_point));
+    }
+    return len;
+}
+
+/// Encodes `code_points` as UTF-8 into `buf`, returning the bytes written.
+/// Returns `error.BufferTooSmall` when `buf` cannot hold the encoded form;
+/// pair with `encodeCodePointsLen` to size it exactly. Allocation-free; use
+/// `encodeCodePointsAlloc` for an owned slice.
+///
+/// Contract: every element is a valid Unicode scalar (`CodePoint` contract);
+/// the scalars are not validated.
+///
+/// @stable-since: v0.4.0
+pub fn encodeCodePointsBuffer(code_points: []const CodePoint, buf: []u8) error{BufferTooSmall}!usize {
+    var o: usize = 0;
+    for (code_points) |code_point| {
+        const len = utf8EncodeLen(code_point);
+        if (buf.len - o < @as(usize, len)) {
+            return error.BufferTooSmall;
+        }
+        _ = encodeCodePointUnchecked(code_point, buf[o..]);
+        o += len;
+    }
+    return o;
+}
+
+/// Encodes `code_points` as UTF-8 into a freshly-allocated, exactly-sized
+/// byte slice. Caller owns (and frees) the result. The encode-direction
+/// inverse of `bytesToUTF8String`.
+///
+/// Contract: every element is a valid Unicode scalar (`CodePoint` contract);
+/// the scalars are not validated.
+///
+/// @stable-since: v0.4.0
+pub fn encodeCodePointsAlloc(allocator: std.mem.Allocator, code_points: []const CodePoint) error{OutOfMemory}![]u8 {
+    const out = try allocator.alloc(u8, encodeCodePointsLen(code_points));
+    errdefer allocator.free(out);
+
+    _ = encodeCodePointsBuffer(code_points, out) catch unreachable;
+    return out;
+}
+
 /// Decodes the code point ending at `end_index` (inclusive). This is the unchecked variant
 /// of decode reverse; use the strict `validateAndDecodeCodePointBytesReverse` if the caller
 /// is uncertain the bytes are valid.
@@ -2658,4 +2713,23 @@ test "StreamingValidator: invalid result is sticky across further updates" {
     try std.testing.expectEqual(@as(?usize, 0), v.update(&.{0xFF}));
     try std.testing.expectEqual(@as(?usize, 0), v.update("still invalid"));
     try std.testing.expect(!v.finish());
+}
+
+test "encodeCodePoints: round-trips through bytesToUTF8String" {
+    const cps = [_]CodePoint{ 'a', 0x00E9, 0x20AC, 0x1F600, 'z' };
+
+    try std.testing.expectEqual(@as(usize, 1 + 2 + 3 + 4 + 1), encodeCodePointsLen(&cps));
+
+    var buf: [16]u8 = undefined;
+    const written = try encodeCodePointsBuffer(&cps, &buf);
+    try std.testing.expectEqualStrings("a\u{00E9}\u{20AC}\u{1F600}z", buf[0..written]);
+
+    var small: [4]u8 = undefined;
+    try std.testing.expectError(error.BufferTooSmall, encodeCodePointsBuffer(&cps, &small));
+
+    const owned = try encodeCodePointsAlloc(std.testing.allocator, &cps);
+    defer std.testing.allocator.free(owned);
+    const back = try bytesToUTF8String(std.testing.allocator, owned);
+    defer std.testing.allocator.free(back);
+    try std.testing.expectEqualSlices(CodePoint, &cps, back);
 }

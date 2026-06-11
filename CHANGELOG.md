@@ -41,6 +41,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Bulk **encode-direction** APIs taking `[]const CodePoint`
+  (`@stable-since: v0.4.0`): `encodeCodePoints{Len,Buffer,Alloc}` on all three
+  codecs, the inverse of `bytesToUTF8String` / `bufToUTF16String` /
+  `bufToUTF32String`. Callers holding already-decoded scalars encode without
+  any decoding or validation, per the `CodePoint` contract.
 - `encoding.utf8.StreamingValidator` — incremental, resumable validation over
   arbitrarily-chunked input (`@stable-since: v0.4.0`). The Höhrmann DFA state
   carries across chunk boundaries (no buffering, no copies); `update` reports

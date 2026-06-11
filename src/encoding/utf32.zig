@@ -176,6 +176,50 @@ pub fn encodeCodePointWriter(code_point: CodePoint, endian: Endian, writer: *std
     return 1;
 }
 
+/// Returns the number of `u32` code units `code_points` occupies when encoded
+/// as UTF-32 — always `code_points.len`. Provided for symmetry with the UTF-8
+/// and UTF-16 bulk encoders so generic code can treat the three uniformly.
+///
+/// @stable-since: v0.4.0
+pub fn encodeCodePointsLen(code_points: []const CodePoint) usize {
+    return code_points.len;
+}
+
+/// Encodes `code_points` as UTF-32 into `buf` (native unit order), returning
+/// the units written (always `code_points.len`). Returns
+/// `error.BufferTooSmall` when `buf` is shorter than the input.
+/// Allocation-free; use `encodeCodePointsAlloc` for an owned slice.
+///
+/// Contract: every element is a valid Unicode scalar (`CodePoint` contract);
+/// the scalars are not validated.
+///
+/// @stable-since: v0.4.0
+pub fn encodeCodePointsBuffer(code_points: []const CodePoint, buf: []u32) error{BufferTooSmall}!usize {
+    if (buf.len < code_points.len) {
+        return error.BufferTooSmall;
+    }
+    for (code_points, buf[0..code_points.len]) |code_point, *unit| {
+        unit.* = code_point;
+    }
+    return code_points.len;
+}
+
+/// Encodes `code_points` as UTF-32 (native unit order) into a
+/// freshly-allocated, exactly-sized unit slice. Caller owns (and frees) the
+/// result. The encode-direction inverse of `bufToUTF32String`.
+///
+/// Contract: every element is a valid Unicode scalar (`CodePoint` contract);
+/// the scalars are not validated.
+///
+/// @stable-since: v0.4.0
+pub fn encodeCodePointsAlloc(allocator: std.mem.Allocator, code_points: []const CodePoint) error{OutOfMemory}![]u32 {
+    const out = try allocator.alloc(u32, code_points.len);
+    errdefer allocator.free(out);
+
+    _ = encodeCodePointsBuffer(code_points, out) catch unreachable;
+    return out;
+}
+
 /// Validate the unit at `buf[offset]` and return its sequence length
 /// (always 1). Errors on empty input, out-of-bounds offset, or an
 /// illegal unit.
@@ -1074,4 +1118,23 @@ test "invalidIndex: null on valid input, exact offset on bad units" {
 
     try std.testing.expectEqual(@as(?usize, 0), invalidIndex(&[_]u32{0xD800}));
     try std.testing.expectEqual(@as(?usize, 2), invalidIndex(&[_]u32{ 'o', 'k', 0x110000 }));
+}
+
+test "encodeCodePoints: round-trips through bufToUTF32String" {
+    const cps = [_]CodePoint{ 'a', 0x00E9, 0x1F600 };
+
+    try std.testing.expectEqual(cps.len, encodeCodePointsLen(&cps));
+
+    var buf: [4]u32 = undefined;
+    const written = try encodeCodePointsBuffer(&cps, &buf);
+    try std.testing.expectEqualSlices(u32, &[_]u32{ 'a', 0x00E9, 0x1F600 }, buf[0..written]);
+
+    var small: [2]u32 = undefined;
+    try std.testing.expectError(error.BufferTooSmall, encodeCodePointsBuffer(&cps, &small));
+
+    const owned = try encodeCodePointsAlloc(std.testing.allocator, &cps);
+    defer std.testing.allocator.free(owned);
+    const back = try bufToUTF32String(std.testing.allocator, owned, .little);
+    defer std.testing.allocator.free(back);
+    try std.testing.expectEqualSlices(CodePoint, &cps, back);
 }
