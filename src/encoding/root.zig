@@ -24,11 +24,28 @@ pub const utf32 = @import("utf32.zig");
 /// @stable-since: v0.4.0
 pub const bom = @import("bom.zig");
 
-/// The canonical scalar type. All decoder/encoder
-/// APIs in `utf8`, `utf16`, `utf32` produce and consume this type.
-/// This type is a contract that the given value is valid.
-/// Any functions taking this as input, assume that the code point is
-/// valid unless specified.
+/// The canonical scalar type (`u21`). All decoder/encoder APIs in `utf8`,
+/// `utf16`, and `utf32` produce and consume this type.
+///
+/// **`CodePoint` is a contract.** A value of this type is presumed to be a
+/// valid Unicode scalar: in `0..=0x10FFFF` and not a surrogate
+/// (U+D800..U+DFFF). The contract has two sides:
+///
+/// - Every API that **produces** a `CodePoint` upholds it — strict decoders
+///   by validating, lossy decoders by substituting U+FFFD for anything
+///   malformed.
+/// - Every API that **accepts** one relies on it and skips decoding and
+///   validation entirely. This is what makes the `[]const CodePoint`
+///   variants of the byte APIs (`encodeCodePoints*`, `*CodePoints` casing
+///   and search functions, normalization, collation) the cheaper path when
+///   the caller already holds decoded text: the validation was paid once, at
+///   the boundary where the scalars were produced.
+///
+/// Passing a value that breaks the contract is a caller bug: the result is
+/// unspecified, and safety-checked builds may trap. APIs that accept
+/// arbitrary, possibly-invalid integers say so explicitly and either take a
+/// wider type or exist to police the boundary (`validateCodePoint`,
+/// `isValidCodePoint`, the lossy decoders).
 pub const CodePoint = u21;
 
 /// Upper bound of the ASCII range (U+007F). Exposed for fast-path checks.

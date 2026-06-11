@@ -2,7 +2,8 @@
 
 A Unicode library for Zig. Three layers, stacked:
 
-- **`encoding`** — UTF-8, UTF-16, and UTF-32 codecs.
+- **`encoding`** — UTF-8, UTF-16, and UTF-32 codecs, plus BOM
+  detection/stripping (`encoding.bom`).
 - **`transcoding`** — conversion between the three encoding forms, plus a
   chunked UTF-8 stream decoder.
 - **`unicode`** — character properties and text algorithms backed by the
@@ -62,24 +63,39 @@ exported, so you can depend on just the layer you need.
 const ezi = @import("ezi_code");
 
 // Decode and iterate UTF-8 scalars.
-const view = try ezi.utf8.initUTF8View("héllo, мир");
-var it = view.iterator();
+var scalar_count: usize = 0;
+const view = try ezi.utf8.initUTF8View("héllo, мир", &scalar_count);
+var it = view.iter();
 while (it.next()) |cp| {
     // cp: u21
     _ = cp;
 }
 
+// Where, not just whether: byte offset of the first malformed sequence.
+if (ezi.utf8.invalidIndex(input_bytes)) |at| return reportInvalidAt(at);
+
+// Detect and strip a leading byte-order mark.
+const body = ezi.bom.strip(file_bytes);
+
 // Convert between encoding forms.
 const utf16 = try ezi.transcoding.utf8ToUtf16(allocator, "Καλημέρα");
 defer allocator.free(utf16);
 
-// Normalize.
-const nfc = try ezi.unicode.nfc(allocator, "café");
-defer allocator.free(nfc);
+// Normalize ([]const CodePoint in, []const CodePoint out).
+const nfc = try ezi.unicode.nfc(allocator, &.{ 'c', 'a', 'f', 'e', 0x0301 });
+defer allocator.free(nfc);   // { 'c', 'a', 'f', 0xE9 }
 
 // Case-fold a UTF-8 string for caseless matching (ß → "ss").
 const folded = try ezi.unicode.casing.foldFullUtf8Alloc(allocator, "Straße");
 defer allocator.free(folded);   // "strasse"
+
+// Caseless search without allocating: "STRASSE" found inside "…Straße…".
+const at = try ezi.unicode.casing.indexOfFold(.full, "die Straße hier", "STRASSE");
+_ = at; // 4
+
+// Titlecase per the Unicode default algorithm (UAX #29 words).
+const titled = try ezi.unicode.casing.titlecaseUtf8Alloc(allocator, "ΜΕΓΑΣ ΣΟΦΟΣ");
+defer allocator.free(titled);   // "Μεγας Σοφος" (final sigma handled)
 
 // Measure display width on a monospace grid (wide CJK counts as 2).
 const cols = try ezi.unicode.width.stringWidth("コード");  // 6
@@ -209,7 +225,7 @@ page loads but shows no declarations, switch to the HTTP-server method above.
 
 ```text
 src/
-  encoding/        UTF-8, UTF-16, UTF-32 codecs + per-module README
+  encoding/        UTF-8, UTF-16, UTF-32 codecs, BOM utilities + per-module README
   transcoding/     Cross-encoding converters and UTF8Stream + per-module README
   unicode/         All UCD-backed properties and algorithms + per-module README
     age/  bidi/  blocks/  casing/  emoji/  hangul/  normalization/
@@ -228,9 +244,25 @@ licences/          Upstream licenses for bundled third-party code and data
 
 - Decode paths come in three flavours everywhere they exist: **strict** (full
   validation, fine-grained errors), **unchecked** (assume valid, skip checks),
-  and **lossy** (replace malformed runs with U+FFFD, never error). Error sets
-  are per-codec; "overlong", "surrogate", and "too large" are different
-  failures because callers want to treat them differently.
+  and **lossy** (replace malformed runs with U+FFFD, never error — there is no
+  panic anywhere on a lossy path). Error sets are per-codec; "overlong",
+  "surrogate", and "too large" are different failures because callers want to
+  treat them differently.
+- **Unchecked means one thing everywhere**: the caller guarantees the
+  documented preconditions; violations are asserted (safety-checked — they
+  trap in Debug/ReleaseSafe and are undefined in ReleaseFast/ReleaseSmall);
+  unchecked functions never return errors and never panic.
+- **`CodePoint` (`u21`) is a contract**: a value of this type is presumed to
+  be a valid Unicode scalar (in range, not a surrogate). APIs that produce one
+  uphold the contract; APIs that accept one — the `[]const CodePoint` variants
+  of casing, search, normalization, collation, and the `encodeCodePoints*`
+  bulk encoders — rely on it and skip decoding and validation entirely. Pass
+  already-decoded text through the CodePoint variants and you pay validation
+  exactly once, at the boundary.
+- Validation answers *where*, not just *whether*: `invalidIndex` on every
+  codec reports the offset of the first malformed sequence, and
+  `utf8.StreamingValidator` does the same across arbitrarily-chunked input
+  with no buffering.
 - The codec layer doesn't allocate. Where you need owned output, there is an
   explicit allocating variant or a buffer variant that writes into your memory.
 - Backward UTF-8 traversal is a first-class operation (`codePointLenReverse`,

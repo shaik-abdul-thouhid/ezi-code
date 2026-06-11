@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The **`CodePoint` contract** is now documented as such, on the type itself
+  (`encoding.CodePoint`) and in the README: values of this type are presumed
+  valid Unicode scalars; producers uphold the contract, consumers rely on it
+  and skip decoding/validation (which is what makes the `[]const CodePoint`
+  API variants the cheap path for already-decoded text). The README quick-look
+  examples were also brought back in sync with the real signatures
+  (`initUTF8View` out-param, `view.iter()`, `nfc` over code points).
 - **Breaking:** "unchecked" now means one thing everywhere — *the caller
   guarantees the documented preconditions; violations are asserted /
   safety-checked (trap in Debug/ReleaseSafe, undefined in
