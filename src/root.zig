@@ -12,6 +12,7 @@ pub const stream = ts.stream;
 pub const utf8 = encoding.utf8;
 pub const utf16 = encoding.utf16;
 pub const utf32 = encoding.utf32;
+pub const bom = encoding.bom;
 
 pub const slices = utils.slices;
 

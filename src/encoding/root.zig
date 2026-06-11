@@ -18,6 +18,12 @@ pub const utf8 = @import("utf8.zig");
 pub const utf16 = @import("utf16.zig");
 pub const utf32 = @import("utf32.zig");
 
+/// Byte Order Mark detection, stripping, and emission. The codecs never
+/// consume or produce BOMs themselves; this is the explicit seam.
+///
+/// @stable-since: v0.4.0
+pub const bom = @import("bom.zig");
+
 /// The canonical scalar type. All decoder/encoder
 /// APIs in `utf8`, `utf16`, `utf32` produce and consume this type.
 /// This type is a contract that the given value is valid.
@@ -92,4 +98,5 @@ test {
     std.testing.refAllDecls(utf8);
     std.testing.refAllDecls(utf16);
     std.testing.refAllDecls(utf32);
+    std.testing.refAllDecls(bom);
 }

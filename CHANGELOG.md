@@ -41,6 +41,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **BOM utilities** — new `encoding.bom` module (`@stable-since: v0.4.0`):
+  `Bom` enum (utf8 / utf16_le / utf16_be / utf32_le / utf32_be) with
+  `bytes` / `len` / `endian` / `match`, plus `detect` (longest-match: the
+  ambiguous `FF FE 00 00` reports UTF-32 LE) and zero-copy `strip`. The
+  codecs themselves still never consume or produce BOMs; this is the
+  explicit seam, re-exported at the package root as `bom`.
 - `unicode.normalization.nfkcCaseFold` — sequence-level **NFKC_Casefold**
   (`@stable-since: v0.4.0`), per the UCD definition
   `NFKC_CF(X) = NFC(toNFKC_Casefold(X))`, built on the already-shipped
