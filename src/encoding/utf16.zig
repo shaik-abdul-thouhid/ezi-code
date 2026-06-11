@@ -54,29 +54,17 @@ pub const UTF16ValidationError = error{
     InvalidHighSurrogate,
     SurrogateCodePoint,
     CodePointTooLarge,
-
-    /// only returns at the place where it is unreachable,
-    /// in case of undefined-behavior
-    Undefined,
 };
 
 pub const UTF16ValidationLossyError = error{
     ZeroLengthUnits,
     IndexOutOfBounds,
-
-    /// only returns at the place where it is unreachable,
-    /// in case of undefined-behavior
-    Undefined,
 };
 
 pub const UTF16EncodeError = error{
     CodePointTooLarge,
     BufferTooSmall,
     SurrogateCodePoint,
-
-    /// only returns at the place where it is unreachable,
-    /// in case of undefined-behavior
-    Undefined,
 };
 
 /// @stable-since: v0.1.0

@@ -56,10 +56,6 @@ pub const UTF32ValidationError = error{
     IndexOutOfBounds,
     SurrogateCodePoint,
     CodePointTooLarge,
-
-    /// only returns at the place where it is unreachable,
-    /// in case of undefined-behavior
-    Undefined,
 };
 
 /// Errors reported by the lossy decode paths. Malformed scalar values
@@ -68,10 +64,6 @@ pub const UTF32ValidationError = error{
 pub const UTF32ValidationLossyError = error{
     ZeroLengthUnits,
     IndexOutOfBounds,
-
-    /// only returns at the place where it is unreachable,
-    /// in case of undefined-behavior
-    Undefined,
 };
 
 /// Errors reported when encoding a code point into a `[]u32` buffer:
@@ -80,10 +72,6 @@ pub const UTF32EncodeError = error{
     CodePointTooLarge,
     BufferTooSmall,
     SurrogateCodePoint,
-
-    /// only returns at the place where it is unreachable,
-    /// in case of undefined-behavior
-    Undefined,
 };
 
 fn validateScalarValue(code_point: CodePoint) UTF32ValidationError!void {

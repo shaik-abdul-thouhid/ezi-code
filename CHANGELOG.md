@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- **Breaking:** the `Undefined` member is gone from all six UTF-16/UTF-32
+  error sets (`UTF16ValidationError`, `UTF16ValidationLossyError`,
+  `UTF16EncodeError`, `UTF32ValidationError`, `UTF32ValidationLossyError`,
+  `UTF32EncodeError`). It was never returned by any code path; exhaustive
+  `switch`es over these error sets can drop their dead `error.Undefined` arm.
+
 ### Fixed
 
 - `unicode.segmentation` byte-level iterators (grapheme / word / sentence /
