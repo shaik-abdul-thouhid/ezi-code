@@ -360,6 +360,75 @@ pub const Collator = struct {
         return self.compareKeys(a_key, b_key);
     }
 
+    /// Compares two code-point slices with early exit: collation elements are
+    /// generated lazily and the comparison stops at the first differing weight
+    /// of the shallowest differing level, without materializing sort keys.
+    /// Identical result to `compareCodePoints` for every input and option set.
+    ///
+    /// Strings that differ early at the primary level — the overwhelmingly
+    /// common case — pay for only a handful of collation elements. Strings
+    /// equal through level N regenerate the element stream once per compared
+    /// level (up to four passes), still without building keys; preference
+    /// between the two is workload-dependent: use this for one-shot
+    /// comparisons, and `buildKey` + `compareKeys` / serialized keys when the
+    /// same strings are compared repeatedly.
+    ///
+    /// @stable-since: v0.4.0
+    pub fn compareCodePointsIncremental(self: Collator, allocator: Allocator, a: []const CodePoint, b: []const CodePoint) error{OutOfMemory}!Order {
+        const strength = self.options.strength;
+
+        var sa = try CeStream.init(self, allocator, a);
+        defer sa.deinit();
+        var sb = try CeStream.init(self, allocator, b);
+        defer sb.deinit();
+
+        const p = try orderLevel(&sa, &sb, .primary);
+        if (p != .eq) return p;
+        if (strength == .primary) return .eq;
+
+        try sa.rewind();
+        try sb.rewind();
+        const s = try orderLevel(&sa, &sb, .secondary);
+        if (s != .eq) return s;
+        if (strength == .secondary) return .eq;
+
+        try sa.rewind();
+        try sb.rewind();
+        const t = try orderLevel(&sa, &sb, .tertiary);
+        if (t != .eq) return t;
+        if (strength == .tertiary) return .eq;
+
+        if (self.options.variable_weighting == .shifted) {
+            try sa.rewind();
+            try sb.rewind();
+            const q = try orderLevel(&sa, &sb, .quaternary);
+            if (q != .eq) return q;
+        }
+        if (strength == .quaternary) return .eq;
+
+        // identical
+        return orderCodePointSlices(sa.nfd.items, sb.nfd.items);
+    }
+
+    /// UTF-8 convenience over `compareCodePointsIncremental`: decodes both
+    /// inputs strictly, then compares with early exit. Same result as
+    /// `compareUtf8` for every input and option set.
+    ///
+    /// @stable-since: v0.4.0
+    pub fn compareUtf8Incremental(
+        self: Collator,
+        allocator: Allocator,
+        a: []const u8,
+        b: []const u8,
+    ) (encoding.utf8.UTF8ValidationError || error{ BufferTooSmall, OutOfMemory })!Order {
+        const a_cps = try encoding.utf8.bytesToUTF8String(allocator, a);
+        defer allocator.free(a_cps);
+        const b_cps = try encoding.utf8.bytesToUTF8String(allocator, b);
+        defer allocator.free(b_cps);
+
+        return try self.compareCodePointsIncremental(allocator, a_cps, b_cps);
+    }
+
     /// Convenience predicate: `true` iff `a` sorts strictly before `b`. Allocates
     /// like `compareCodePoints`.
     ///
@@ -427,7 +496,7 @@ pub const Collator = struct {
             }
 
             if (record != 0 and self.options.normalization) {
-                try self.extendDiscontiguous(allocator, out, i, &s_len, &record);
+                try self.extendDiscontiguous(allocator, &out.work, i, &s_len, &record);
             }
 
             if (record != 0) {
@@ -528,13 +597,18 @@ pub const Collator = struct {
         for (entries) |e| allocator.free(e.key);
     }
 
-    fn appendCE(self: Collator, allocator: Allocator, out: *Key, ce: ducet.CE, after_variable: *bool) error{OutOfMemory}!void {
+    /// Applies variable weighting to one DUCET collation element, yielding the
+    /// per-level weights exactly as `buildKey` would append them (zero = omit
+    /// at that level). Returns null for a fully-ignorable element. Shared by
+    /// `appendCE` (sort keys) and `CeStream` (incremental comparison) so the
+    /// two paths cannot diverge.
+    fn resolveCE(self: Collator, ce: ducet.CE, after_variable: *bool) ?ResolvedCE {
         var primary: u16 = ce.primary;
         var secondary: u16 = ce.secondary;
         var tertiary: u16 = ce.tertiary;
         var quaternary: u16 = 0;
 
-        if (primary == 0 and secondary == 0 and tertiary == 0) return;
+        if (primary == 0 and secondary == 0 and tertiary == 0) return null;
 
         switch (self.options.variable_weighting) {
             .non_ignorable => {},
@@ -564,10 +638,21 @@ pub const Collator = struct {
             },
         }
 
-        if (primary != 0) try out.primary.append(allocator, primary);
-        if (secondary != 0) try out.secondary.append(allocator, secondary);
-        if (tertiary != 0) try out.tertiary.append(allocator, tertiary);
-        if (quaternary != 0) try out.quaternary.append(allocator, quaternary);
+        return .{
+            .primary = primary,
+            .secondary = secondary,
+            .tertiary = tertiary,
+            .quaternary = quaternary,
+        };
+    }
+
+    fn appendCE(self: Collator, allocator: Allocator, out: *Key, ce: ducet.CE, after_variable: *bool) error{OutOfMemory}!void {
+        const resolved = self.resolveCE(ce, after_variable) orelse return;
+
+        if (resolved.primary != 0) try out.primary.append(allocator, resolved.primary);
+        if (resolved.secondary != 0) try out.secondary.append(allocator, resolved.secondary);
+        if (resolved.tertiary != 0) try out.tertiary.append(allocator, resolved.tertiary);
+        if (resolved.quaternary != 0) try out.quaternary.append(allocator, resolved.quaternary);
     }
 
     fn appendImplicit(self: Collator, allocator: Allocator, out: *Key, cp: CodePoint, after_variable: *bool) error{OutOfMemory}!void {
@@ -595,7 +680,7 @@ pub const Collator = struct {
     fn extendDiscontiguous(
         self: Collator,
         allocator: Allocator,
-        out: *Key,
+        work: *std.ArrayListUnmanaged(CodePoint),
         start: usize,
         s_len: *usize,
         record: *u32,
@@ -605,27 +690,27 @@ pub const Collator = struct {
         while (s_len.* < 3) {
             var extended = false;
             var k: usize = start + s_len.*;
-            while (k < out.work.items.len) : (k += 1) {
-                const c = out.work.items[k];
+            while (k < work.items.len) : (k += 1) {
+                const c = work.items[k];
                 const ccc_c = ccc(c);
                 if (ccc_c == 0) break; // reached next starter
 
                 const base = start + s_len.* - 1;
-                if (!isUnblocked(out.work.items, base, k, ccc_c)) continue;
+                if (!isUnblocked(work.items, base, k, ccc_c)) continue;
 
                 switch (s_len.*) {
-                    1 => if (ducet.lookupDouble(out.work.items[start], c)) |rec| {
+                    1 => if (ducet.lookupDouble(work.items[start], c)) |rec| {
                         record.* = rec;
-                        const moved = out.work.orderedRemove(k);
-                        try out.work.insert(allocator, start + 1, moved);
+                        const moved = work.orderedRemove(k);
+                        try work.insert(allocator, start + 1, moved);
                         s_len.* = 2;
                         extended = true;
                         break;
                     },
-                    2 => if (ducet.lookupTriple(out.work.items[start], out.work.items[start + 1], c)) |rec| {
+                    2 => if (ducet.lookupTriple(work.items[start], work.items[start + 1], c)) |rec| {
                         record.* = rec;
-                        const moved = out.work.orderedRemove(k);
-                        try out.work.insert(allocator, start + 2, moved);
+                        const moved = work.orderedRemove(k);
+                        try work.insert(allocator, start + 2, moved);
                         s_len.* = 3;
                         extended = true;
                         break;
@@ -637,6 +722,165 @@ pub const Collator = struct {
         }
     }
 };
+
+/// One collation element with variable weighting already applied: the
+/// per-level weights exactly as they would land in a sort key (zero = omitted
+/// at that level).
+const ResolvedCE = struct {
+    primary: u16,
+    secondary: u16,
+    tertiary: u16,
+    quaternary: u16,
+};
+
+/// Lazily yields the resolved collation elements of one input, in order,
+/// without materializing sort keys. Powers `compareCodePointsIncremental`:
+/// the stream is rewound and re-run once per compared level, which trades up
+/// to four CE-generation passes for the ability to stop at the very first
+/// differing weight (almost always early in the primary pass).
+const CeStream = struct {
+    collator: Collator,
+    allocator: Allocator,
+    /// Pristine NFD form of the input; also the identical-level tiebreaker.
+    nfd: std.ArrayListUnmanaged(CodePoint) = .empty,
+    /// Mutable lookup buffer; the discontiguous-match step reorders it, so
+    /// `rewind` rebuilds it from `nfd`.
+    work: std.ArrayListUnmanaged(CodePoint) = .empty,
+    i: usize = 0,
+    after_variable: bool = false,
+    ces: []const ducet.CE = &.{},
+    ce_pos: usize = 0,
+    implicit: [2]ducet.CE = undefined,
+    implicit_len: usize = 0,
+    implicit_pos: usize = 0,
+
+    fn init(collator: Collator, allocator: Allocator, input: []const CodePoint) error{OutOfMemory}!CeStream {
+        var self = CeStream{ .collator = collator, .allocator = allocator };
+        errdefer self.deinit();
+
+        if (collator.options.normalization) {
+            var norm = unicode.normalization.Normalizer(.nfd).init();
+            var buf: [unicode.normalization.MAX_FEED_OUTPUT]CodePoint = undefined;
+            for (input) |cp| {
+                try self.nfd.appendSlice(allocator, norm.feed(cp, &buf));
+            }
+            try self.nfd.appendSlice(allocator, norm.flush(&buf));
+        } else {
+            try self.nfd.appendSlice(allocator, input);
+        }
+
+        try self.rewind();
+        return self;
+    }
+
+    fn deinit(self: *CeStream) void {
+        self.nfd.deinit(self.allocator);
+        self.work.deinit(self.allocator);
+    }
+
+    /// Restart CE generation from the top for the next level pass.
+    fn rewind(self: *CeStream) error{OutOfMemory}!void {
+        self.work.clearRetainingCapacity();
+        try self.work.appendSlice(self.allocator, self.nfd.items);
+        self.i = 0;
+        self.after_variable = false;
+        self.ces = &.{};
+        self.ce_pos = 0;
+        self.implicit_len = 0;
+        self.implicit_pos = 0;
+    }
+
+    /// The next non-ignorable resolved CE, or null at end of input. The same
+    /// lookup pipeline as `Collator.buildKey` (contractions, discontiguous
+    /// extension, implicit weights), sharing `resolveCE` so weighting cannot
+    /// diverge.
+    fn next(self: *CeStream) error{OutOfMemory}!?ResolvedCE {
+        while (true) {
+            if (self.ce_pos < self.ces.len) {
+                const ce = self.ces[self.ce_pos];
+                self.ce_pos += 1;
+                if (self.collator.resolveCE(ce, &self.after_variable)) |resolved| return resolved;
+                continue;
+            }
+            if (self.implicit_pos < self.implicit_len) {
+                const ce = self.implicit[self.implicit_pos];
+                self.implicit_pos += 1;
+                if (self.collator.resolveCE(ce, &self.after_variable)) |resolved| return resolved;
+                continue;
+            }
+            if (self.i >= self.work.items.len) return null;
+
+            var record: u32 = 0;
+            var s_len: usize = 1;
+
+            if (self.i + 2 < self.work.items.len) {
+                if (ducet.lookupTriple(self.work.items[self.i], self.work.items[self.i + 1], self.work.items[self.i + 2])) |rec| {
+                    record = rec;
+                    s_len = 3;
+                }
+            }
+            if (record == 0 and self.i + 1 < self.work.items.len) {
+                if (ducet.lookupDouble(self.work.items[self.i], self.work.items[self.i + 1])) |rec| {
+                    record = rec;
+                    s_len = 2;
+                }
+            }
+            if (record == 0) {
+                record = ducet.mappingRecord(self.work.items[self.i]);
+                s_len = 1;
+            }
+
+            if (record != 0 and self.collator.options.normalization) {
+                try self.collator.extendDiscontiguous(self.allocator, &self.work, self.i, &s_len, &record);
+            }
+
+            if (record != 0) {
+                self.ces = ducet.ceSlice(record);
+                self.ce_pos = 0;
+            } else {
+                const weights = implicitWeights(self.work.items[self.i]);
+                self.implicit = .{
+                    .{ .primary = weights.aaaa, .secondary = 0x0020, .tertiary = 0x0002, .variable = 0, ._ = 0 },
+                    .{ .primary = weights.bbbb, .secondary = 0x0000, .tertiary = 0x0000, .variable = 0, ._ = 0 },
+                };
+                self.implicit_len = 2;
+                self.implicit_pos = 0;
+            }
+
+            self.i += s_len;
+        }
+    }
+};
+
+const CeLevel = enum { primary, secondary, tertiary, quaternary };
+
+fn nextLevelWeight(stream: *CeStream, comptime level: CeLevel) error{OutOfMemory}!?u16 {
+    while (try stream.next()) |resolved| {
+        const weight = switch (level) {
+            .primary => resolved.primary,
+            .secondary => resolved.secondary,
+            .tertiary => resolved.tertiary,
+            .quaternary => resolved.quaternary,
+        };
+        if (weight != 0) return weight;
+    }
+    return null;
+}
+
+/// Lexicographic order of one weight level across two CE streams, with the
+/// same semantics as `orderU16Slices` over the materialized arrays: compare
+/// element-wise, exhausted-first sorts first.
+fn orderLevel(a: *CeStream, b: *CeStream, comptime level: CeLevel) error{OutOfMemory}!Order {
+    while (true) {
+        const wa = try nextLevelWeight(a, level);
+        const wb = try nextLevelWeight(b, level);
+        if (wa == null and wb == null) return .eq;
+        if (wa == null) return .lt;
+        if (wb == null) return .gt;
+        const order = std.math.order(wa.?, wb.?);
+        if (order != .eq) return order;
+    }
+}
 
 fn orderU16Slices(a: []const u16, b: []const u16) Order {
     const n = @min(a.len, b.len);
@@ -824,4 +1068,56 @@ test "sortUtf8InPlace orders a word list by collation" {
     try std.testing.expectEqualStrings("cherry", items[3]);
     try std.testing.expect(std.mem.eql(u8, items[0], "apple") or std.mem.eql(u8, items[0], "Apple"));
     try std.testing.expect(std.mem.eql(u8, items[1], "apple") or std.mem.eql(u8, items[1], "Apple"));
+}
+
+test "compareCodePointsIncremental: agrees with key-based compare over the options matrix" {
+    const testing = std.testing;
+
+    // Corpus chosen to hit: case-only and accent-only differences, variable
+    // (punctuation/space) handling, contractions and discontiguous matches
+    // (Cyrillic и + breve, composed and decomposed), implicit weights (CJK),
+    // Hangul, prefixes, and exact equality.
+    const corpus = [_][]const u8{
+        "",
+        "a",
+        "abc",
+        "abcd",
+        "ABC",
+        "cafe",
+        "café",
+        "cafe\u{0301}",
+        "CAFÉ",
+        "deluge",
+        "de luge",
+        "de-luge",
+        "death",
+        "demark",
+        "й",
+        "и\u{0306}",
+        "и",
+        "你好",
+        "你好吗",
+        "한국어",
+        "한",
+        "Straße",
+        "strasse",
+        "ΣΟΦΟΣ",
+        "σοφος",
+    };
+
+    const strengths = [_]Strength{ .primary, .secondary, .tertiary, .quaternary, .identical };
+    const weightings = [_]VariableWeighting{ .non_ignorable, .shifted };
+
+    inline for (weightings) |vw| {
+        inline for (strengths) |st| {
+            const collator = Collator.init(.{ .strength = st, .variable_weighting = vw });
+            for (corpus) |a| {
+                for (corpus) |b| {
+                    const expected = try collator.compareUtf8(testing.allocator, a, b);
+                    const actual = try collator.compareUtf8Incremental(testing.allocator, a, b);
+                    try testing.expectEqual(expected, actual);
+                }
+            }
+        }
+    }
 }

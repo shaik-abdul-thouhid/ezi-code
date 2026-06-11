@@ -41,6 +41,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Early-exit collation compare** (`@stable-since: v0.4.0`):
+  `Collator.compareCodePointsIncremental` / `compareUtf8Incremental` generate
+  collation elements lazily and stop at the first differing weight of the
+  shallowest differing level — no sort keys are materialized. Identical
+  results to `compareCodePoints` / `compareUtf8` for every input and option
+  set (verified across the strength × variable-weighting matrix). Strings that
+  differ early at the primary level — the common case — pay for only a few
+  collation elements; the weighting logic is shared with `buildKey` via an
+  internal `resolveCE` so the two paths cannot diverge.
 - **BOM utilities** — new `encoding.bom` module (`@stable-since: v0.4.0`):
   `Bom` enum (utf8 / utf16_le / utf16_be / utf32_le / utf32_be) with
   `bytes` / `len` / `endian` / `match`, plus `detect` (longest-match: the
