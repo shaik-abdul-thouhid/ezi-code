@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `encoding.utf8.decodeCodePointLossy` — infallible lossy decode primitive
+  (`@stable-since: v0.4.0`). Malformed sequences yield U+FFFD and are never
+  reported as errors; the only precondition (`offset < bytes.len`) is asserted
+  (safety-checked), not error-returned, and the returned `len` is always >= 1
+  so forward scans are guaranteed to make progress. `UTF8LossyIterator` and
+  `UTF8SimdLossyIterator` now decode through it, removing their internal
+  `catch unreachable`/`catch break` shims.
+
 ## [0.3.0] - 2026-06-09
 
 ### Added

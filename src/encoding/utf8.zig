@@ -353,7 +353,7 @@ pub fn validateAndDecodeCodePointBytes(bytes: []const u8, offset: usize) UTF8Val
     return validateAndDecodeNonAscii(bytes, offset, len);
 }
 
-fn validateAndDecodeCodePointBytesWithLenLossy(bytes: []const u8, offset: usize, len: u3) UTF8ValidationLossyError!DecodedCodePointLossy {
+fn validateAndDecodeCodePointBytesWithLenLossy(bytes: []const u8, offset: usize, len: u3) DecodedCodePointLossy {
     const remaining = bytes.len - offset;
 
     if (len > 1 and len <= 4) {
@@ -428,6 +428,37 @@ pub fn validateAndDecodeCodePointBytesLossy(bytes: []const u8, offset: usize) UT
     const len = codePointLenLossy(b);
 
     return validateAndDecodeCodePointBytesWithLenLossy(bytes, offset, len);
+}
+
+/// Decodes the scalar at `offset` leniently: malformed sequences yield the
+/// Unicode Replacement Character (U+FFFD) and are never reported as errors, so
+/// the return type carries no error union. A run of consecutive orphaned
+/// continuation bytes is consumed as a single replacement scalar, exactly like
+/// `validateAndDecodeCodePointBytesLossy`.
+///
+/// Contract: `offset < bytes.len`. The precondition is asserted
+/// (safety-checked: traps in Debug/ReleaseSafe, undefined in
+/// ReleaseFast/ReleaseSmall); it is never reported as an error. The returned
+/// `len` is always >= 1, so a forward scan that advances its cursor by `len`
+/// is guaranteed to make progress.
+///
+/// This is the primitive behind `UTF8LossyIterator` and the byte-level
+/// segmentation iterators. Use `validateAndDecodeCodePointBytesLossy` when
+/// misuse (empty slice, out-of-bounds offset) should surface as an error
+/// instead.
+///
+/// @stable-since: v0.4.0
+pub fn decodeCodePointLossy(bytes: []const u8, offset: usize) DecodedCodePointLossy {
+    std.debug.assert(offset < bytes.len);
+
+    const b = bytes[offset];
+
+    if (b <= MAX_ASCII) {
+        @branchHint(.likely);
+        return codePointFromLenLossy(1, bytes, offset);
+    }
+
+    return validateAndDecodeCodePointBytesWithLenLossy(bytes, offset, codePointLenLossy(b));
 }
 
 /// Returns optimistic length of the codepoint from the end_index(inclusive) of the given buffer. It is a strict
@@ -858,7 +889,7 @@ pub const UTF8LossyIterator = struct {
             return null;
         }
 
-        const decoded = validateAndDecodeCodePointBytesLossy(self.data, self.index) catch unreachable;
+        const decoded = decodeCodePointLossy(self.data, self.index);
         std.debug.assert(decoded.len > 0);
         self.index += decoded.len;
         return decoded.code_point;
@@ -873,7 +904,7 @@ pub const UTF8LossyIterator = struct {
             return null;
         }
 
-        return (validateAndDecodeCodePointBytesLossy(self.data, self.index) catch unreachable).code_point;
+        return decodeCodePointLossy(self.data, self.index).code_point;
     }
 };
 
@@ -1242,7 +1273,7 @@ pub const UTF8SimdLossyIterator = struct {
         // byte re-enters an ASCII run so the following refill can widen it.
         while (self.buf_len < simd_iter_window and self.index < self.data.len) {
             if (self.data[self.index] <= MAX_ASCII) break;
-            const decoded = validateAndDecodeCodePointBytesLossy(self.data, self.index) catch break;
+            const decoded = decodeCodePointLossy(self.data, self.index);
             self.buf[self.buf_len] = decoded.code_point;
             self.buf_len += 1;
             self.index += decoded.len;
@@ -2035,6 +2066,48 @@ test "lossy: surrogate sequence replaced" {
     );
     try std.testing.expectEqual(INVALID_CODE_POINT, d.code_point);
     try std.testing.expectEqual(@as(usize, 3), d.len);
+}
+
+test "decodeCodePointLossy: agrees with the fallible variant at every offset" {
+    const inputs = [_][]const u8{
+        "ascii only",
+        "héllo, мир — コード👍🏽",
+        &.{ 'A', 0xF0, 0x9F, 0x92, '(', 0x80, 0x80, 'B' },
+        &.{ 0x80, 0x80, 0x80, 'a' },
+        &.{ 0xED, 0xA0, 0x80, 0xC0, 0xC1, 0xF5, 0xFF },
+        &.{ 0xF0, 0x80, 0x80, 0x80 },
+        &.{0xE2}, // truncated lead at end of input
+        &.{ 0xE2, 0x82 }, // truncated 3-byte sequence
+    };
+
+    for (inputs) |bytes| {
+        var offset: usize = 0;
+        while (offset < bytes.len) : (offset += 1) {
+            const expected = try validateAndDecodeCodePointBytesLossy(bytes, offset);
+            const actual = decodeCodePointLossy(bytes, offset);
+            try std.testing.expectEqual(expected.code_point, actual.code_point);
+            try std.testing.expectEqual(expected.len, actual.len);
+        }
+    }
+}
+
+test "decodeCodePointLossy: always makes progress over arbitrary bytes" {
+    // Every byte value as a lead, padded with each interesting follower class:
+    // the cursor must advance on every step and terminate exactly at the end.
+    const followers = [_]u8{ 0x80, 0xBF, 0x00, 0x41, 0xC2, 0xFF };
+    var lead: usize = 0;
+    while (lead <= 0xFF) : (lead += 1) {
+        for (followers) |f| {
+            const bytes = [_]u8{ @intCast(lead), f, f, f };
+            var offset: usize = 0;
+            while (offset < bytes.len) {
+                const d = decodeCodePointLossy(&bytes, offset);
+                try std.testing.expect(d.len >= 1);
+                offset += d.len;
+            }
+            try std.testing.expectEqual(bytes.len, offset);
+        }
+    }
 }
 
 test "lossy: iterator and materialization replace malformed spans" {
