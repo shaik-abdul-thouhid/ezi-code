@@ -800,15 +800,108 @@ pub fn bufToCodePointsLossy(allocator: std.mem.Allocator, units: []const u16) er
     return out;
 }
 
+/// Preferred lane count for the UTF-16 SIMD helpers. Portable `@Vector` only;
+/// each helper keeps a scalar tail and never reads past the slice.
+const simd_block: usize = std.simd.suggestVectorLength(u16) orelse 8;
+
+/// Mask that detects *any* surrogate unit: `(u & 0xF800) == 0xD800` is true
+/// for U+D800..U+DFFF, high and low halves alike.
+const any_surrogate_mask: u16 = 0xF800;
+const any_surrogate_value: u16 = 0xD800;
+
+/// Returns the number of leading units of `units` that are standalone scalars
+/// (no surrogate halves), i.e. the length of the run that is valid by itself
+/// and decodes 1:1 unit-to-scalar. The UTF-16 analogue of
+/// `utf8.asciiRunLength` — in real-world UTF-16 almost all text is
+/// surrogate-free, so this is the shared fast-path primitive behind
+/// `validate` and `countScalarsSimd`.
+///
+/// Scans `simd_block` units per step with a vector compare (`@Vector` /
+/// `@reduce`, no target intrinsics), pinpointing the first surrogate inside a
+/// failing block with a scalar scan; a scalar tail covers the remainder.
+/// Never reads past `units`.
+///
+/// @stable-since: v0.4.0
+pub fn nonSurrogateRunLength(units: []const u16) usize {
+    const V = @Vector(simd_block, u16);
+    const mask: V = @splat(any_surrogate_mask);
+    const surrogate: V = @splat(any_surrogate_value);
+    var i: usize = 0;
+
+    while (i + simd_block <= units.len) : (i += simd_block) {
+        const chunk: V = units[i..][0..simd_block].*;
+        if (@reduce(.Or, (chunk & mask) == surrogate)) {
+            @branchHint(.unlikely);
+            // A surrogate exists in [i, i + simd_block); the scan terminates
+            // before leaving the block, so it never reads out of bounds.
+            var j = i;
+            while ((units[j] & any_surrogate_mask) != any_surrogate_value) : (j += 1) {}
+            return j;
+        }
+    }
+
+    while (i < units.len and (units[i] & any_surrogate_mask) != any_surrogate_value) : (i += 1) {}
+    return i;
+}
+
+/// Counts the Unicode scalars in `units` **without validating**, by counting
+/// the units that are not high surrogates — every scalar, one or two units
+/// long, has exactly one such unit. Scans `simd_block` units per step with a
+/// vector mask and a lane sum, with a scalar tail. Equals `countScalars` on
+/// valid input; on malformed input the result is unspecified (each lone
+/// surrogate still counts as one). The UTF-16 analogue of
+/// `utf8.countScalarsSimd`.
+///
+/// @stable-since: v0.4.0
+pub fn countScalarsSimd(units: []const u16) usize {
+    const V = @Vector(simd_block, u16);
+    const mask: V = @splat(@as(u16, surrogate_mask));
+    const high: V = @splat(@as(u16, high_surrogate_range_start));
+    const zero: @Vector(simd_block, u16) = @splat(0);
+    const one: @Vector(simd_block, u16) = @splat(1);
+
+    var high_count: usize = 0;
+    var i: usize = 0;
+
+    while (i + simd_block <= units.len) : (i += simd_block) {
+        const chunk: V = units[i..][0..simd_block].*;
+        const is_high = (chunk & mask) == high;
+        // 1 for every high surrogate; widened so the per-block lane sum
+        // cannot overflow regardless of `simd_block`.
+        high_count += @reduce(.Add, @select(u16, is_high, one, zero));
+    }
+
+    while (i < units.len) : (i += 1) {
+        if (isHighSurrogate(units[i])) high_count += 1;
+    }
+
+    return units.len - high_count;
+}
+
 /// Returns `true` when `units` is well-formed UTF-16 from start to end (every
 /// high surrogate paired with a low surrogate, no lone surrogates), `false`
 /// otherwise. Fast path when only a yes/no answer is needed; use `countScalars`
 /// or `initUTF16View` when the failure reason or scalar count matters.
 ///
+/// Surrogate-free runs — almost all real-world UTF-16 — are skipped in SIMD
+/// strides via `nonSurrogateRunLength`; only actual surrogate pairs fall back
+/// to scalar pair checks.
+///
 /// @stable-since: v0.2.0
 pub fn validate(units: []const u16) bool {
-    var scalar_count: usize = 0;
-    _ = initUTF16View(units, &scalar_count) catch return false;
+    var i: usize = 0;
+
+    while (i < units.len) {
+        i += nonSurrogateRunLength(units[i..]);
+        if (i >= units.len) break;
+
+        // units[i] is a surrogate half: it must be a high surrogate
+        // immediately followed by a low one.
+        if (!isHighSurrogate(units[i])) return false;
+        if (i + 1 >= units.len or !isLowSurrogate(units[i + 1])) return false;
+        i += 2;
+    }
+
     return true;
 }
 
@@ -1534,4 +1627,87 @@ test "encodeCodePoints: round-trips through bufToUTF16String" {
     const back = try bufToUTF16String(std.testing.allocator, owned);
     defer std.testing.allocator.free(back);
     try std.testing.expectEqualSlices(CodePoint, &cps, back);
+}
+
+test "nonSurrogateRunLength: block, pinpoint, and tail paths" {
+    // Run longer than any realistic simd_block, surrogate placed so it lands
+    // mid-block on some lane counts and in the tail on others.
+    var units: [37]u16 = undefined;
+    for (&units, 0..) |*u, i| u.* = @intCast('a' + (i % 20));
+
+    try std.testing.expectEqual(units.len, nonSurrogateRunLength(&units));
+
+    for ([_]usize{ 0, 1, 7, 8, 15, 16, 20, 36 }) |at| {
+        var copy = units;
+        copy[at] = 0xD800;
+        try std.testing.expectEqual(at, nonSurrogateRunLength(&copy));
+        copy[at] = 0xDFFF;
+        try std.testing.expectEqual(at, nonSurrogateRunLength(&copy));
+    }
+}
+
+const emoji_pairs_20 = blk: {
+    var arr: [40]u16 = undefined;
+    var i: usize = 0;
+    while (i < 40) : (i += 2) {
+        arr[i] = 0xD83D;
+        arr[i + 1] = 0xDE00;
+    }
+    break :blk arr;
+};
+
+const fifty_xs = blk: {
+    var arr: [50]u16 = undefined;
+    @memset(&arr, 'x');
+    break :blk arr;
+};
+
+const clean_run_then_surrogate = blk: {
+    var arr: [41]u16 = undefined;
+    @memset(&arr, 'x');
+    arr[40] = 0xDFFF;
+    break :blk arr;
+};
+
+test "countScalarsSimd: equals countScalars on valid input" {
+    const inputs = [_][]const u16{
+        &.{},
+        &.{ 'a', 'b', 'c' },
+        &.{ 'a', 0x00E9, 0x20AC, 0xD83D, 0xDE00, 'z' },
+        &emoji_pairs_20, // 20 emoji pairs, exercises blocks
+        &fifty_xs,
+    };
+
+    for (inputs) |units| {
+        try std.testing.expectEqual(try countScalars(units), countScalarsSimd(units));
+    }
+}
+
+test "validate: SIMD path agrees with the view-based strict path" {
+    const valid = [_][]const u16{
+        &.{},
+        &.{ 'a', 'b' },
+        &.{ 'a', 0x00E9, 0xD83D, 0xDE00, 'z' },
+        &emoji_pairs_20,
+    };
+    for (valid) |units| {
+        try std.testing.expect(validate(units));
+        var n: usize = 0;
+        _ = try initUTF16View(units, &n);
+    }
+
+    const invalid = [_][]const u16{
+        &.{0xD800}, // lone high at end
+        &.{0xDC00}, // lone low
+        &.{ 'a', 0xD800, 'b' }, // high not followed by low
+        &.{ 0xDC00, 0xD800 }, // reversed pair
+        &clean_run_then_surrogate, // surrogate after a long clean run
+    };
+    for (invalid) |units| {
+        try std.testing.expect(!validate(units));
+        // The view-based strict path must reject the same inputs (the precise
+        // error kind is its own contract, not this test's).
+        var n: usize = 0;
+        try std.testing.expect(std.meta.isError(initUTF16View(units, &n)));
+    }
 }

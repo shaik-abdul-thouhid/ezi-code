@@ -41,6 +41,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- SIMD chunked scanners for **UTF-16**, mirroring the v0.3.0 UTF-8 set
+  (`@stable-since: v0.4.0`, portable `@Vector` compares with scalar tails, no
+  target intrinsics): `utf16.nonSurrogateRunLength` (length of the leading
+  run of standalone scalars — the UTF-16 analogue of `asciiRunLength`) and
+  `utf16.countScalarsSimd` (unchecked scalar count via the high-surrogate
+  rule). `utf16.validate` now skips surrogate-free runs in SIMD strides and
+  falls back to scalar pair checks only at actual surrogates.
 - Bulk **encode-direction** APIs taking `[]const CodePoint`
   (`@stable-since: v0.4.0`): `encodeCodePoints{Len,Buffer,Alloc}` on all three
   codecs, the inverse of `bytesToUTF8String` / `bufToUTF16String` /
