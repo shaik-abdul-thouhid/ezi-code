@@ -677,14 +677,39 @@ pub fn decodeCodePointReverseUnchecked(bytes: []const u8, end_index: usize) Deco
     return decode(bytes, start, len);
 }
 
-fn bytesToUTF8CodePoint(bytes: []const u8, offset: usize) DecodedCodePoint {
-    const len = codePointLen(bytes[offset]) catch @panic("invalid code point length");
+/// Decodes the code point starting at `offset` without validating the bytes.
+/// This is the unchecked forward-decode entry point: callers that hold
+/// already-validated UTF-8 (e.g. text that passed `validate`, or the backing
+/// bytes of a `UTF8View`) can decode without paying validation again, and
+/// without wrapping the bytes in a `UTF8View`.
+///
+/// Contract: `offset < bytes.len`, `offset` is a code point boundary, and
+/// `bytes` is valid UTF-8 at `offset`. Preconditions are asserted /
+/// safety-checked (trap in Debug/ReleaseSafe, undefined in
+/// ReleaseFast/ReleaseSmall), never error-returned. Use
+/// `validateAndDecodeCodePointBytes` when the bytes' validity is uncertain,
+/// or `decodeCodePointLossy` to substitute U+FFFD instead.
+///
+/// @stable-since: v0.4.0
+pub fn decodeCodePointUnchecked(bytes: []const u8, offset: usize) DecodedCodePoint {
+    std.debug.assert(offset < bytes.len);
 
-    if (len == 1 and bytes[offset] <= MAX_ASCII) {
-        return .{ .code_point = @as(CodePoint, bytes[offset]), .len = 1 };
+    const b = bytes[offset];
+
+    if (b <= MAX_ASCII) {
+        @branchHint(.likely);
+        return .{ .code_point = @as(CodePoint, b), .len = 1 };
     }
 
+    // Contract: a valid lead byte. `codePointLen` only fails on bytes that
+    // cannot start a sequence, which valid UTF-8 rules out here.
+    const len = codePointLen(b) catch unreachable;
+
     return decode(bytes, offset, len);
+}
+
+fn bytesToUTF8CodePoint(bytes: []const u8, offset: usize) DecodedCodePoint {
+    return decodeCodePointUnchecked(bytes, offset);
 }
 
 pub const UTF8SliceError = error{
@@ -2436,4 +2461,17 @@ test "validate: SIMD ASCII fast path agrees with the scalar DFA" {
         &[_]u8{ 'a', 'b', 'c', 0xF0, 0x9F, 0x98 }, // truncated tail
     };
     for (invalid) |s| try std.testing.expect(!validate(s));
+}
+
+test "decodeCodePointUnchecked: agrees with strict decode over valid UTF-8" {
+    const s = "a\u{00E9}\u{20AC}\u{1F600}z";
+    var offset: usize = 0;
+    while (offset < s.len) {
+        const expected = try validateAndDecodeCodePointBytes(s, offset);
+        const actual = decodeCodePointUnchecked(s, offset);
+        try std.testing.expectEqual(expected.code_point, actual.code_point);
+        try std.testing.expectEqual(expected.len, actual.len);
+        offset += actual.len;
+    }
+    try std.testing.expectEqual(s.len, offset);
 }

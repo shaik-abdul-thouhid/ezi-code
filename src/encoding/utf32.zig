@@ -266,11 +266,28 @@ fn decodeCodePointReverse(buf: []const u32) DecodedCodePoint {
     };
 }
 
-fn bufToUTF32CodePoint(buf: []const u32, offset: usize) DecodedCodePoint {
+/// Decodes the code point at `offset` without validating the unit. This is
+/// the unchecked forward-decode entry point: callers that hold
+/// already-validated UTF-32 can read scalars without paying validation again.
+///
+/// Contract: `offset < buf.len` and `buf[offset]` is a valid Unicode scalar
+/// value (<= U+10FFFF, not a surrogate). Preconditions are asserted /
+/// safety-checked (trap in Debug/ReleaseSafe, undefined in
+/// ReleaseFast/ReleaseSmall), never error-returned. Use
+/// `validateAndDecodeU32CodePoint` when the units' validity is uncertain.
+///
+/// @stable-since: v0.4.0
+pub fn decodeU32CodePointUnchecked(buf: []const u32, offset: usize) DecodedCodePoint {
+    std.debug.assert(offset < buf.len);
+
     return .{
         .code_point = @intCast(buf[offset]),
         .len = 1,
     };
+}
+
+fn bufToUTF32CodePoint(buf: []const u32, offset: usize) DecodedCodePoint {
+    return decodeU32CodePointUnchecked(buf, offset);
 }
 
 /// Error returned when a scalar-index slice request falls outside the view.
@@ -1022,4 +1039,15 @@ test "encodeCodePointWriter: emits big/little-endian bytes" {
     var tiny_backing: [2]u8 = undefined;
     var tiny = std.Io.Writer.fixed(&tiny_backing);
     try std.testing.expectError(error.WriteFailed, encodeCodePointWriter('A', .big, &tiny));
+}
+
+test "decodeU32CodePointUnchecked: agrees with strict decode over valid UTF-32" {
+    const units = [_]u32{ 'a', 0x00E9, 0x20AC, 0x1F600, 'z' };
+    var offset: usize = 0;
+    while (offset < units.len) : (offset += 1) {
+        const expected = try validateAndDecodeU32CodePoint(&units, offset);
+        const actual = decodeU32CodePointUnchecked(&units, offset);
+        try std.testing.expectEqual(expected.code_point, actual.code_point);
+        try std.testing.expectEqual(expected.len, actual.len);
+    }
 }

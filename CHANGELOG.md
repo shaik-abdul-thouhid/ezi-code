@@ -41,6 +41,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Unchecked **forward** decode entry points, completing the strict / unchecked
+  / lossy matrix in the forward direction (`@stable-since: v0.4.0`): callers
+  holding already-validated text can decode without re-validating and without
+  wrapping the input in a View.
+  - `encoding.utf8.decodeCodePointUnchecked`
+  - `encoding.utf16.decodeU16CodePointUnchecked`
+  - `encoding.utf32.decodeU32CodePointUnchecked`
 - `encoding.utf8.decodeCodePointLossy` — infallible lossy decode primitive
   (`@stable-since: v0.4.0`). Malformed sequences yield U+FFFD and are never
   reported as errors; the only precondition (`offset < bytes.len`) is asserted

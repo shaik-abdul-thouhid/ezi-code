@@ -441,8 +441,27 @@ fn decodeCodePointReverse(buf: []const u16, end_index: usize) DecodedCodePoint {
     return decode(buf, start, len);
 }
 
-fn decodeCodePoint(buf: []const u16, offset: usize) DecodedCodePoint {
+/// Decodes the code point starting at `offset` without validating the units.
+/// This is the unchecked forward-decode entry point: callers that hold
+/// already-validated UTF-16 (e.g. units that passed `validate`, or the
+/// backing units of a `UTF16View`) can decode without paying validation
+/// again, and without wrapping the units in a `UTF16View`.
+///
+/// Contract: `offset < buf.len`, `offset` is a code point boundary (not the
+/// low half of a surrogate pair), and `buf` is valid UTF-16 at `offset`.
+/// Preconditions are asserted / safety-checked (trap in Debug/ReleaseSafe,
+/// undefined in ReleaseFast/ReleaseSmall), never error-returned. Use
+/// `validateAndDecodeU16CodePoint` when the units' validity is uncertain.
+///
+/// @stable-since: v0.4.0
+pub fn decodeU16CodePointUnchecked(buf: []const u16, offset: usize) DecodedCodePoint {
+    std.debug.assert(offset < buf.len);
+
     return decode(buf, offset, utf16SequenceLenUnchecked(buf[offset]));
+}
+
+fn decodeCodePoint(buf: []const u16, offset: usize) DecodedCodePoint {
+    return decodeU16CodePointUnchecked(buf, offset);
 }
 
 pub const UTF16SliceError = error{
@@ -1399,4 +1418,17 @@ test "public view types are reachable as named types" {
     try std.testing.expectEqual(@as(?CodePoint, 'a'), it.next());
     var lossy: UTF16LossyIterator = lossyIterator(&[_]u16{ 'a', 'b' });
     try std.testing.expectEqual(@as(?CodePoint, 'a'), lossy.next());
+}
+
+test "decodeU16CodePointUnchecked: agrees with strict decode over valid UTF-16" {
+    const units = [_]u16{ 'a', 0x00E9, 0x20AC, 0xD83D, 0xDE00, 'z' };
+    var offset: usize = 0;
+    while (offset < units.len) {
+        const expected = try validateAndDecodeU16CodePoint(&units, offset);
+        const actual = decodeU16CodePointUnchecked(&units, offset);
+        try std.testing.expectEqual(expected.code_point, actual.code_point);
+        try std.testing.expectEqual(expected.len, actual.len);
+        offset += actual.len;
+    }
+    try std.testing.expectEqual(units.len, offset);
 }
