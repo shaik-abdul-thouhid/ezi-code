@@ -41,6 +41,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `encoding.utf8.StreamingValidator` — incremental, resumable validation over
+  arbitrarily-chunked input (`@stable-since: v0.4.0`). The Höhrmann DFA state
+  carries across chunk boundaries (no buffering, no copies); `update` reports
+  the absolute offset of the first malformed sequence, `finish` distinguishes
+  a truncated trailing scalar from valid end-of-input, and ASCII runs are
+  skipped in SIMD strides.
 - Error **position** reporting (`@stable-since: v0.4.0`): `invalidIndex` on
   all three codecs returns the unit/byte offset where the first malformed
   sequence starts (`null` when valid), so diagnostics no longer require a

@@ -1123,6 +1123,90 @@ pub fn invalidIndex(bytes: []const u8) ?usize {
     return null;
 }
 
+/// Incremental, resumable UTF-8 validator for arbitrarily-chunked input —
+/// network reads, file buffers — built on the same Höhrmann DFA as `validate`.
+/// Multi-byte sequences may split across chunk boundaries; the DFA state
+/// carries over, so no buffering or stitching is needed and chunks are never
+/// copied. ASCII runs are skipped in SIMD strides while the DFA sits on a
+/// scalar boundary.
+///
+/// ```zig
+/// var v: utf8.StreamingValidator = .{};
+/// while (nextChunk()) |chunk| {
+///     if (v.update(chunk)) |at| return reportInvalidAt(at);
+/// }
+/// if (!v.finish()) return reportTruncatedAt(v.seq_start);
+/// ```
+///
+/// @stable-since: v0.4.0
+pub const StreamingValidator = struct {
+    state: u32 = UTF8_ACCEPT,
+    code_point: CodePoint = 0,
+    /// Total bytes fed across all `update` calls.
+    consumed: usize = 0,
+    /// Absolute offset (across all fed chunks) where the scalar currently
+    /// being decoded started. When `finish` reports truncation, this is where
+    /// the incomplete trailing sequence begins.
+    seq_start: usize = 0,
+    /// Absolute offset of the first malformed sequence, once one is seen.
+    /// Sticky: later `update` calls keep reporting it without re-scanning.
+    invalid_at: ?usize = null,
+
+    /// Feeds the next chunk. Returns the absolute byte offset (counting every
+    /// byte fed so far) where the first malformed sequence starts, or `null`
+    /// while the input remains valid — including when a chunk ends in the
+    /// middle of a multi-byte scalar, which only `finish` treats as an error.
+    ///
+    /// @stable-since: v0.4.0
+    pub fn update(self: *StreamingValidator, chunk: []const u8) ?usize {
+        defer self.consumed += chunk.len;
+
+        if (self.invalid_at) |at| {
+            return at;
+        }
+
+        var i: usize = 0;
+
+        while (i < chunk.len) {
+            if (self.state == UTF8_ACCEPT) {
+                // On a boundary: fast-forward past the next ASCII run (all
+                // valid, all leaving the DFA in accept), then mark the start
+                // of the sequence the next byte opens.
+                i += asciiRunLength(chunk[i..]);
+                if (i >= chunk.len) break;
+                self.seq_start = self.consumed + i;
+            }
+
+            if (decodeByte(&self.state, &self.code_point, chunk[i]) == .reject) {
+                self.invalid_at = self.seq_start;
+                return self.invalid_at;
+            }
+
+            i += 1;
+        }
+
+        return null;
+    }
+
+    /// Call at end of input: `true` when everything fed was valid UTF-8 and
+    /// the input ended on a scalar boundary. Returns `false` after a malformed
+    /// sequence (`invalid_at` holds where) or when the input ends inside a
+    /// multi-byte scalar (`seq_start` holds where the truncated sequence
+    /// begins).
+    ///
+    /// @stable-since: v0.4.0
+    pub fn finish(self: *const StreamingValidator) bool {
+        return self.invalid_at == null and self.state == UTF8_ACCEPT;
+    }
+
+    /// Clears all state for reuse on a new input.
+    ///
+    /// @stable-since: v0.4.0
+    pub fn reset(self: *StreamingValidator) void {
+        self.* = .{};
+    }
+};
+
 /// Validates `bytes` and returns the number of Unicode scalars it encodes.
 /// Strict counterpart of `countScalarsLossy`: a malformed sequence returns the
 /// corresponding `UTF8ValidationError` instead of being counted as a
@@ -2520,4 +2604,58 @@ test "invalidIndex: null on valid input, exact offset on malformed" {
         error.SurrogateCodePoint,
         validateAndDecodeCodePointBytes("valid" ++ [_]u8{ 0xED, 0xA0, 0x80 }, idx),
     );
+}
+
+test "StreamingValidator: agrees with invalidIndex at every chunk size" {
+    const inputs = [_][]const u8{
+        "plain ascii only",
+        "héllo, мир — コード👍🏽",
+        "valid" ++ [_]u8{ 0xED, 0xA0, 0x80 } ++ "tail",
+        &.{ 'o', 'k', 0xC0, 0xAF, 'x' },
+        &.{ 0x80, 0x80, 0x80 },
+        "ascii then € then 👍 then bad: " ++ [_]u8{0xF5} ++ "rest",
+    };
+
+    for (inputs) |bytes| {
+        const expected = invalidIndex(bytes);
+
+        var chunk_size: usize = 1;
+        while (chunk_size <= bytes.len) : (chunk_size += 1) {
+            var v: StreamingValidator = .{};
+            var reported: ?usize = null;
+            var i: usize = 0;
+            while (i < bytes.len) : (i += chunk_size) {
+                const end = @min(i + chunk_size, bytes.len);
+                if (v.update(bytes[i..end])) |at| {
+                    reported = at;
+                    break;
+                }
+            }
+            try std.testing.expectEqual(expected, reported);
+            if (expected == null) {
+                try std.testing.expect(v.finish());
+            }
+        }
+    }
+}
+
+test "StreamingValidator: truncated trailing sequence fails only at finish" {
+    const bytes = "ab" ++ [_]u8{ 0xE2, 0x82 }; // € missing its last byte
+
+    var v: StreamingValidator = .{};
+    try std.testing.expectEqual(@as(?usize, null), v.update(bytes[0..3]));
+    try std.testing.expectEqual(@as(?usize, null), v.update(bytes[3..]));
+    try std.testing.expect(!v.finish());
+    try std.testing.expectEqual(@as(usize, 2), v.seq_start);
+
+    v.reset();
+    try std.testing.expectEqual(@as(?usize, null), v.update("clean"));
+    try std.testing.expect(v.finish());
+}
+
+test "StreamingValidator: invalid result is sticky across further updates" {
+    var v: StreamingValidator = .{};
+    try std.testing.expectEqual(@as(?usize, 0), v.update(&.{0xFF}));
+    try std.testing.expectEqual(@as(?usize, 0), v.update("still invalid"));
+    try std.testing.expect(!v.finish());
 }
