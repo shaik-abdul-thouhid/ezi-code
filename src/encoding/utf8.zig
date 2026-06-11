@@ -343,7 +343,7 @@ pub fn validateAndDecodeCodePointBytes(bytes: []const u8, offset: usize) UTF8Val
 
     const b = bytes[offset];
 
-    if (b <= MAX_ASCII) {
+    if (encoding.isAscii(b)) {
         @branchHint(.likely);
         return codePointFromLen(1, bytes, offset);
     }
@@ -398,7 +398,7 @@ fn validateAndDecodeCodePointBytesWithLenLossy(bytes: []const u8, offset: usize,
 
     var i: usize = 0;
 
-    while (i < remaining and !(isLeaderByte(bytes[offset + i]) or bytes[offset + i] <= MAX_ASCII)) : (i += 1) {}
+    while (i < remaining and !(isLeaderByte(bytes[offset + i]) or encoding.isAscii(bytes[offset + i]))) : (i += 1) {}
 
     return .{ .code_point = INVALID_CODE_POINT, .len = i };
 }
@@ -421,7 +421,7 @@ pub fn validateAndDecodeCodePointBytesLossy(bytes: []const u8, offset: usize) UT
 
     const b = bytes[offset];
 
-    if (b <= MAX_ASCII) {
+    if (encoding.isAscii(b)) {
         return codePointFromLenLossy(1, bytes, offset);
     }
 
@@ -453,7 +453,7 @@ pub fn decodeCodePointLossy(bytes: []const u8, offset: usize) DecodedCodePointLo
 
     const b = bytes[offset];
 
-    if (b <= MAX_ASCII) {
+    if (encoding.isAscii(b)) {
         @branchHint(.likely);
         return codePointFromLenLossy(1, bytes, offset);
     }
@@ -531,7 +531,7 @@ pub fn validateAndDecodeCodePointBytesReverse(bytes: []const u8, end_index: usiz
     }
 
     // ASCII fast path
-    if (bytes[end_index] <= MAX_ASCII) {
+    if (encoding.isAscii(bytes[end_index])) {
         @branchHint(.likely);
         return codePointFromLen(1, bytes, end_index);
     }
@@ -751,7 +751,7 @@ pub fn decodeCodePointUnchecked(bytes: []const u8, offset: usize) DecodedCodePoi
 
     const b = bytes[offset];
 
-    if (b <= MAX_ASCII) {
+    if (encoding.isAscii(b)) {
         @branchHint(.likely);
         return .{ .code_point = @as(CodePoint, b), .len = 1 };
     }
@@ -859,7 +859,7 @@ pub const UTF8View = struct {
         while (i < self.data.len) {
             const byte = self.data[i];
 
-            if (byte <= MAX_ASCII) {
+            if (encoding.isAscii(byte)) {
                 i += 1;
                 count += 1;
                 continue;
@@ -918,7 +918,7 @@ pub const UTF8View = struct {
 
             const byte = self.data[byte_index];
 
-            if (byte <= MAX_ASCII) {
+            if (encoding.isAscii(byte)) {
                 byte_index += 1;
             } else {
                 const len = codePointLen(byte) catch @panic("invalid code point length");
@@ -1377,12 +1377,12 @@ pub fn asciiRunLength(bytes: []const u8) usize {
             // A non-ASCII byte exists in [i, i + simd_block); the scan terminates
             // before leaving the block, so it never reads out of bounds.
             var j = i;
-            while (bytes[j] <= MAX_ASCII) : (j += 1) {}
+            while (encoding.isAscii(bytes[j])) : (j += 1) {}
             return j;
         }
     }
 
-    while (i < bytes.len and bytes[i] <= MAX_ASCII) : (i += 1) {}
+    while (i < bytes.len and encoding.isAscii(bytes[i])) : (i += 1) {}
     return i;
 }
 
@@ -1466,7 +1466,7 @@ pub const UTF8SimdLossyIterator = struct {
         // Fill the rest with scalar lossy decodes, stopping early when the next
         // byte re-enters an ASCII run so the following refill can widen it.
         while (self.buf_len < simd_iter_window and self.index < self.data.len) {
-            if (self.data[self.index] <= MAX_ASCII) break;
+            if (encoding.isAscii(self.data[self.index])) break;
             const decoded = decodeCodePointLossy(self.data, self.index);
             self.buf[self.buf_len] = decoded.code_point;
             self.buf_len += 1;
@@ -1866,7 +1866,7 @@ test "single-byte lead 0x00-0xFF classification smoke" {
     var b: u8 = 0;
     while (true) : (b +%= 1) {
         const r = codePointLen(b);
-        if (b <= MAX_ASCII) {
+        if (encoding.isAscii(b)) {
             try std.testing.expectEqual(@as(u3, 1), r);
         } else if (b >= two_byte_start_sequence_range_start and b <= two_byte_start_sequence_range_end) {
             try std.testing.expectEqual(@as(u3, 2), r);

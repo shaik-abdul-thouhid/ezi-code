@@ -242,7 +242,7 @@ const UTF8Stream = struct {
             const leading_byte = current_buffer[current_byte_idx];
 
             // ASCII fast path.
-            if (leading_byte <= encoding.MAX_ASCII) {
+            if (encoding.isAscii(leading_byte)) {
                 if (out_buf) |out| {
                     if (out.len < 1) {
                         return error.OutputBufferTooSmall;
@@ -472,7 +472,7 @@ const UTF8Stream = struct {
             const leading_byte = current_buffer[current_byte_idx];
 
             // ASCII fast path.
-            if (leading_byte <= encoding.MAX_ASCII) {
+            if (encoding.isAscii(leading_byte)) {
                 if (out_buf) |out| {
                     if (out.len < 1) {
                         return error.OutputBufferTooSmall;
@@ -508,7 +508,7 @@ const UTF8Stream = struct {
 
                     const current_byte = buffers[self.current_buffer_index.?][self.current_byte_index];
 
-                    if (utf8.isLeaderByte(current_byte) or current_byte <= encoding.MAX_ASCII) {
+                    if (utf8.isLeaderByte(current_byte) or encoding.isAscii(current_byte)) {
                         break;
                     }
 

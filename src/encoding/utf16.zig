@@ -83,7 +83,7 @@ pub fn isLowSurrogate(c16: u16) bool {
 ///
 /// @stable-since: v0.1.0
 pub fn utf16SequenceLen(c16: u16) UTF16ValidationError!u2 {
-    if (c16 <= MAX_ASCII) {
+    if (encoding.isAscii(c16)) {
         return 1;
     }
 
@@ -104,7 +104,7 @@ pub fn utf16SequenceLen(c16: u16) UTF16ValidationError!u2 {
 ///
 /// @stable-since: v0.1.0
 pub fn utf16SequenceLenLossy(c16: u16) u2 {
-    if (c16 <= MAX_ASCII) {
+    if (encoding.isAscii(c16)) {
         return 1;
     }
 
@@ -138,7 +138,7 @@ pub fn utf16SequenceLenReverse(buf: []const u16, end_index: usize) UTF16Validati
         return error.IndexOutOfBounds;
     }
 
-    if (buf[end_index] <= MAX_ASCII) {
+    if (encoding.isAscii(buf[end_index])) {
         return 1;
     }
 
@@ -171,7 +171,7 @@ pub fn utf16SequenceLenReverse(buf: []const u16, end_index: usize) UTF16Validati
 pub fn utf16SequenceLenReverseUnchecked(buf: []const u16, end_index: usize) u2 {
     std.debug.assert(end_index < buf.len);
 
-    if (buf[end_index] <= MAX_ASCII) {
+    if (encoding.isAscii(buf[end_index])) {
         return 1;
     }
 
@@ -328,7 +328,7 @@ pub fn validateU16Sequence(buf: []const u16, offset: usize) UTF16ValidationError
         return error.IndexOutOfBounds;
     }
 
-    if (buf[offset] <= MAX_ASCII) {
+    if (encoding.isAscii(buf[offset])) {
         return 1;
     }
 
@@ -356,7 +356,7 @@ pub fn validateU16CodePointReverse(buf: []const u16) UTF16ValidationError!u2 {
         return error.ZeroLengthUnits;
     }
 
-    if (buf[buf.len - 1] <= MAX_ASCII) {
+    if (encoding.isAscii(buf[buf.len - 1])) {
         @branchHint(.likely);
         return 1;
     }
@@ -425,7 +425,7 @@ pub fn validateAndDecodeU16CodePointLossy(buf: []const u16, offset: usize) UTF16
         return UTF16ValidationLossyError.IndexOutOfBounds;
     }
 
-    if (buf[offset] <= MAX_ASCII) {
+    if (encoding.isAscii(buf[offset])) {
         return .{ .code_point = @as(CodePoint, buf[offset]), .len = 1 };
     }
 
