@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `unicode.segmentation` byte-level iterators (grapheme / word / sentence /
+  line) and step helpers no longer contain `catch @panic` shims around lossy
+  decoding. They decode through `encoding.utf8.decodeCodePointLossy`, so the
+  "lossy never errors" promise now holds structurally: malformed UTF-8 yields
+  U+FFFD segments and can never trap. `lineStepBytes` documents its
+  `byte_pos < bytes.len` contract (asserted, safety-checked).
+
 ### Added
 
 - `encoding.utf8.decodeCodePointLossy` — infallible lossy decode primitive

@@ -234,7 +234,7 @@ pub const GraphemeIterator = struct {
         var consumed_first = false;
 
         while (self.pos < self.bytes.len) {
-            const decoded = utf8.validateAndDecodeCodePointBytesLossy(self.bytes, self.pos) catch @panic("invalid grapheme bytes");
+            const decoded = utf8.decodeCodePointLossy(self.bytes, self.pos);
             const decision = checkBoundary(self.state, decoded.code_point);
             if (decision.should_break and consumed_first) break;
             self.state = decision.new_state;
@@ -669,7 +669,7 @@ pub const WordIterator = struct {
         // prev_lit is already set to this codepoint's WB property (the previous
         // break decision recorded it). Either way we skip past it so the loop
         // below tests boundaries against the NEXT codepoint.
-        const first = utf8.validateAndDecodeCodePointBytesLossy(self.bytes, self.pos) catch @panic("invalid code point bytes");
+        const first = utf8.decodeCodePointLossy(self.bytes, self.pos);
         if (!self.primed) {
             self.state = WordStepState.init(first.code_point);
             self.primed = true;
@@ -714,7 +714,7 @@ const WordByteDecision = struct {
 };
 
 fn wordStepBytes(state: WordStepState, bytes: []const u8, byte_pos: usize) WordByteDecision {
-    const decoded = utf8.validateAndDecodeCodePointBytesLossy(bytes, byte_pos) catch @panic("invalid code point bytes");
+    const decoded = utf8.decodeCodePointLossy(bytes, byte_pos);
     const curr_cp = decoded.code_point;
     const curr = wordBreakProperty(curr_cp);
     const prev_lit = state.prev_lit;
@@ -859,7 +859,7 @@ fn wordStepBytes(state: WordStepState, bytes: []const u8, byte_pos: usize) WordB
 fn nextEffectiveWordPropBytes(bytes: []const u8, start_byte: usize) ?WordProp {
     var j = start_byte;
     while (j < bytes.len) {
-        const decoded = utf8.validateAndDecodeCodePointBytesLossy(bytes, j) catch @panic("invalid code point bytes");
+        const decoded = utf8.decodeCodePointLossy(bytes, j);
         const p = wordBreakProperty(decoded.code_point);
         if (!isWordIgnorable(p)) return p;
         j += decoded.len;
@@ -1005,7 +1005,7 @@ fn sb8ScanCodePoints(code_points: []const CodePoint, start: usize) Sb8Scan {
 fn sb8ScanBytes(bytes: []const u8, start_byte: usize) Sb8Scan {
     var j = start_byte;
     while (j < bytes.len) {
-        const decoded = utf8.validateAndDecodeCodePointBytesLossy(bytes, j) catch @panic("invalid code point bytes");
+        const decoded = utf8.decodeCodePointLossy(bytes, j);
         const p = sentenceBreakProperty(decoded.code_point);
         if (isSBIgnorable(p)) {
             j += decoded.len;
@@ -1358,14 +1358,14 @@ pub const SentenceIterator = struct {
         // segment, prime state on the first ever call (otherwise the state was
         // updated by the previous break decision), then scan boundaries from
         // the byte AFTER this codepoint.
-        const first = utf8.validateAndDecodeCodePointBytesLossy(self.bytes, self.pos) catch @panic("invalid code point bytes");
+        const first = utf8.decodeCodePointLossy(self.bytes, self.pos);
         if (!self.primed) {
             self.state = SentenceStepState.init(first.code_point);
             self.primed = true;
         }
         var cursor = self.pos + first.len;
         while (cursor < n) {
-            const decoded = utf8.validateAndDecodeCodePointBytesLossy(self.bytes, cursor) catch @panic("invalid code point bytes");
+            const decoded = utf8.decodeCodePointLossy(self.bytes, cursor);
             const curr = sentenceBreakProperty(decoded.code_point);
             const lookahead = if (self.state.ctx_is_aterm and
                 (self.state.ctx == .saterm or self.state.ctx == .saterm_close or self.state.ctx == .saterm_close_sp))
@@ -1589,7 +1589,7 @@ fn lookaheadFromBytes(
     var result = LineLookaheadPair{};
     var j = start_byte;
     while (j < bytes.len) {
-        const decoded = utf8.validateAndDecodeCodePointBytesLossy(bytes, j) catch @panic("invalid code point bytes");
+        const decoded = utf8.decodeCodePointLossy(bytes, j);
         const cp = decoded.code_point;
         const raw = lineBreak(cp);
         const res_pre10 = resolveLineBreakProp(raw, cp);
@@ -1760,9 +1760,13 @@ pub fn lineStep(state: LineStepState, code_points: []const CodePoint, i: usize) 
 /// byte length consumed by the stepped codepoint, so iterators can advance
 /// without re-decoding.
 ///
+/// Contract: `byte_pos < bytes.len`. The precondition is asserted
+/// (safety-checked: traps in Debug/ReleaseSafe, undefined in ReleaseFast).
+/// Malformed UTF-8 never panics: it decodes as U+FFFD.
+///
 /// @stable-since: v0.1.0
 pub fn lineStepBytes(state: LineStepState, bytes: []const u8, byte_pos: usize) LineStepByteDecision {
-    const decoded = utf8.validateAndDecodeCodePointBytesLossy(bytes, byte_pos) catch @panic("invalid code point bytes");
+    const decoded = utf8.decodeCodePointLossy(bytes, byte_pos);
     const cur_cp = decoded.code_point;
     const cur_raw = lineBreak(cur_cp);
     const cur_res_pre10 = resolveLineBreakProp(cur_raw, cur_cp);
@@ -2343,7 +2347,7 @@ pub const LineBreakIterator = struct {
         // first call we use it to seed the state; on subsequent calls the
         // state was already updated by the previous break decision, so we
         // just skip past it.
-        const first = utf8.validateAndDecodeCodePointBytesLossy(self.bytes, self.pos) catch @panic("invalid code point bytes");
+        const first = utf8.decodeCodePointLossy(self.bytes, self.pos);
         if (!self.primed) {
             self.state = .init(first.code_point);
             self.primed = true;
@@ -3294,5 +3298,39 @@ test "grapheme zalgo: each base plus its combining-mark stack collapses to one c
             clusters += 1;
         }
         try testing.expectEqual(s.base_count, clusters);
+    }
+}
+
+test "byte iterators never trap on malformed UTF-8: lossy decode all the way down" {
+    // Lone surrogates, truncated leads, invalid leads, orphan continuation
+    // runs — every byte iterator must consume the whole input, yielding
+    // U+FFFD-bearing segments, and reach exactly the end.
+    const malformed = [_][]const u8{
+        &.{ 0xED, 0xA0, 0x80, 'a', 0xC0, 0xC1, 0xF5 },
+        &.{ 0x80, 0x80, 0x80 },
+        &.{ 'a', 0xE2, 0x82 }, // truncated 3-byte sequence at end
+        &.{0xF0},
+    };
+
+    for (malformed) |bytes| {
+        var git = iterator(bytes);
+        var consumed: usize = 0;
+        while (git.next()) |cluster| consumed += cluster.len;
+        try testing.expectEqual(bytes.len, consumed);
+
+        var wit = wordIterator(bytes);
+        consumed = 0;
+        while (wit.next()) |word| consumed += word.len;
+        try testing.expectEqual(bytes.len, consumed);
+
+        var sit = sentenceIterator(bytes);
+        consumed = 0;
+        while (sit.next()) |sentence| consumed += sentence.len;
+        try testing.expectEqual(bytes.len, consumed);
+
+        var lit = lineBreakIterator(bytes);
+        consumed = 0;
+        while (lit.next()) |segment| consumed += segment.slice.len;
+        try testing.expectEqual(bytes.len, consumed);
     }
 }
