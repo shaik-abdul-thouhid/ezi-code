@@ -237,7 +237,7 @@ pub fn build(b: *std.Build) !void {
         std.builtin.OptimizeMode,
         "bench-optimize",
         "Optimization level for the bench executable (default ReleaseFast)",
-    ) orelse .ReleaseFast;
+    ) orelse .fast;
 
     const bench_utils_module = b.createModule(.{
         .root_source_file = b.path("src/utils/root.zig"),
