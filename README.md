@@ -18,9 +18,9 @@ committed, so a normal build doesn't touch the network or the `ucd/` inputs.
 
 ## Status
 
-Version `0.5.0-dev` in `main` (latest release: `v0.4.1`). Pre-1.0 in the literal
+Version `0.5.0`. Pre-1.0 in the literal
 sense: the API is allowed to change.
-Tracks **Unicode 18.0.0** on `main` (see [Unicode version support](#unicode-version-support)
+Tracks **Unicode 18.0.0** (see [Unicode version support](#unicode-version-support)
 for which releases carry which version).
 Tracks a recent Zig dev build (`0.17.0-dev.2320+1e770dbef` minimum); it does
 not build against stable 0.16. If your toolchain isn't on a current `master`,
@@ -37,14 +37,17 @@ adversarial test set you'd expect for UAX #9.
 Via git ref (resolves the tag at fetch time):
 
 ```sh
-zig fetch --save git+https://github.com/shaik-abdul-thouhid/ezi-code.git#v0.4.1
+zig fetch --save git+https://github.com/shaik-abdul-thouhid/ezi-code.git#v0.5.0
 ```
 
 Or via plain HTTP tarball (pins the content hash in `build.zig.zon`):
 
 ```sh
-zig fetch --save https://github.com/shaik-abdul-thouhid/ezi-code/archive/refs/tags/v0.4.1.tar.gz
+zig fetch --save https://github.com/shaik-abdul-thouhid/ezi-code/archive/refs/tags/v0.5.0.tar.gz
 ```
+
+`v0.5.0` tracks Unicode 18.0.0. To stay on Unicode 17.0.0, fetch `v0.4.1`
+instead (see [Unicode version support](#unicode-version-support)).
 
 Then in `build.zig`:
 
@@ -171,7 +174,7 @@ together.
 | Unicode | Releases | Commits on `main` |
 | ------- | -------- | ----------------- |
 | 17.0.0  | `v0.1.0` – `v0.4.1` | up to and including `f01d7e8` (last Unicode 17 commit) |
-| 18.0.0  | first release: `v0.5.0` (not yet tagged) | from the commit after `f01d7e8`, `feat(unicode)!: upgrade to Unicode 18.0.0`, onward |
+| 18.0.0  | `v0.5.0` onward | from `69dc00a` (`feat(unicode)!: upgrade to Unicode 18.0.0`) onward |
 
 To stay on Unicode 17, pin `v0.4.1` (or commit `f01d7e8`). Moving from 17 to 18
 changes more than the data tables. It also brings the Unicode 18 algorithm
