@@ -18,7 +18,7 @@ committed, so a normal build doesn't touch the network or the `ucd/` inputs.
 
 ## Status
 
-Version `0.5.0`. Pre-1.0 in the literal
+Version `0.6.0-dev` in `main` (latest release: `v0.5.0`). Pre-1.0 in the literal
 sense: the API is allowed to change.
 Tracks **Unicode 18.0.0** (see [Unicode version support](#unicode-version-support)
 for which releases carry which version).
