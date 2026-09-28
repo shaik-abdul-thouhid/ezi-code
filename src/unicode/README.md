@@ -8,10 +8,14 @@ code, and its tests, live in the submodules next to the data they use.
 ## How the data gets here
 
 Each submodule has a `generated/` directory holding Zig source produced from the
-`ucd/*.txt` files at the repository root. The generator is `src/generate.zig`:
+Unicode Character Database, currently **Unicode 18.0.0**. The generator is
+`src/generate.zig`. It downloads the release named by its `unicode_version`
+constant from unicode.org, saves the raw files into `ucd/` at the repository
+root, and emits the tables:
 
 ```
-zig build generate
+zig build generate          # page tables + ucd/ corpus
+zig build generate-ranges   # enumerable range tables, derived from the page tables
 ```
 
 The generated tables are **deduplicated two-level page tables** — a small index
@@ -111,8 +115,8 @@ The unicode tests include exhaustive `0..0x10FFFF` sweeps, which are painfully s
 in Debug — run them optimized:
 
 ```
-zig build test -Dinclude-test=unicode -Doptimize=ReleaseSafe
-zig build test -Dinclude-test=conformance -Doptimize=ReleaseSafe   # UCD vectors
+zig build test -Dinclude-test=unicode -Doptimize=safe
+zig build test -Dinclude-test=conformance -Doptimize=safe   # UCD vectors
 ```
 
 `-Dinclude-test` selects which suites the `test` step depends on

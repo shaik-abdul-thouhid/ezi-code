@@ -112,8 +112,28 @@ test "bidiMirroringGlyph: representative ASCII and BMP mirror pairs" {
     try testing.expectEqual(@as(?CodePoint, 0x220B), bidiMirroringGlyph(0x2208)); // ELEMENT OF
     try testing.expectEqual(@as(?CodePoint, 0x29F5), bidiMirroringGlyph(0x2215)); // DIVISION SLASH -> REVERSE SOLIDUS OPERATOR
     try testing.expectEqual(@as(?CodePoint, 0x2BFE), bidiMirroringGlyph(0x221F)); // RIGHT ANGLE
-    // Highest source codepoint listed in the file.
+    // Highest BMP source codepoint listed in the file.
     try testing.expectEqual(@as(?CodePoint, 0xFF62), bidiMirroringGlyph(0xFF63));
+    // New BMP pair in Unicode 18.0.
+    try testing.expectEqual(@as(?CodePoint, 0x2E63), bidiMirroringGlyph(0x2E62));
+    try testing.expectEqual(@as(?CodePoint, 0x2E62), bidiMirroringGlyph(0x2E63));
+}
+
+test "bidiMirroringGlyph: supplementary-plane mirror pairs (Unicode 18.0)" {
+    // Unicode 18.0 is the first release with mirror pairs outside the BMP,
+    // including one that crosses planes: U+221D PROPORTIONAL TO <-> U+1DB10.
+    const pairs = [_][2]CodePoint{
+        .{ 0x221D, 0x1DB10 },
+        .{ 0x1DB03, 0x1DB04 },
+        .{ 0x1DB05, 0x1DB06 },
+        .{ 0x1DB08, 0x1DB09 },
+    };
+    for (pairs) |p| {
+        try testing.expectEqual(@as(?CodePoint, p[1]), bidiMirroringGlyph(p[0]));
+        try testing.expectEqual(@as(?CodePoint, p[0]), bidiMirroringGlyph(p[1]));
+        try testing.expect(hasMirroringGlyph(p[0]));
+        try testing.expect(hasMirroringGlyph(p[1]));
+    }
 }
 
 test "bidiMirroringGlyph: non-mirrored codepoints and out-of-range yield null" {

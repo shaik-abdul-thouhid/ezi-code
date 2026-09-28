@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking: Unicode 18.0.0.** Every UCD-derived table, the DUCET, the emoji
+  data and the conformance vectors in `ucd/` move from Unicode 17.0.0 to 18.0.0
+  (UAX #14 rev 57, UAX #29 rev 49, UTS #10 rev 55). Property values change for
+  newly assigned and reclassified code points. Pin `v0.4.1` (or commit
+  `f01d7e8`) to stay on Unicode 17; the README has a version table. The tracked
+  release is now a single `unicode_version` constant in `src/generate.zig`.
+- Grapheme clusters follow the Unicode 18 **GB9c**:
+  `\p{InCB=Linker} \p{InCB=Extend}* × \p{InCB=Consonant}`. A Linker no longer
+  needs a preceding InCB=Consonant, so U+094D U+0915 is now one cluster.
+  `segmentation.BoundaryState.in_linker_seen` now means "the code points just
+  before the cursor match `Linker Extend*`".
+- Line breaking follows the Unicode 18 **LB12a**, `[^SP HY HH] × GL`: there is
+  no break between BA and GL (e.g. EN DASH + NO-BREAK SPACE). In the data,
+  U+2012 FIGURE DASH and U+2013 EN DASH moved from HH to BA, and U+00AD SOFT
+  HYPHEN from BA to HH.
+- Collation follows UCA 18. U+FFFE now has the lowest primary weight (`0200`)
+  and is never variable, so `shifted` does not make it ignorable. U+FFFF has
+  the highest (`FFFF`). Jurchen (U+18E00..U+191DF, base `FB04`) and Seal
+  (U+3D000..U+3FC3F, base `FB05`) get siniform implicit weights.
+- **Breaking:** at `identical` strength, U+FFFE takes the minimal, unique
+  weight UCA 18 requires, so it sorts below every other code point (U+0000
+  included). The serialized identical level therefore encodes each NFD code
+  point as `cp + 1` (U+FFFE as `0`) in the same 3 bytes. Sort keys serialized
+  by earlier versions are not comparable with new ones; re-key any stored
+  keys, which the new DUCET weights require anyway.
+- `bidi.bidiMirroringGlyph` now returns supplementary-plane mirrors. Unicode 18
+  adds the first non-BMP pairs, e.g. U+221D ↔ U+1DB10, U+1DB03 ↔ U+1DB04. The
+  generated mirror table is widened to full code-point width; the signature is
+  unchanged.
+- Minimum Zig is now `0.17.0-dev.2320+1e770dbef`. `build.zig` uses
+  `std.lang.Optimize` and the lowercase optimize-mode names (`fast`, `safe`, …)
+  in place of the deprecated `std.builtin.OptimizeMode` / `ReleaseFast`
+  spellings, and the docs use `-Doptimize=safe`.
+
+### Added
+
+- Unicode 18 enum variants: `age.Age.v18_0`; scripts `jurchen` (Jurc),
+  `proto_cuneiform` (Pcun) and `seal` (Seal); blocks `bengali_supplement`,
+  `archaic_cuneiform_numerals`, `jurchen`, `jurchen_radicals`,
+  `musical_symbols_supplement`, `miscellaneous_symbolsand_arrows_extended` and
+  `seal`. An exhaustive `switch` over `ScriptType`, `Block` or `Age` needs the
+  new prongs.
+
+### Deprecated
+
+- `segmentation.BoundaryState.in_consonant_run` is no longer read or written
+  and stays `false`, because GB9c no longer tracks a leading consonant. It is
+  kept so code naming the field still compiles.
+
 ## [0.4.1] - 2026-06-11
 
 ### Added

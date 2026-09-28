@@ -141,7 +141,7 @@ pub const emoji_ranges = [_]Range{
     .{ .start = 0x1F5FA, .end = 0x1F64F },
     .{ .start = 0x1F680, .end = 0x1F6C5 },
     .{ .start = 0x1F6CB, .end = 0x1F6D2 },
-    .{ .start = 0x1F6D5, .end = 0x1F6D8 },
+    .{ .start = 0x1F6D5, .end = 0x1F6D9 },
     .{ .start = 0x1F6DC, .end = 0x1F6E5 },
     .{ .start = 0x1F6E9, .end = 0x1F6E9 },
     .{ .start = 0x1F6EB, .end = 0x1F6EC },
@@ -153,12 +153,11 @@ pub const emoji_ranges = [_]Range{
     .{ .start = 0x1F93C, .end = 0x1F945 },
     .{ .start = 0x1F947, .end = 0x1F9FF },
     .{ .start = 0x1FA70, .end = 0x1FA7C },
-    .{ .start = 0x1FA80, .end = 0x1FA8A },
-    .{ .start = 0x1FA8E, .end = 0x1FAC6 },
+    .{ .start = 0x1FA80, .end = 0x1FAC6 },
     .{ .start = 0x1FAC8, .end = 0x1FAC8 },
-    .{ .start = 0x1FACD, .end = 0x1FADC },
-    .{ .start = 0x1FADF, .end = 0x1FAEA },
-    .{ .start = 0x1FAEF, .end = 0x1FAF8 },
+    .{ .start = 0x1FACC, .end = 0x1FADD },
+    .{ .start = 0x1FADF, .end = 0x1FAEB },
+    .{ .start = 0x1FAEF, .end = 0x1FAFA },
 };
 
 /// UTS #51 Emoji_Presentation ranges.
@@ -228,7 +227,7 @@ pub const emoji_presentation_ranges = [_]Range{
     .{ .start = 0x1F680, .end = 0x1F6C5 },
     .{ .start = 0x1F6CC, .end = 0x1F6CC },
     .{ .start = 0x1F6D0, .end = 0x1F6D2 },
-    .{ .start = 0x1F6D5, .end = 0x1F6D8 },
+    .{ .start = 0x1F6D5, .end = 0x1F6D9 },
     .{ .start = 0x1F6DC, .end = 0x1F6DF },
     .{ .start = 0x1F6EB, .end = 0x1F6EC },
     .{ .start = 0x1F6F4, .end = 0x1F6FC },
@@ -238,12 +237,11 @@ pub const emoji_presentation_ranges = [_]Range{
     .{ .start = 0x1F93C, .end = 0x1F945 },
     .{ .start = 0x1F947, .end = 0x1F9FF },
     .{ .start = 0x1FA70, .end = 0x1FA7C },
-    .{ .start = 0x1FA80, .end = 0x1FA8A },
-    .{ .start = 0x1FA8E, .end = 0x1FAC6 },
+    .{ .start = 0x1FA80, .end = 0x1FAC6 },
     .{ .start = 0x1FAC8, .end = 0x1FAC8 },
-    .{ .start = 0x1FACD, .end = 0x1FADC },
-    .{ .start = 0x1FADF, .end = 0x1FAEA },
-    .{ .start = 0x1FAEF, .end = 0x1FAF8 },
+    .{ .start = 0x1FACC, .end = 0x1FADD },
+    .{ .start = 0x1FADF, .end = 0x1FAEB },
+    .{ .start = 0x1FAEF, .end = 0x1FAFA },
 };
 
 /// UTS #51 Emoji_Modifier ranges.
@@ -292,7 +290,7 @@ pub const emoji_modifier_base_ranges = [_]Range{
     .{ .start = 0x1F9CD, .end = 0x1F9CF },
     .{ .start = 0x1F9D1, .end = 0x1F9DD },
     .{ .start = 0x1FAC3, .end = 0x1FAC5 },
-    .{ .start = 0x1FAF0, .end = 0x1FAF8 },
+    .{ .start = 0x1FAF0, .end = 0x1FAFA },
 };
 
 /// UTS #51 Emoji_Component ranges.
@@ -409,7 +407,7 @@ pub const extended_pictographic_ranges = [_]Range{
     .{ .start = 0x1F17E, .end = 0x1F17F },
     .{ .start = 0x1F18E, .end = 0x1F18E },
     .{ .start = 0x1F191, .end = 0x1F19A },
-    .{ .start = 0x1F1AE, .end = 0x1F1E5 },
+    .{ .start = 0x1F1AF, .end = 0x1F1E5 },
     .{ .start = 0x1F201, .end = 0x1F20F },
     .{ .start = 0x1F21A, .end = 0x1F21A },
     .{ .start = 0x1F22F, .end = 0x1F22F },
@@ -452,7 +450,7 @@ pub const extended_pictographic_ranges = [_]Range{
     .{ .start = 0x1F6E9, .end = 0x1F6E9 },
     .{ .start = 0x1F6EB, .end = 0x1F6F0 },
     .{ .start = 0x1F6F3, .end = 0x1F6FF },
-    .{ .start = 0x1F7DA, .end = 0x1F7FF },
+    .{ .start = 0x1F7DC, .end = 0x1F7F0 },
     .{ .start = 0x1F80C, .end = 0x1F80F },
     .{ .start = 0x1F848, .end = 0x1F84F },
     .{ .start = 0x1F85A, .end = 0x1F85F },

@@ -1,5 +1,5 @@
-The Unicode Character Database data files bundled in ucd/ (Unicode 17.0.0,
-© 2025 Unicode, Inc.) are used under the terms of the Unicode License V3,
+The Unicode Character Database data files bundled in ucd/ (Unicode 18.0.0,
+© 2026 Unicode, Inc.) are used under the terms of the Unicode License V3,
 reproduced below. The same license governs the International Components for
 Unicode (ICU) project.
 
@@ -11,7 +11,7 @@ UNICODE LICENSE V3
 
 COPYRIGHT AND PERMISSION NOTICE
 
-Copyright © 1991-2025 Unicode, Inc.
+Copyright © 1991-2026 Unicode, Inc.
 
 NOTICE TO USER: Carefully read the following legal agreement. BY DOWNLOADING,
 INSTALLING, COPYING OR OTHERWISE USING DATA FILES, AND/OR SOFTWARE, YOU

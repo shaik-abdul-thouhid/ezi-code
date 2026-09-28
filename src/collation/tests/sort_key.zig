@@ -162,7 +162,28 @@ test "sort key: compareSerializedKeys agrees with compareKeys for default option
 test "sort key: compareSerializedKeys agrees with compareKeys across all strength levels" {
     const allocator = testing.allocator;
 
-    const strings = [_][]const u8{ "a", "A", "café", "cafe", "CAFE", "b", "B", "", "hello", "résumé" };
+    const strings = [_][]const u8{
+        "a",
+        "A",
+        "café",
+        "cafe",
+        "CAFE",
+        "b",
+        "B",
+        "",
+        "hello",
+        "résumé",
+        // U+FFFE (minimal identical-level weight since UCA 18) around the
+        // completely ignorable U+0000 / U+0001, so strings tie through
+        // tertiary and the identical-level encoding decides.
+        "\u{FFFE}",
+        "\u{0000}",
+        "\u{0000}\u{FFFE}",
+        "\u{FFFE}\u{0000}",
+        "a\u{FFFE}b",
+        "a\u{0001}\u{FFFE}b",
+        "a\u{FFFE}\u{0001}b",
+    };
 
     const options_list = [_]Options{
         .{ .strength = .primary },

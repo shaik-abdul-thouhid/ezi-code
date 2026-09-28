@@ -8,6 +8,12 @@ const unicode_types = @import("unicode/types.zig");
 const CanonicalCombiningClass = unicode_types.CanonicalCombiningClass;
 const QuickCheck = unicode_types.QuickCheck;
 
+/// The Unicode release every generated table and every `ucd/` input tracks.
+/// Bumping this and re-running `zig build generate` (then
+/// `zig build generate-ranges`) moves the whole library to a new release.
+const unicode_version = "18.0.0";
+const unicode_public_url = "https://www.unicode.org/Public/" ++ unicode_version;
+
 // ============================================================================
 // HTTP / file IO
 // ============================================================================
@@ -471,9 +477,15 @@ fn emitNamedEnumPageTable(
 }
 
 fn emitU16PageTable(writer: *std.Io.Writer, table_prefix: []const u8, pt: PageTable(u16)) !void {
+    return emitIntPageTable(u16, writer, table_prefix, "u16", pt);
+}
+
+/// Emits a two-level page table of hex integers. `element_type` is the Zig
+/// type name written into the generated source (e.g. "u16", "CodePoint").
+fn emitIntPageTable(comptime T: type, writer: *std.Io.Writer, table_prefix: []const u8, element_type: []const u8, pt: PageTable(T)) !void {
     try emitLevel1(writer, table_prefix, pt.level1);
 
-    try writer.print("//zig fmt: off\nconst {s}_level2 = [_][256]u16 {{\n", .{table_prefix});
+    try writer.print("//zig fmt: off\nconst {s}_level2 = [_][256]{s} {{\n", .{ table_prefix, element_type });
     for (pt.unique_pages) |page| {
         try writer.writeAll("    .{\n        ");
         for (page, 0..) |val, j| {
@@ -3001,7 +3013,9 @@ fn generateBidiMirroring(arena: std.mem.Allocator, io: std.Io, data: []const u8,
     var file_writer = file.writer(io, buf);
     const writer = &file_writer.interface;
 
-    const values = try arena.alloc(u16, 0x110000);
+    // Full code-point width: since Unicode 18.0 some mirror pairs live outside
+    // the BMP (e.g. U+221D PROPORTIONAL TO <-> U+1DB10 CARTESIAN EQUALS SIGN).
+    const values = try arena.alloc(u32, 0x110000);
     @memset(values, 0);
 
     var split_lines = std.mem.splitScalar(u8, data, '\n');
@@ -3015,16 +3029,14 @@ fn generateBidiMirroring(arena: std.mem.Allocator, io: std.Io, data: []const u8,
         const mirror_raw = std.mem.trim(u8, tokens_iter.next() orelse continue :line_loop, " \t\r");
 
         const cp = try std.fmt.parseInt(u21, cp_raw, 16);
-        const mirror = try std.fmt.parseInt(u21, mirror_raw, 16);
-        if (mirror > 0xFFFF) @panic("BidiMirroring.txt: mirror glyph outside the BMP — widen the table to u21");
-        values[cp] = @intCast(mirror);
+        values[cp] = try std.fmt.parseInt(u21, mirror_raw, 16);
     }
 
-    const pt = try buildPageTable(u16, arena, values, 0);
+    const pt = try buildPageTable(u32, arena, values, 0);
 
     try writer.writeAll(generated_file_header);
 
-    try emitU16PageTable(writer, "bidi_mirror", pt);
+    try emitIntPageTable(u32, writer, "bidi_mirror", "CodePoint", pt);
 
     try writer.writeAll(
         \\/// Bidi_Mirroring_Glyph of `cp` (UAX #9): the codepoint whose glyph is
@@ -3417,74 +3429,74 @@ pub fn main(init: std.process.Init) !void {
     }{
         .{
             .file_name = "src/collation/generated/ducet.zig",
-            .url = "https://www.unicode.org/Public/17.0.0/uca/allkeys.txt",
+            .url = unicode_public_url ++ "/uca/allkeys.txt",
             .generatorFn = generateDucet,
         },
         // Must come before UnicodeData.txt: generateUnicodeData reads
         // ucd/DerivedBidiClass.txt from disk to seed the @missing defaults.
         .{
             .file_name = "ucd/DerivedBidiClass.txt",
-            .url = "https://www.unicode.org/Public/17.0.0/ucd/extracted/DerivedBidiClass.txt",
+            .url = unicode_public_url ++ "/ucd/extracted/DerivedBidiClass.txt",
             .generatorFn = saveUCDFixtureOnly,
         },
         .{
             .file_name = "src/unicode/generated/unicode_data.zig",
-            .url = "https://www.unicode.org/Public/17.0.0/ucd/UnicodeData.txt",
+            .url = unicode_public_url ++ "/ucd/UnicodeData.txt",
             .generatorFn = generateUnicodeData,
         },
         .{
             .file_name = "src/unicode/properties/generated/derived_core_properties.zig",
-            .url = "https://www.unicode.org/Public/17.0.0/ucd/DerivedCoreProperties.txt",
+            .url = unicode_public_url ++ "/ucd/DerivedCoreProperties.txt",
             .generatorFn = generateDerivedCoreProperty,
         },
         .{
             .file_name = "src/unicode/casing/generated/case_folding.zig",
-            .url = "https://www.unicode.org/Public/17.0.0/ucd/CaseFolding.txt",
+            .url = unicode_public_url ++ "/ucd/CaseFolding.txt",
             .generatorFn = generateCaseFolding,
         },
         .{
             .file_name = "src/unicode/casing/generated/special_casing.zig",
-            .url = "https://www.unicode.org/Public/17.0.0/ucd/SpecialCasing.txt",
+            .url = unicode_public_url ++ "/ucd/SpecialCasing.txt",
             .generatorFn = generateSpecialCasing,
         },
         .{
             .file_name = "src/unicode/properties/generated/prop_list.zig",
-            .url = "https://www.unicode.org/Public/17.0.0/ucd/PropList.txt",
+            .url = unicode_public_url ++ "/ucd/PropList.txt",
             .generatorFn = generatePropList,
         },
         .{
             .file_name = "src/unicode/segmentation/generated/grapheme_break.zig",
-            .url = "https://www.unicode.org/Public/17.0.0/ucd/auxiliary/GraphemeBreakProperty.txt",
+            .url = unicode_public_url ++ "/ucd/auxiliary/GraphemeBreakProperty.txt",
             .generatorFn = generateGraphemeBreakProperty,
         },
         .{
             .file_name = "src/unicode/emoji/generated/emoji_data.zig",
-            .url = "https://www.unicode.org/Public/17.0.0/ucd/emoji/emoji-data.txt",
+            .url = unicode_public_url ++ "/ucd/emoji/emoji-data.txt",
             .generatorFn = generateEmojiData,
         },
         .{
             .file_name = "src/unicode/segmentation/generated/word_break.zig",
-            .url = "https://www.unicode.org/Public/17.0.0/ucd/auxiliary/WordBreakProperty.txt",
+            .url = unicode_public_url ++ "/ucd/auxiliary/WordBreakProperty.txt",
             .generatorFn = generateWordBreakProperty,
         },
         .{
             .file_name = "src/unicode/segmentation/generated/sentence_break.zig",
-            .url = "https://www.unicode.org/Public/17.0.0/ucd/auxiliary/SentenceBreakProperty.txt",
+            .url = unicode_public_url ++ "/ucd/auxiliary/SentenceBreakProperty.txt",
             .generatorFn = generateSentenceBreakProperty,
         },
         .{
             .file_name = "src/unicode/segmentation/generated/line_break.zig",
-            .url = "https://www.unicode.org/Public/17.0.0/ucd/LineBreak.txt",
+            .url = unicode_public_url ++ "/ucd/LineBreak.txt",
             .generatorFn = generateLineBreak,
         },
         .{
             .file_name = "src/unicode/width/generated/east_asian_width.zig",
-            .url = "https://www.unicode.org/Public/17.0.0/ucd/EastAsianWidth.txt",
+            .url = unicode_public_url ++ "/ucd/EastAsianWidth.txt",
             .generatorFn = generateEastAsianWidth,
         },
         .{
             .file_name = "src/unicode/normalization/generated/derived_normalization_props.zig",
-            .url = "https://www.unicode.org/Public/17.0.0/ucd/DerivedNormalizationProps.txt",
+            .url = unicode_public_url ++ "/ucd/DerivedNormalizationProps.txt",
             .generatorFn = generateDerivedNormalizationProps,
         },
         // Must come after DerivedNormalizationProps: the decomposition
@@ -3492,57 +3504,57 @@ pub fn main(init: std.process.Init) !void {
         // disk to know which canonical de-comps are Full_Composition_Exclusion.
         .{
             .file_name = "src/unicode/normalization/generated/decomposition.zig",
-            .url = "https://www.unicode.org/Public/17.0.0/ucd/UnicodeData.txt",
+            .url = unicode_public_url ++ "/ucd/UnicodeData.txt",
             .generatorFn = generateDecomposition,
         },
         .{
             .file_name = "ucd/PropertyValueAliases.txt",
-            .url = "https://www.unicode.org/Public/17.0.0/ucd/PropertyValueAliases.txt",
+            .url = unicode_public_url ++ "/ucd/PropertyValueAliases.txt",
             .generatorFn = saveUCDFixtureOnly,
         },
         .{
             .file_name = "src/unicode/scripts/generated/scripts.zig",
-            .url = "https://www.unicode.org/Public/17.0.0/ucd/Scripts.txt",
+            .url = unicode_public_url ++ "/ucd/Scripts.txt",
             .generatorFn = generateScripts,
         },
         .{
             .file_name = "src/unicode/scripts/generated/script_extensions.zig",
-            .url = "https://www.unicode.org/Public/17.0.0/ucd/ScriptExtensions.txt",
+            .url = unicode_public_url ++ "/ucd/ScriptExtensions.txt",
             .generatorFn = generateScriptExtensions,
         },
         .{
             .file_name = "src/unicode/bidi/generated/bidi_brackets.zig",
-            .url = "https://www.unicode.org/Public/17.0.0/ucd/BidiBrackets.txt",
+            .url = unicode_public_url ++ "/ucd/BidiBrackets.txt",
             .generatorFn = generateBidiBrackets,
         },
         .{
             .file_name = "src/unicode/bidi/generated/bidi_mirroring.zig",
-            .url = "https://www.unicode.org/Public/17.0.0/ucd/BidiMirroring.txt",
+            .url = unicode_public_url ++ "/ucd/BidiMirroring.txt",
             .generatorFn = generateBidiMirroring,
         },
         .{
             .file_name = "src/unicode/numeric/generated/numeric_type.zig",
-            .url = "https://www.unicode.org/Public/17.0.0/ucd/extracted/DerivedNumericType.txt",
+            .url = unicode_public_url ++ "/ucd/extracted/DerivedNumericType.txt",
             .generatorFn = generateDerivedNumericType,
         },
         .{
             .file_name = "src/unicode/numeric/generated/numeric_values.zig",
-            .url = "https://www.unicode.org/Public/17.0.0/ucd/extracted/DerivedNumericValues.txt",
+            .url = unicode_public_url ++ "/ucd/extracted/DerivedNumericValues.txt",
             .generatorFn = generateDerivedNumericValues,
         },
         .{
             .file_name = "src/unicode/blocks/generated/blocks.zig",
-            .url = "https://www.unicode.org/Public/17.0.0/ucd/Blocks.txt",
+            .url = unicode_public_url ++ "/ucd/Blocks.txt",
             .generatorFn = generateBlocks,
         },
         .{
             .file_name = "src/unicode/hangul/generated/hangul_syllable_type.zig",
-            .url = "https://www.unicode.org/Public/17.0.0/ucd/HangulSyllableType.txt",
+            .url = unicode_public_url ++ "/ucd/HangulSyllableType.txt",
             .generatorFn = generateHangulSyllableType,
         },
         .{
             .file_name = "src/unicode/age/generated/derived_age.zig",
-            .url = "https://www.unicode.org/Public/17.0.0/ucd/DerivedAge.txt",
+            .url = unicode_public_url ++ "/ucd/DerivedAge.txt",
             .generatorFn = generateDerivedAge,
         },
 
@@ -3553,46 +3565,46 @@ pub fn main(init: std.process.Init) !void {
         // for these — the saved location is always `ucd/<basename-of-url>`.
         .{
             .file_name = "ucd/GraphemeBreakTest.txt",
-            .url = "https://www.unicode.org/Public/17.0.0/ucd/auxiliary/GraphemeBreakTest.txt",
+            .url = unicode_public_url ++ "/ucd/auxiliary/GraphemeBreakTest.txt",
             .generatorFn = saveUCDFixtureOnly,
         },
         .{
             .file_name = "ucd/WordBreakTest.txt",
-            .url = "https://www.unicode.org/Public/17.0.0/ucd/auxiliary/WordBreakTest.txt",
+            .url = unicode_public_url ++ "/ucd/auxiliary/WordBreakTest.txt",
             .generatorFn = saveUCDFixtureOnly,
         },
         .{
             .file_name = "ucd/SentenceBreakTest.txt",
-            .url = "https://www.unicode.org/Public/17.0.0/ucd/auxiliary/SentenceBreakTest.txt",
+            .url = unicode_public_url ++ "/ucd/auxiliary/SentenceBreakTest.txt",
             .generatorFn = saveUCDFixtureOnly,
         },
         .{
             .file_name = "ucd/LineBreakTest.txt",
-            .url = "https://www.unicode.org/Public/17.0.0/ucd/auxiliary/LineBreakTest.txt",
+            .url = unicode_public_url ++ "/ucd/auxiliary/LineBreakTest.txt",
             .generatorFn = saveUCDFixtureOnly,
         },
         .{
             .file_name = "ucd/NormalizationTest.txt", // fixture only, not Zig output
-            .url = "https://www.unicode.org/Public/17.0.0/ucd/NormalizationTest.txt",
+            .url = unicode_public_url ++ "/ucd/NormalizationTest.txt",
             .generatorFn = generateNormalizationTestFixture,
         },
 
         // ----- Bidi conformance fixtures (download-only; no Zig source emitted) -----
         .{
             .file_name = "ucd/BidiTest.txt",
-            .url = "https://www.unicode.org/Public/17.0.0/ucd/BidiTest.txt",
+            .url = unicode_public_url ++ "/ucd/BidiTest.txt",
             .generatorFn = saveUCDFixtureOnly,
         },
         .{
             .file_name = "ucd/BidiCharacterTest.txt",
-            .url = "https://www.unicode.org/Public/17.0.0/ucd/BidiCharacterTest.txt",
+            .url = unicode_public_url ++ "/ucd/BidiCharacterTest.txt",
             .generatorFn = saveUCDFixtureOnly,
         },
 
         // ----- Collation fixtures (download-only; no Zig source emitted) -----
         .{
             .file_name = "ucd/CollationTest.zip",
-            .url = "https://www.unicode.org/Public/17.0.0/uca/CollationTest.zip",
+            .url = unicode_public_url ++ "/uca/CollationTest.zip",
             .generatorFn = saveUCDFixtureOnly,
         },
     };

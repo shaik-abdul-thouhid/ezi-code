@@ -131,7 +131,7 @@ between levels. Levels are included only up to `options.strength`.
 0x00 0x00                          ← separator (only if SHIFTED ∧ strength ≥ quaternary)
 [ quaternary weights: u16 BE... ]  ← only if variable_weighting = .shifted
 0x00 0x00                          ← separator (only if strength = identical)
-[ NFD codepoints: 3-byte BE... ]   ← only if strength = identical
+[ identical weights: 3-byte BE... ] ← only if strength = identical
 ```
 
 Key invariants that make raw byte comparison safe:
@@ -141,9 +141,13 @@ Key invariants that make raw byte comparison safe:
   can only appear at level boundaries.
 - Weights are written at 2-byte aligned offsets. Scanning in 2-byte steps
   unambiguously finds separators without false positives.
-- NFD codepoints are 3-byte big-endian (fits `u21`). Their encoding preserves
-  numeric order, so `memcmp` on the NFD section gives the same result as
-  comparing the `u21` values directly.
+- The identical level has one 3-byte big-endian weight per NFD code point.
+  U+FFFE is `0x000000`, the minimal unique weight UCA 18 requires, so that
+  `a + U+FFFE + b` sorts like merging the keys of `a` and `b`. Every other
+  code point is its value plus one, up to `0x110000`. The encoding preserves
+  numeric order, so `memcmp` on this section matches `Collator.compareKeys`.
+  Keys serialized before the Unicode 18 upgrade are not comparable with new
+  ones. The DUCET weights changed as well, so re-key any stored sort keys.
 
 Two sort keys serialized with **the same `Options`** compare via
 `std.mem.order(u8, a, b)` exactly as `Collator.compareKeys` would compare the
@@ -192,13 +196,13 @@ and sort-order preservation on a word list.
 Run the conformance tests with:
 
 ```sh
-zig build test -Dinclude-test=conformance -Doptimize=ReleaseSafe
+zig build test -Dinclude-test=conformance -Doptimize=safe
 ```
 
 Run only the collation unit and serialization tests:
 
 ```sh
-zig build test -Dinclude-test=collation
+zig build test -Dinclude-test=collation -Doptimize=safe
 ```
 
 ## Regenerating the DUCET tables
@@ -208,7 +212,8 @@ zig build generate
 ```
 
 Downloads `allkeys.txt` and `CollationTest.zip` from
-`https://www.unicode.org/Public/17.0.0/uca/` and regenerates
+`https://www.unicode.org/Public/18.0.0/uca/` (the version is the
+`unicode_version` constant in `src/generate.zig`) and regenerates
 `src/collation/generated/ducet.zig`.
 
 ## Design notes
@@ -227,7 +232,13 @@ Downloads `allkeys.txt` and `CollationTest.zip` from
   serialized key for a typical short string is roughly `3 × codepoint_count × 2`
   bytes plus two 2-byte separators (one between each level). A 10-character
   string produces approximately 60–80 bytes.
-- **Implicit weights.** Codepoints not assigned in the DUCET get implicit
-  weights computed from their block: Tangut, Nushu, and Khitan use a siniform
-  formula; CJK Unified Ideographs use a Han-specific formula; everything else
-  uses the unassigned formula (UTS #10 §11.1).
+- **Implicit weights.** Code points with no DUCET entry get implicit weights
+  computed from their block. Tangut, Nushu, Khitan, Jurchen and Seal use a
+  siniform formula, with ranges and bases read from `allkeys.txt`. CJK Unified
+  Ideographs use a Han-specific formula. Everything else uses the unassigned
+  formula (UTS #10 §10.1.3).
+- **U+FFFE / U+FFFF (UCA 18).** U+FFFE has the lowest primary weight (`0200`)
+  and is never variable, so it works as a field separator for merged sort keys.
+  U+FFFF has the highest primary (`FFFF`), so `"Sch" ≤ X ≤ "Sch\u{FFFF}"` brackets
+  every string that starts with "Sch". Backwards-secondary segmenting and
+  Shift-Trimmed don't apply here: neither option is offered.

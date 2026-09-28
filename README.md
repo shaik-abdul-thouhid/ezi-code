@@ -20,7 +20,9 @@ committed, so a normal build doesn't touch the network or the `ucd/` inputs.
 
 Version `0.5.0-dev` in `main` (latest release: `v0.4.1`). Pre-1.0 in the literal
 sense: the API is allowed to change.
-Tracks a recent Zig dev build (`0.17.0-dev.657+2faf8debf` minimum); it does
+Tracks **Unicode 18.0.0** on `main` (see [Unicode version support](#unicode-version-support)
+for which releases carry which version).
+Tracks a recent Zig dev build (`0.17.0-dev.2320+1e770dbef` minimum); it does
 not build against stable 0.16. If your toolchain isn't on a current `master`,
 this will not compile, and that is the intended trade-off until Zig 0.17 lands.
 
@@ -160,18 +162,48 @@ All lookups are deduplicated two-level page tables — two array indexes per
 query — so the table cost stays small even though every submodule covers the
 whole code space.
 
-## Unicode version and regenerating the tables
+## Unicode version support
 
-The committed tables track the UCD files in `ucd/` (`UnicodeData.txt`,
-`DerivedCoreProperties.txt`, `BidiMirroring.txt`, `BidiBrackets.txt`, the
-break-property and -test files, etc.). To bump the Unicode version:
+Every release is built against exactly one Unicode version. The UCD inputs,
+the DUCET, the generated tables and the conformance vectors always move
+together.
 
-1. Replace the relevant files under `ucd/`.
-2. Run `zig build generate`. This rebuilds the deduplicated tables under each
-   submodule's `generated/` directory.
-3. Re-run the conformance suite (below).
+| Unicode | Releases | Commits on `main` |
+| ------- | -------- | ----------------- |
+| 17.0.0  | `v0.1.0` – `v0.4.1` | up to and including `f01d7e8` (last Unicode 17 commit) |
+| 18.0.0  | first release: `v0.5.0` (not yet tagged) | from the commit after `f01d7e8`, `feat(unicode)!: upgrade to Unicode 18.0.0`, onward |
 
-For day-to-day work, you don't need this — the generated files are checked in.
+To stay on Unicode 17, pin `v0.4.1` (or commit `f01d7e8`). Moving from 17 to 18
+changes more than the data tables. It also brings the Unicode 18 algorithm
+updates:
+
+- **Grapheme clusters (UAX #29, GB9c):** `\p{InCB=Linker} \p{InCB=Extend}* ×
+  \p{InCB=Consonant}`. The rule no longer requires a leading consonant.
+- **Line breaking (UAX #14, LB12a):** `[^SP HY HH] × GL`, which forbids a break
+  between BA and GL. Also, U+2012 and U+2013 are now BA, and U+00AD is now HH.
+- **Collation (UTS #10):** U+FFFE has the lowest primary weight and is not
+  variable. It also gets the minimal identical-level weight. Jurchen and Seal
+  receive siniform implicit weights.
+
+See [CHANGELOG.md](CHANGELOG.md) for the full list.
+
+## Regenerating the tables
+
+The tracked Unicode release is a single constant, `unicode_version`, at the
+top of `src/generate.zig`. To move to a new release:
+
+1. Set `unicode_version` (e.g. `"18.0.0"`).
+2. Run `zig build generate`. This **downloads** every input from
+   `https://www.unicode.org/Public/<version>/` (UCD, UCA, emoji data and the
+   conformance vectors). It rewrites the `ucd/` corpus in place and regenerates
+   each submodule's `generated/` tables.
+3. Run `zig build generate-ranges` to rebuild the enumerable range tables from
+   the new page tables.
+4. Re-run the conformance suite (below) and bring the algorithms up to date with
+   the new revisions of UAX #9, #14, #15, #29 and UTS #10.
+
+For day-to-day work you don't need any of this. The generated files and the
+`ucd/` corpus are checked in, so a normal build never touches the network.
 
 ## Building, testing, benchmarking
 
@@ -179,19 +211,21 @@ For day-to-day work, you don't need this — the generated files are checked in.
 # Build the placeholder executable.
 zig build
 
-# Run all tests (Debug). Note: the unicode sweeps are slow in Debug.
-zig build test
+# Run all tests. Use safe mode: the exhaustive unicode sweeps are slow in Debug.
+zig build test -Doptimize=safe
 
 # Run a specific suite. Selectors: all, encoding, transcoding, unicode, collation, utils, conformance.
-zig build test -Dinclude-test=unicode -Doptimize=ReleaseSafe
+zig build test -Dinclude-test=unicode -Doptimize=safe
 
 # Run the UCD conformance vectors.
-zig build test -Dinclude-test=conformance -Doptimize=ReleaseSafe
+zig build test -Dinclude-test=conformance -Doptimize=safe
 
-# Regenerate Unicode tables from ucd/.
+# Regenerate Unicode tables (downloads from unicode.org; see above).
 zig build generate
+zig build generate-ranges
 
-# Run benchmarks. Defaults to ReleaseFast for the library and the driver.
+# Run benchmarks. Defaults to `fast` for the library and the driver
+# (override with -Dbench-optimize=safe|small|debug).
 zig build bench
 zig build bench -- --list                 # list registered modules
 zig build bench -- encoding/utf8          # run one
@@ -251,7 +285,7 @@ src/
     tests/          CollationTest conformance + sort key serialization tests
   utils/           Internal helpers (search, slices). Not part of the public API.
 bench/             Benchmark driver, framework, corpora, per-module suites
-ucd/               Raw UCD inputs (only needed for `zig build generate`)
+ucd/               Unicode 18.0.0 UCD/UCA inputs and conformance vectors (written by `zig build generate`)
 licences/          Upstream licenses for bundled third-party code and data
 ```
 

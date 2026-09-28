@@ -99,11 +99,13 @@ pub const BoundaryState = struct {
     /// at `prev`: 1 = odd (an unpaired RI), 0 = even. Only the parity matters
     /// to GB12/GB13, so a single bit replaces a full counter.
     ri_run: u1 = 0,
-    /// True while the active position is still inside an InCB conjunct
-    /// sequence starting from an InCB=Consonant.
+    /// Deprecated: no longer read or written. Since Unicode 18.0, GB9c does
+    /// not require a leading InCB=Consonant, so this stays `false`. Kept so
+    /// code that names the field still compiles.
     in_consonant_run: bool = false,
-    /// Within the active conjunct sequence, whether an InCB=Linker has been
-    /// seen. GB9c requires at least one Linker between the two Consonants.
+    /// True when the code points just before the cursor match
+    /// `\p{InCB=Linker} \p{InCB=Extend}*`, the left context of GB9c. A
+    /// following InCB=Consonant then joins the cluster.
     in_linker_seen: bool = false,
     /// True while the active cluster contains an Extended_Pictographic
     /// followed only by Extend / ZWJ codepoints. Set by GB11 to bind the
@@ -157,9 +159,8 @@ pub fn checkBoundary(state: BoundaryState, cur: CodePoint) BoundaryDecision {
         if (cur_prop == .spacing_mark) break :decide false;
         // GB9b: Prepend ×
         if (prev == .prepend) break :decide false;
-        // GB9c: \p{InCB=Consonant} [\p{InCB=Extend}\p{InCB=Linker}]* \p{InCB=Linker}
-        //       [\p{InCB=Extend}\p{InCB=Linker}]* × \p{InCB=Consonant}
-        if (cur_incb == .consonant and state.in_consonant_run and state.in_linker_seen) break :decide false;
+        // GB9c: \p{InCB=Linker} \p{InCB=Extend}* × \p{InCB=Consonant}
+        if (cur_incb == .consonant and state.in_linker_seen) break :decide false;
         // GB11: \p{Extended_Pictographic} Extend* ZWJ × \p{Extended_Pictographic}
         if (prev == .zwj and state.ext_pict_active and cur_is_ext_pict) break :decide false;
         // GB12/GB13: RI × RI when the prior RI run length is odd. Odd means
@@ -179,27 +180,20 @@ pub fn checkBoundary(state: BoundaryState, cur: CodePoint) BoundaryDecision {
         new_state.ri_run = 0;
     }
 
-    // A break ends the active conjunct and pictographic contexts before we
-    // start tracking from the codepoint we just decided to break before.
-    if (should_break) {
-        new_state.in_consonant_run = false;
-        new_state.in_linker_seen = false;
-        new_state.ext_pict_active = false;
-    }
+    // A break ends the active pictographic context before we start tracking
+    // from the codepoint we just decided to break before.
+    if (should_break) new_state.ext_pict_active = false;
 
-    if (cur_incb == .consonant) {
-        new_state.in_consonant_run = true;
-        new_state.in_linker_seen = false;
-    } else if (new_state.in_consonant_run) {
-        switch (cur_incb) {
-            .linker => new_state.in_linker_seen = true,
-            .extend => {},
-            else => {
-                new_state.in_consonant_run = false;
-                new_state.in_linker_seen = false;
-            },
-        }
-    }
+    // GB9c's left context depends only on the preceding code points, not on
+    // earlier boundaries. A Linker arms it, InCB=Extend keeps it armed, and
+    // anything else (a Consonant included) disarms it. So a Linker that
+    // starts a cluster (at sot, or after a control) still binds the next
+    // Consonant.
+    new_state.in_linker_seen = switch (cur_incb) {
+        .linker => true,
+        .extend => state.in_linker_seen,
+        .consonant, .none => false,
+    };
 
     // Track GB11's `Extended_Pictographic Extend* ZWJ` prefix. Extended_Pict
     // arms it; Extend/ZWJ keep it armed; anything else disarms it.
@@ -1843,9 +1837,9 @@ fn lineStepRules(state: LineStepState, cur_cp: CodePoint, cur_raw: LBProp, cur_r
     // LB12: GL ×
     if (allow_break and prev == .gl) allow_break = false;
 
-    // LB12a: [^SP BA HY HH] × GL
+    // LB12a: [^SP HY HH] × GL (BA dropped from the exceptions in Unicode 18)
     if (allow_break and cur_res == .gl) switch (prev) {
-        .sp, .ba, .hy, .hh => {},
+        .sp, .hy, .hh => {},
         else => allow_break = false,
     };
 
@@ -2212,8 +2206,8 @@ fn lb28aMatchesStream(
 }
 
 /// Compute line-break classification for a sequence of code points,
-/// implementing the full UAX #14 line-break algorithm (Unicode 17.0,
-/// rev 55). `out[i]` describes the boundary BEFORE `code_points[i]`:
+/// implementing the full UAX #14 line-break algorithm (Unicode 18.0,
+/// rev 57). `out[i]` describes the boundary BEFORE `code_points[i]`:
 /// `.prohibited` (× rules), `.opportunity` (÷ rules), or `.mandatory`
 /// (LB4/LB5 forced breaks, and LB3 at end-of-text).
 ///
@@ -2631,6 +2625,87 @@ test "grapheme: GB9c does NOT apply when there is no Linker between Consonants" 
     try testing.expect(it.next() == null);
 }
 
+test "grapheme: GB9c (Unicode 18) needs no leading Consonant before the Linker" {
+    // Unicode 17 required `Consonant ... Linker ... × Consonant`; 18 only
+    // needs `Linker Extend* × Consonant`. Each case below broke before the
+    // final KA under the 17 rule.
+    const cases = [_][]const u8{
+        "\u{094D}\u{0915}", // sot, Linker, Consonant (GraphemeBreakTest line 179)
+        "\u{094D}\u{200D}\u{0915}", // Linker, Extend (ZWJ), Consonant
+        "a\u{094D}\u{0915}", // non-InCB base + Linker (GB9), then GB9c
+        "\u{094D}\u{094D}\u{0915}", // repeated Linker
+    };
+    for (cases) |data| {
+        var it = iterator(data);
+        try testing.expectEqualStrings(data, it.next().?);
+        try testing.expect(it.next() == null);
+    }
+    // A Linker opening a cluster after a control still binds the Consonant:
+    // GB4 breaks after the LF, GB9c then joins KA to the Linker.
+    var it = iterator("\n\u{094D}\u{0915}");
+    try testing.expectEqualStrings("\n", it.next().?);
+    try testing.expectEqualStrings("\u{094D}\u{0915}", it.next().?);
+    try testing.expect(it.next() == null);
+}
+
+test "grapheme: GB9c is disarmed by anything that is not InCB=Extend" {
+    // Linker, then a non-InCB code point, then Consonant: the left context no
+    // longer ends in `Linker Extend*`, so the Consonant starts a new cluster.
+    try testing.expectEqual(InCB.none, inCB(0x0903)); // DEVANAGARI SIGN VISARGA (SpacingMark)
+    var it = iterator("\u{0915}\u{094D}\u{0903}\u{0924}");
+    try testing.expectEqualStrings("\u{0915}\u{094D}\u{0903}", it.next().?);
+    try testing.expectEqualStrings("\u{0924}", it.next().?);
+    try testing.expect(it.next() == null);
+
+    // A Consonant also disarms it: Linker C C breaks before the second C.
+    it = iterator("\u{094D}\u{0915}\u{0924}");
+    try testing.expectEqualStrings("\u{094D}\u{0915}", it.next().?);
+    try testing.expectEqualStrings("\u{0924}", it.next().?);
+    try testing.expect(it.next() == null);
+}
+
+test "grapheme: GB9c exhaustive over every Linker, Extend and Consonant" {
+    var linkers: std.ArrayList(CodePoint) = .empty;
+    defer linkers.deinit(testing.allocator);
+    var consonants: std.ArrayList(CodePoint) = .empty;
+    defer consonants.deinit(testing.allocator);
+    var extends: std.ArrayList(CodePoint) = .empty;
+    defer extends.deinit(testing.allocator);
+
+    var cp: CodePoint = 0;
+    while (cp <= 0x10FFFF) : (cp += 1) {
+        if (cp >= 0xD800 and cp <= 0xDFFF) continue;
+        switch (inCB(cp)) {
+            .linker => try linkers.append(testing.allocator, cp),
+            .consonant => try consonants.append(testing.allocator, cp),
+            .extend => try extends.append(testing.allocator, cp),
+            .none => {},
+        }
+    }
+    try testing.expect(linkers.items.len > 0);
+    try testing.expect(consonants.items.len > 0);
+    try testing.expect(extends.items.len > 0);
+
+    for (linkers.items) |l| {
+        // Linker × Consonant, from sot.
+        for (consonants.items) |c| {
+            try testing.expectEqual(@as(usize, 1), countGraphemesFromCodePoints(&.{ l, c }));
+        }
+        // Linker Extend × Consonant, for every Extend (one Consonant suffices:
+        // the Consonant side was covered exhaustively above).
+        const c0 = consonants.items[0];
+        for (extends.items) |e| {
+            try testing.expectEqual(@as(usize, 1), countGraphemesFromCodePoints(&.{ l, e, c0 }));
+        }
+    }
+    // Without a Linker, Consonant Extend Consonant breaks before the second
+    // Consonant, for every Extend.
+    const c0 = consonants.items[0];
+    for (extends.items) |e| {
+        try testing.expectEqual(@as(usize, 2), countGraphemesFromCodePoints(&.{ c0, e, c0 }));
+    }
+}
+
 test "grapheme: GB12 / GB13 Regional Indicator pairing" {
     {
         const data = "\u{1F1FA}\u{1F1F8}";
@@ -2738,6 +2813,13 @@ test "grapheme: checkBoundary at sot always reports a break and primes prev" {
     try testing.expect(!decision.new_state.in_consonant_run);
     try testing.expect(!decision.new_state.in_linker_seen);
     try testing.expect(!decision.new_state.ext_pict_active);
+
+    // A Linker at sot arms GB9c even though it breaks (and has no leading
+    // Consonant); the deprecated `in_consonant_run` stays false.
+    const linker = checkBoundary(.{}, 0x094D);
+    try testing.expect(linker.should_break);
+    try testing.expect(linker.new_state.in_linker_seen);
+    try testing.expect(!linker.new_state.in_consonant_run);
 }
 
 test "grapheme: RI parity flips correctly across many indicators" {
@@ -2941,6 +3023,58 @@ test "line break: CR LF stays together; lone CR is still mandatory" {
         defer testing.allocator.free(got);
         try testing.expectEqual(LineBreakKind.mandatory, got[2]); // lone CR is LB5 mandatory
     }
+}
+
+test "line break: LB12a (Unicode 18) forbids a break between BA and GL" {
+    // Unicode 18 moved FIGURE DASH and EN DASH from HH to BA, and SOFT HYPHEN
+    // from BA to HH.
+    try testing.expectEqual(LineBreak.ba, lineBreak(0x2012)); // FIGURE DASH
+    try testing.expectEqual(LineBreak.ba, lineBreak(0x2013)); // EN DASH
+    try testing.expectEqual(LineBreak.hh, lineBreak(0x00AD)); // SOFT HYPHEN
+
+    // EN DASH + NBSP: an opportunity under Unicode 17, prohibited under 18.
+    {
+        const cps = [_]CodePoint{ 'a', 0x2013, 0x00A0, 'b' };
+        const got = try computeLineBoundaries(testing.allocator, &cps);
+        defer testing.allocator.free(got);
+        try testing.expectEqual(LineBreakKind.prohibited, got[2]); // BA × GL (LB12a)
+    }
+    // The remaining exceptions still allow the break: SP, HY and HH.
+    const allowed = [_]CodePoint{ ' ', '-', 0x00AD };
+    for (allowed) |before| {
+        const cps = [_]CodePoint{ 'a', before, 0x00A0, 'b' };
+        const got = try computeLineBoundaries(testing.allocator, &cps);
+        defer testing.allocator.free(got);
+        try testing.expectEqual(LineBreakKind.opportunity, got[2]);
+    }
+}
+
+test "line break: LB12a exhaustive over every BA and every GL" {
+    var cp: CodePoint = 0;
+    var ba_count: usize = 0;
+    var gl_count: usize = 0;
+    while (cp <= 0x10FFFF) : (cp += 1) {
+        if (cp >= 0xD800 and cp <= 0xDFFF) continue;
+        switch (lineBreak(cp)) {
+            .ba => {
+                ba_count += 1;
+                const cps = [_]CodePoint{ cp, 0x00A0 };
+                const got = try computeLineBoundaries(testing.allocator, &cps);
+                defer testing.allocator.free(got);
+                try testing.expectEqual(LineBreakKind.prohibited, got[1]);
+            },
+            .gl => {
+                gl_count += 1;
+                const cps = [_]CodePoint{ 0x2013, cp };
+                const got = try computeLineBoundaries(testing.allocator, &cps);
+                defer testing.allocator.free(got);
+                try testing.expectEqual(LineBreakKind.prohibited, got[1]);
+            },
+            else => {},
+        }
+    }
+    try testing.expect(ba_count > 0);
+    try testing.expect(gl_count > 0);
 }
 
 test "line break: BK forces mandatory break (LB4)" {

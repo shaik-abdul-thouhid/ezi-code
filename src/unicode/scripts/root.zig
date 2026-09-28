@@ -109,6 +109,17 @@ test "scriptType: representative codepoints across common, latin, inherited, han
     try testing.expectEqual(ScriptType.cyrillic, scriptType(0x0410)); // CYRILLIC CAPITAL LETTER A
 }
 
+test "scriptType: scripts new in Unicode 18.0" {
+    try testing.expectEqual(ScriptType.jurchen, scriptType(0x18E00)); // JURCHEN CHARACTER-18E00
+    try testing.expectEqual(ScriptType.jurchen, scriptType(0x191A0)); // JURCHEN RADICAL-01
+    try testing.expectEqual(ScriptType.proto_cuneiform, scriptType(0x125A8)); // CUNEIFORM NUMERIC SIGN ONE N56
+    try testing.expectEqual(ScriptType.seal, scriptType(0x3D000)); // SMALL SEAL CHARACTER-3D000
+    try testing.expectEqual(ScriptType.seal, scriptType(0x3FC3F)); // SMALL SEAL CHARACTER-3FC3F
+    try testing.expectEqual(ScriptType.jurchen, fromAbbreviation("Jurc").?);
+    try testing.expectEqual(ScriptType.proto_cuneiform, fromAbbreviation("Pcun").?);
+    try testing.expectEqual(ScriptType.seal, fromAbbreviation("Seal").?);
+}
+
 test "scriptType: unassigned and out-of-range resolve to unknown, never trap" {
     try testing.expectEqual(ScriptType.unknown, scriptType(0x0378)); // unassigned in Latin-1 area
     try testing.expectEqual(ScriptType.unknown, scriptType(0x10FFFF)); // last valid scalar (unassigned)

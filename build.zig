@@ -137,7 +137,7 @@ pub fn build(b: *std.Build) !void {
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/generate_ranges.zig"),
             .target = target,
-            .optimize = .ReleaseFast,
+            .optimize = .fast,
             .imports = &.{root},
         }),
     });
@@ -234,9 +234,9 @@ pub fn build(b: *std.Build) !void {
     // `bench_optimize` so library code is compiled with the same optimization
     // as the benchmark driver. Honor `-Dbench-optimize=...` to override.
     const bench_optimize = b.option(
-        std.builtin.OptimizeMode,
+        std.lang.Optimize,
         "bench-optimize",
-        "Optimization level for the bench executable (default ReleaseFast)",
+        "Optimization level for the bench executable (default fast)",
     ) orelse .fast;
 
     const bench_utils_module = b.createModule(.{

@@ -114,7 +114,7 @@ pub const Key = struct {
         if (options.strength == .tertiary) return len;
         if (options.variable_weighting == .shifted) len += 2 + self.quaternary.items.len * 2;
         if (options.strength == .quaternary) return len;
-        // identical: 2-byte separator + NFD codepoints encoded as 3-byte big-endian each
+        // identical: 2-byte separator + one 3-byte big-endian identical weight per NFD code point
         len += 2 + self.nfd.items.len * 3;
         return len;
     }
@@ -124,7 +124,9 @@ pub const Key = struct {
     ///
     /// Format: big-endian u16 weight sequences separated by 0x0000 level markers,
     /// one per strength level included by `options`. The identical level appends
-    /// NFD codepoints as 3-byte big-endian values after the final separator.
+    /// one 3-byte big-endian weight per NFD code point after the final
+    /// separator: U+FFFE is 0 (the minimal weight UCA 18 requires), and every
+    /// other code point is its value plus one.
     /// Two sort keys produced with the same options compare with `std.mem.order`
     /// exactly as `Collator.compareKeys` would compare the originating `Key` values.
     ///
@@ -176,9 +178,10 @@ pub const Key = struct {
         buf[pos + 1] = 0;
         pos += 2;
         for (self.nfd.items) |cp| {
-            buf[pos] = @intCast(cp >> 16);
-            buf[pos + 1] = @intCast((cp >> 8) & 0xFF);
-            buf[pos + 2] = @intCast(cp & 0xFF);
+            const w = identicalWeight(cp);
+            buf[pos] = @intCast(w >> 16);
+            buf[pos + 1] = @intCast((w >> 8) & 0xFF);
+            buf[pos + 2] = @intCast(w & 0xFF);
             pos += 3;
         }
         return buf[0..pos];
@@ -248,9 +251,10 @@ pub const Key = struct {
         try writer.writeByte(0);
         n += 2;
         for (self.nfd.items) |cp| {
-            try writer.writeByte(@intCast(cp >> 16));
-            try writer.writeByte(@intCast((cp >> 8) & 0xFF));
-            try writer.writeByte(@intCast(cp & 0xFF));
+            const w = identicalWeight(cp);
+            try writer.writeByte(@intCast(w >> 16));
+            try writer.writeByte(@intCast((w >> 8) & 0xFF));
+            try writer.writeByte(@intCast(w & 0xFF));
             n += 3;
         }
         return n;
@@ -844,17 +848,30 @@ fn orderU16Slices(a: []const u16, b: []const u16) Order {
     return std.math.order(a.len, b.len);
 }
 
+/// Identical-level weight of an NFD code point. Since UCA 18.0, U+FFFE must
+/// get a minimal, unique weight on the identical level (UTS #10, Reserved
+/// Weights), so that `a ++ "\u{FFFE}" ++ b` sorts like merging the keys of `a`
+/// and `b`. U+FFFE therefore maps to 0, and every other code point to its value
+/// plus one. Order among other code points is unchanged, and the largest weight
+/// (0x110000) still fits the 3-byte serialized form.
+inline fn identicalWeight(cp: CodePoint) u24 {
+    return if (cp == 0xFFFE) 0 else @as(u24, cp) + 1;
+}
+
+/// Identical-level order of two NFD code-point sequences: element-wise by
+/// `identicalWeight`, exhausted-first sorts first.
 fn orderCodePointSlices(a: []const CodePoint, b: []const CodePoint) Order {
     const n = @min(a.len, b.len);
     for (a[0..n], b[0..n]) |x, y| {
-        if (x < y) return .lt;
-        if (x > y) return .gt;
+        const order = std.math.order(identicalWeight(x), identicalWeight(y));
+        if (order != .eq) return order;
     }
     return std.math.order(a.len, b.len);
 }
 
 fn implicitWeights(cp: CodePoint) struct { aaaa: u16, bbbb: u16 } {
-    // Siniform ideographic scripts (Tangut, Nushu, Khitan Small Script).
+    // Siniform ideographic scripts (Tangut, Nushu, Khitan Small Script, and
+    // since UCA 18.0 Jurchen and Seal). Ranges and bases come from allkeys.txt.
     for (ducet.implicit_ranges) |range| {
         if (cp >= range.start and cp <= range.end) {
             const offset: u16 = @intCast(cp - range.origin);
@@ -1149,4 +1166,116 @@ test "collation F1: buildKey emits non-empty keys for contraction and implicit-w
     defer allocator.free(implicit_bytes);
     try testing.expect(implicit_bytes.len > 0);
     try testing.expectEqual(Order.eq, collator.compareKeys(&key, &key));
+}
+
+/// Compares `a` and `b` through all three paths (key, incremental, serialized
+/// key) and checks they agree on `expected`.
+fn expectOrderAllPaths(collator: Collator, a: []const CodePoint, b: []const CodePoint, expected: Order) !void {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    try testing.expectEqual(expected, try collator.compareCodePoints(allocator, a, b));
+    try testing.expectEqual(expected, try collator.compareCodePointsIncremental(allocator, a, b));
+
+    const ka = try collator.sortKeyAlloc(allocator, a);
+    defer allocator.free(ka);
+    const kb = try collator.sortKeyAlloc(allocator, b);
+    defer allocator.free(kb);
+    try testing.expectEqual(expected, compareSerializedKeys(ka, kb));
+}
+
+test "collation (UCA 18): U+FFFE has the minimal identical-level weight" {
+    const weightings = [_]VariableWeighting{ .non_ignorable, .shifted };
+    for (weightings) |vw| {
+        const collator = Collator.init(.{ .strength = .identical, .variable_weighting = vw });
+
+        // U+0000, U+0001 and U+1D165 are completely ignorable, so each pair
+        // ties through the lower levels and the identical level decides. U+FFFE
+        // must sort below every other code point, U+0000 included. Under
+        // plain code-point order (UCA 17) every one of these was `.gt`.
+        try expectOrderAllPaths(collator, &.{0xFFFE}, &.{ 0x0000, 0xFFFE }, .lt);
+        try expectOrderAllPaths(
+            collator,
+            &.{ 0x006C, 0xFFFE, 0x1D165, 0x0066, 0x0032, 0x0061 },
+            &.{ 0x006C, 0x0001, 0xFFFE, 0x0066, 0x0032, 0x0061 },
+            .lt,
+        ); // CollationTest_NON_IGNORABLE_SHORT.txt lines 71245/71246
+        try expectOrderAllPaths(collator, &.{ 'a', 0xFFFE, 0x0001, 'b' }, &.{ 'a', 0x0001, 0xFFFE, 'b' }, .lt);
+
+        // Unique: U+FFFE never ties with another code point at identical strength.
+        try expectOrderAllPaths(collator, &.{0xFFFE}, &.{0xFFFE}, .eq);
+    }
+}
+
+test "collation (UCA 18): U+FFFE separates fields like merged sort keys" {
+    // last_name + U+FFFE + first_name: U+FFFE has the lowest primary (0200)
+    // and is not variable, so "Smith|John" sorts before "Smithson|Al" at every
+    // strength, and SHIFTED does not make the separator ignorable. Under UCA 17
+    // U+FFFE took a high implicit weight and this order was reversed.
+    const smith = [_]CodePoint{ 'S', 'm', 'i', 't', 'h', 0xFFFE, 'J', 'o', 'h', 'n' };
+    const smithson = [_]CodePoint{ 'S', 'm', 'i', 't', 'h', 's', 'o', 'n', 0xFFFE, 'A', 'l' };
+
+    const strengths = [_]Strength{ .primary, .secondary, .tertiary, .quaternary, .identical };
+    const weightings = [_]VariableWeighting{ .non_ignorable, .shifted };
+    for (weightings) |vw| {
+        for (strengths) |st| {
+            const collator = Collator.init(.{ .strength = st, .variable_weighting = vw });
+            try expectOrderAllPaths(collator, &smith, &smithson, .lt);
+            // Not ignorable under SHIFTED: "ab" + FFFE + "c" differs from "abc".
+            try expectOrderAllPaths(collator, &.{ 'a', 'b', 0xFFFE, 'c' }, &.{ 'a', 'b', 'c' }, .lt);
+        }
+    }
+}
+
+test "collation (UCA 18): U+FFFF has the highest primary weight" {
+    // "Sch" <= X <= "Sch" + U+FFFF for every X that starts with "Sch". Under
+    // UCA 17, U+FFFF took an implicit weight (FBC1) that sorted below the
+    // implicit weights of higher unassigned code points such as U+10FFFD.
+    const collator = Collator.init(.{});
+    const upper = [_]CodePoint{ 'S', 'c', 'h', 0xFFFF };
+    const inside = [_][]const CodePoint{
+        &.{ 'S', 'c', 'h', 'z', 'z', 'z' },
+        &.{ 'S', 'c', 'h', 0x00FC }, // ü
+        &.{ 'S', 'c', 'h', 0x4E2D }, // 中 (Han implicit weight)
+        &.{ 'S', 'c', 'h', 0x10FFFD }, // private use (unassigned implicit weight)
+        &.{ 'S', 'c', 'h', 0xFFFD }, // REPLACEMENT CHARACTER (primary FFFD)
+    };
+    for (inside) |x| {
+        try expectOrderAllPaths(collator, x, &upper, .lt);
+    }
+}
+
+test "collation (UCA 18): Jurchen and Seal take siniform implicit weights" {
+    const testing = std.testing;
+
+    // Base and origin come from the new @implicitweights lines in allkeys.txt:
+    // 18E00..191DF -> FB04 (Jurchen), 3D000..3FC3F -> FB05 (Seal).
+    const cases = [_]struct { cp: CodePoint, aaaa: u16, bbbb: u16 }{
+        .{ .cp = 0x18E00, .aaaa = 0xFB04, .bbbb = 0x8000 },
+        .{ .cp = 0x191DF, .aaaa = 0xFB04, .bbbb = 0x8000 | 0x03DF },
+        .{ .cp = 0x3D000, .aaaa = 0xFB05, .bbbb = 0x8000 },
+        .{ .cp = 0x3FC3F, .aaaa = 0xFB05, .bbbb = 0x8000 | 0x2C3F },
+        // Han from U+30000 up: AAAA is FB86 (UTS #10 rev 55 corrected the
+        // documented maximum from FB85).
+        .{ .cp = 0x30000, .aaaa = 0xFB86, .bbbb = 0x8000 },
+    };
+    const allocator = testing.allocator;
+    const collator = Collator.init(.{});
+    var key: Key = .{};
+    defer key.deinit(allocator);
+    for (cases) |c| {
+        const w = implicitWeights(c.cp);
+        try testing.expectEqual(c.aaaa, w.aaaa);
+        try testing.expectEqual(c.bbbb, w.bbbb);
+
+        // And the key path really uses them: no explicit DUCET mapping exists.
+        try collator.buildKey(allocator, &.{c.cp}, &key);
+        try testing.expectEqualSlices(u16, &.{ c.aaaa, c.bbbb }, key.primaryWeights());
+    }
+
+    // Consecutive Jurchen / Seal code points keep code-point order.
+    try expectOrderAllPaths(collator, &.{0x18E00}, &.{0x18E01}, .lt);
+    try expectOrderAllPaths(collator, &.{0x3D000}, &.{0x3D001}, .lt);
+    // Jurchen (FB04) sorts before Seal (FB05).
+    try expectOrderAllPaths(collator, &.{0x191DF}, &.{0x3D000}, .lt);
 }

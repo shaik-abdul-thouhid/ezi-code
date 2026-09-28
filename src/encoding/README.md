@@ -158,6 +158,6 @@ specific to the encoding you're working with.
 ## Running the tests
 
 ```
-zig build test -Dinclude-test=encoding                      # Debug
-zig build test -Dinclude-test=encoding -Dinclude-test=unicode -Doptimize=ReleaseSafe
+zig build test -Dinclude-test=encoding -Doptimize=safe
+zig build test -Dinclude-test=encoding -Dinclude-test=unicode -Doptimize=safe
 ```

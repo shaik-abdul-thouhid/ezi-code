@@ -45,6 +45,22 @@ test "block: representative codepoints across planes" {
     try testing.expectEqual(Block.supplementary_private_use_area_b, block(0x10FFFF));
 }
 
+test "block: blocks new in Unicode 18.0" {
+    const cases = [_]struct { cp: CodePoint, block: Block, name: []const u8 }{
+        .{ .cp = 0x11DF0, .block = .bengali_supplement, .name = "Bengali Supplement" },
+        .{ .cp = 0x12550, .block = .archaic_cuneiform_numerals, .name = "Archaic Cuneiform Numerals" },
+        .{ .cp = 0x18E00, .block = .jurchen, .name = "Jurchen" },
+        .{ .cp = 0x191DF, .block = .jurchen_radicals, .name = "Jurchen Radicals" },
+        .{ .cp = 0x1D250, .block = .musical_symbols_supplement, .name = "Musical Symbols Supplement" },
+        .{ .cp = 0x1DB10, .block = .miscellaneous_symbolsand_arrows_extended, .name = "Miscellaneous Symbols and Arrows Extended" },
+        .{ .cp = 0x3FC3F, .block = .seal, .name = "Seal" },
+    };
+    for (cases) |c| {
+        try testing.expectEqual(c.block, block(c.cp));
+        try testing.expectEqualStrings(c.name, blockName(c.block));
+    }
+}
+
 test "block: membership is positional, not assignment-based" {
     // U+0378 is unassigned but still inside the Greek and Coptic block.
     try testing.expect(block(0x0378) != .no_block);

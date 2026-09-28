@@ -91,6 +91,5 @@ pull scalars with `nextCodePoint` / `nextCodePointLossy`. The interesting parts:
 ## Running the tests
 
 ```
-zig build test -Dinclude-test=transcoding                      # Debug
-zig build test -Dinclude-test=transcoding -Doptimize=ReleaseSafe
+zig build test -Dinclude-test=transcoding -Doptimize=safe
 ```

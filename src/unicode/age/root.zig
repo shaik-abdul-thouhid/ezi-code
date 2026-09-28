@@ -65,22 +65,33 @@ test "age: ASCII and Latin-1 are Unicode 1.1" {
 test "age: later assignments carry their introducing version" {
     try testing.expectEqual(Age.v10_0, age(0x20BF)); // BITCOIN SIGN (Unicode 10.0)
 
-    // At least one codepoint must be tagged with the newest version (17.0);
-    // find it by scanning rather than hardcoding a fragile sample.
-    var found_v17 = false;
+    try testing.expectEqual(Age.v18_0, age(0x20C2)); // RUFIYAA SIGN (Unicode 18.0)
+    try testing.expectEqual(Age.v18_0, age(0x2E62)); // LEFT PARENTHESIS WITH MIDDLE RING (Unicode 18.0)
+
+    // At least one codepoint must be tagged with the newest version (18.0);
+    // find it by scanning rather than relying only on the samples above.
+    var found_v18 = false;
     var cp: CodePoint = 0;
     while (cp <= 0x10FFFF) : (cp += 1) {
-        if (age(cp) == .v17_0) {
-            found_v17 = true;
-            try testing.expectEqual(@as(?Version, .{ .major = 17, .minor = 0 }), assignedIn(cp));
+        if (age(cp) == .v18_0) {
+            found_v18 = true;
+            try testing.expectEqual(@as(?Version, .{ .major = 18, .minor = 0 }), assignedIn(cp));
             break;
         }
     }
-    try testing.expect(found_v17);
+    try testing.expect(found_v18);
+}
+
+test "age: the newest Age variant is the tracked Unicode version (18.0)" {
+    // Pins the generated tables to the Unicode release the library claims to
+    // track; a stale or mixed-version `zig build generate` fails here.
+    const fields = @typeInfo(Age).@"enum".field_values;
+    const newest: Age = @enumFromInt(fields[fields.len - 1]);
+    try testing.expectEqual(Age.v18_0, newest);
 }
 
 test "age: unassigned codepoints and out-of-range are .unassigned" {
-    try testing.expectEqual(Age.unassigned, age(0x0378)); // unassigned in Unicode 17
+    try testing.expectEqual(Age.unassigned, age(0x0378)); // unassigned in Unicode 18
     try testing.expectEqual(Age.unassigned, age(0x110000));
     try testing.expectEqual(Age.unassigned, age(0x1FFFFF));
     try testing.expectEqual(@as(?Version, null), assignedIn(0x0378));
@@ -92,6 +103,7 @@ test "version: round-trips and unassigned maps to null" {
     try testing.expectEqual(@as(?Version, .{ .major = 1, .minor = 1 }), version(.v1_1));
     try testing.expectEqual(@as(?Version, .{ .major = 10, .minor = 0 }), version(.v10_0));
     try testing.expectEqual(@as(?Version, .{ .major = 17, .minor = 0 }), version(.v17_0));
+    try testing.expectEqual(@as(?Version, .{ .major = 18, .minor = 0 }), version(.v18_0));
     try testing.expectEqual(@as(?Version, null), version(.unassigned));
 }
 
