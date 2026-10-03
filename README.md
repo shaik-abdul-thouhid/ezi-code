@@ -18,7 +18,7 @@ committed, so a normal build doesn't touch the network or the `ucd/` inputs.
 
 ## Status
 
-Version `0.6.0-dev` in `main` (latest release: `v0.5.0`). Pre-1.0 in the literal
+Version `0.6.0`. Pre-1.0 in the literal
 sense: the API is allowed to change.
 Tracks **Unicode 18.0.0** (see [Unicode version support](#unicode-version-support)
 for which releases carry which version).
@@ -36,17 +36,17 @@ adversarial test set you'd expect for UAX #9.
 Via git ref (resolves the tag at fetch time):
 
 ```sh
-zig fetch --save git+https://github.com/shaik-abdul-thouhid/ezi-code.git#v0.5.0
+zig fetch --save git+https://github.com/shaik-abdul-thouhid/ezi-code.git#v0.6.0
 ```
 
 Or via plain HTTP tarball (pins the content hash in `build.zig.zon`):
 
 ```sh
-zig fetch --save https://github.com/shaik-abdul-thouhid/ezi-code/archive/refs/tags/v0.5.0.tar.gz
+zig fetch --save https://github.com/shaik-abdul-thouhid/ezi-code/archive/refs/tags/v0.6.0.tar.gz
 ```
 
-`v0.5.0` tracks Unicode 18.0.0. To stay on Unicode 17.0.0, fetch `v0.4.1`
-instead (see [Unicode version support](#unicode-version-support)).
+`v0.6.0` tracks Unicode 18.0.0 and needs Zig 0.17.0. To stay on Unicode 17.0.0,
+fetch `v0.4.1` instead (see [Unicode version support](#unicode-version-support)).
 
 Then in `build.zig`:
 
