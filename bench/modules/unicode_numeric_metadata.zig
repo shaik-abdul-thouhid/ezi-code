@@ -57,7 +57,7 @@ fn caseNumericType(ctx: *Context) !RunResult {
     var n: u32 = 0;
     while (n < inner) : (n += 1) {
         for (cps) |cp| {
-            accum +%= @intFromEnum(numeric.numericType(cp));
+            accum +%= @backingInt(numeric.numericType(cp));
             ops += 1;
         }
     }
@@ -87,7 +87,7 @@ fn caseBlock(ctx: *Context) !RunResult {
     var n: u32 = 0;
     while (n < inner) : (n += 1) {
         for (cps) |cp| {
-            accum +%= @intFromEnum(blocks.block(cp));
+            accum +%= @backingInt(blocks.block(cp));
             ops += 1;
         }
     }
@@ -102,7 +102,7 @@ fn caseHangulSyllableType(ctx: *Context) !RunResult {
     var n: u32 = 0;
     while (n < inner) : (n += 1) {
         for (cps) |cp| {
-            accum +%= @intFromEnum(hangul.hangulSyllableType(cp));
+            accum +%= @backingInt(hangul.hangulSyllableType(cp));
             ops += 1;
         }
     }
@@ -117,7 +117,7 @@ fn caseAge(ctx: *Context) !RunResult {
     var n: u32 = 0;
     while (n < inner) : (n += 1) {
         for (cps) |cp| {
-            accum +%= @intFromEnum(age_mod.age(cp));
+            accum +%= @backingInt(age_mod.age(cp));
             ops += 1;
         }
     }

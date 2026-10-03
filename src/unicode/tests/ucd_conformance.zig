@@ -338,7 +338,7 @@ test "ucd hostile: DerivedCoreProperties bitset matches every scalar, not just c
         const range = try parseRange(split.next() orelse return error.BadDerivedCorePropertiesLine);
         const property_label = split.next() orelse return error.BadDerivedCorePropertiesLine;
         const property = propertyFromDcpLabel(property_label) orelse return error.UnknownDerivedCoreProperty;
-        const bit = @intFromEnum(property);
+        const bit = @backingInt(property);
 
         for (@as(usize, range.start)..@as(usize, range.end) + 1) |cp_usize| {
             expected[cp_usize] |= bit;
@@ -2440,7 +2440,7 @@ test "ucd hostile: ScriptExtensions.txt set matches scriptExtensions for every c
         // plain element-wise comparison suffices.
         std.mem.sort(ScriptType, list.items, {}, struct {
             fn lessThan(_: void, a: ScriptType, b: ScriptType) bool {
-                return @intFromEnum(a) < @intFromEnum(b);
+                return @backingInt(a) < @backingInt(b);
             }
         }.lessThan);
 

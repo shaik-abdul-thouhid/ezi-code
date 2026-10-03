@@ -63,7 +63,7 @@ pub const CanonicalCombiningClass = enum(u8) {
     _,
 
     pub fn fromU8(c: u8) CanonicalCombiningClass {
-        return @enumFromInt(c);
+        return @fromBackingInt(c);
     }
 };
 

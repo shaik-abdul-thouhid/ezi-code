@@ -235,7 +235,7 @@ pub fn codePointLenLossy(byte: u8) u3 {
 /// The caller needs to make sure a valid code point is
 /// passed as an argument.
 ///
-/// - code_point > 0x10FFFF -> triggers unreachable (UB in ReleaseFast)
+/// - code_point > 0x10FFFF -> triggers unreachable (UB in `fast`)
 /// - code_point in surrogate range (0xD800-0xDFFF) -> silently returns 3, no unreachable
 ///
 /// @stable-since: v0.1.0
@@ -437,8 +437,8 @@ pub fn validateAndDecodeCodePointBytesLossy(bytes: []const u8, offset: usize) UT
 /// `validateAndDecodeCodePointBytesLossy`.
 ///
 /// Contract: `offset < bytes.len`. The precondition is asserted
-/// (safety-checked: traps in Debug/ReleaseSafe, undefined in
-/// ReleaseFast/ReleaseSmall); it is never reported as an error. The returned
+/// (safety-checked: traps in `debug`/`safe`, undefined in
+/// `fast`/`small`); it is never reported as an error. The returned
 /// `len` is always >= 1, so a forward scan that advances its cursor by `len`
 /// is guaranteed to make progress.
 ///
@@ -500,7 +500,7 @@ pub fn codePointLenReverse(bytes: []const u8, end_index: usize) UTF8ValidationEr
 ///
 /// Contract: `end_index < bytes.len` and `bytes` is valid UTF-8 around
 /// `end_index`. Preconditions are asserted / safety-checked (trap in
-/// Debug/ReleaseSafe, undefined in ReleaseFast/ReleaseSmall), never
+/// `debug`/`safe`, undefined in `fast`/`small`), never
 /// error-returned. Use the checked `codePointLenReverse` when the bytes'
 /// validity is uncertain. To decode and get the len of the bytes consumed, use
 /// `validateAndDecodeCodePointBytesReverse`.
@@ -639,7 +639,7 @@ pub fn encodeCodePoint(code_point: CodePoint, bytes: []u8) UTF8EncodeError!u3 {
 /// invariant is uncertain.
 ///
 /// Note: **a buffer shorter than the encoded length triggers `unreachable`
-/// (checked illegal behavior in safe builds, UB in `ReleaseFast`).**
+/// (checked illegal behavior in safe builds, UB in `fast`).**
 ///
 /// @stable-since: v0.2.0
 pub fn encodeCodePointUnchecked(code_point: CodePoint, bytes: []u8) u3 {
@@ -721,7 +721,7 @@ pub fn encodeCodePointsAlloc(allocator: std.mem.Allocator, code_points: []const 
 ///
 /// Contract: `end_index < bytes.len` and `bytes` is valid UTF-8 around
 /// `end_index`. Preconditions are asserted / safety-checked (trap in
-/// Debug/ReleaseSafe, undefined in ReleaseFast/ReleaseSmall), never panicked
+/// `debug`/`safe`, undefined in `fast`/`small`), never panicked
 /// or error-returned.
 ///
 /// @stable-since: v0.1.0
@@ -740,8 +740,8 @@ pub fn decodeCodePointReverseUnchecked(bytes: []const u8, end_index: usize) Deco
 ///
 /// Contract: `offset < bytes.len`, `offset` is a code point boundary, and
 /// `bytes` is valid UTF-8 at `offset`. Preconditions are asserted /
-/// safety-checked (trap in Debug/ReleaseSafe, undefined in
-/// ReleaseFast/ReleaseSmall), never error-returned. Use
+/// safety-checked (trap in `debug`/`safe`, undefined in
+/// `fast`/`small`), never error-returned. Use
 /// `validateAndDecodeCodePointBytes` when the bytes' validity is uncertain,
 /// or `decodeCodePointLossy` to substitute U+FFFD instead.
 ///

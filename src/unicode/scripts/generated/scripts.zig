@@ -220,7 +220,7 @@ const script_abbreviations = [_][]const u8 {
 /// parsing paths, not per-codepoint hot loops.
 pub fn fromAbbreviation(abbr: []const u8) ?ScriptType {
     for (script_abbreviations, 0..) |a, i| {
-        if (std.mem.eql(u8, a, abbr)) return @enumFromInt(i);
+        if (std.mem.eql(u8, a, abbr)) return @fromBackingInt(@intCast(i));
     }
     return null;
 }

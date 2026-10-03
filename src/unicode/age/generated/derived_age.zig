@@ -80,7 +80,7 @@ const age_versions = [_]Version{
 /// The Unicode version `a` denotes, or null when `a` is `unassigned`.
 pub fn version(a: Age) ?Version {
     if (a == .unassigned) return null;
-    return age_versions[@intFromEnum(a)];
+    return age_versions[@backingInt(a)];
 }
 
 //zig fmt: off

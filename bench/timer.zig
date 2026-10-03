@@ -3,7 +3,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 pub fn monotonicNanos() u128 {
-    switch (builtin.os.tag) {
+    switch (builtin.target.os.tag) {
         .linux => {
             var ts: std.os.linux.timespec = undefined;
             const rc = std.os.linux.clock_gettime(.MONOTONIC, &ts);

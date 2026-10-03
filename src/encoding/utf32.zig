@@ -152,7 +152,7 @@ pub fn encodeCodePoint(code_point: CodePoint, buf: []u32) UTF32EncodeError!u1 {
 /// either invariant is uncertain.
 ///
 /// Note: **an empty buffer or a surrogate / out-of-range scalar triggers
-/// `unreachable` (checked illegal behavior in safe builds, UB in `ReleaseFast`).**
+/// `unreachable` (checked illegal behavior in safe builds, UB in `fast`).**
 ///
 /// @stable-since: v0.2.0
 pub fn encodeCodePointUnchecked(code_point: CodePoint, buf: []u32) u1 {
@@ -296,7 +296,7 @@ pub fn validateAndDecodeU32CodePointLossy(buf: []const u32, offset: usize) UTF32
 /// counterpart of `utf8.decodeCodePointLossy`.
 ///
 /// Contract: `offset < buf.len`. The precondition is asserted (safety-checked:
-/// traps in Debug/ReleaseSafe, undefined in ReleaseFast/ReleaseSmall); it is
+/// traps in `debug`/`safe`, undefined in `fast`/`small`); it is
 /// never reported as an error. `len` is always 1.
 ///
 /// This is the primitive behind `UTF32LossyIterator`. Use
@@ -336,8 +336,8 @@ fn decodeCodePointReverse(buf: []const u32) DecodedCodePoint {
 ///
 /// Contract: `offset < buf.len` and `buf[offset]` is a valid Unicode scalar
 /// value (<= U+10FFFF, not a surrogate). Preconditions are asserted /
-/// safety-checked (trap in Debug/ReleaseSafe, undefined in
-/// ReleaseFast/ReleaseSmall), never error-returned. Use
+/// safety-checked (trap in `debug`/`safe`, undefined in
+/// `fast`/`small`), never error-returned. Use
 /// `validateAndDecodeU32CodePoint` when the units' validity is uncertain.
 ///
 /// @stable-since: v0.4.0

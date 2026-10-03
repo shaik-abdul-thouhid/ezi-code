@@ -457,7 +457,7 @@ const block_names = [_][]const u8 {
 
 /// The canonical Unicode block name (e.g. "Basic Latin") for `b`.
 pub fn blockName(b: Block) []const u8 {
-    return block_names[@intFromEnum(b)];
+    return block_names[@backingInt(b)];
 }
 
 //zig fmt: off
@@ -4330,6 +4330,6 @@ const block_level2 = [_][256]u16 {
 pub inline fn block(cp: CodePoint) Block {
     if (cp > 0x10FFFF) return .no_block;
     const page = block_level1[cp >> 8];
-    return @enumFromInt(block_level2[page][cp & 0xFF]);
+    return @fromBackingInt(block_level2[page][cp & 0xFF]);
 }
 

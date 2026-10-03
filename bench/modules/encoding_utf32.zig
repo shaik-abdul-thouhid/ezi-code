@@ -10,7 +10,7 @@ const Case = framework.Case;
 const Context = framework.Context;
 const RunResult = framework.RunResult;
 
-const native_endian: utf32.Endian = if (@import("builtin").cpu.arch.endian() == .little) .little else .big;
+const native_endian: utf32.Endian = if (@import("builtin").target.cpu.arch.endian() == .little) .little else .big;
 
 const inner_scan: u32 = 8;
 const inner_view: u32 = 8;

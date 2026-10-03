@@ -147,7 +147,7 @@ fn caseGraphemeBreakProperty(ctx: *Context) !RunResult {
     var n: u32 = 0;
     while (n < inner_classifier) : (n += 1) {
         for (cps) |cp| {
-            accum +%= @intFromEnum(seg.graphemeBreakProperty(cp));
+            accum +%= @backingInt(seg.graphemeBreakProperty(cp));
             ops += 1;
         }
     }
@@ -162,7 +162,7 @@ fn caseWordBreakProperty(ctx: *Context) !RunResult {
     var n: u32 = 0;
     while (n < inner_classifier) : (n += 1) {
         for (cps) |cp| {
-            accum +%= @intFromEnum(seg.wordBreakProperty(cp));
+            accum +%= @backingInt(seg.wordBreakProperty(cp));
             ops += 1;
         }
     }
@@ -177,7 +177,7 @@ fn caseLineBreakProperty(ctx: *Context) !RunResult {
     var n: u32 = 0;
     while (n < inner_classifier) : (n += 1) {
         for (cps) |cp| {
-            accum +%= @intFromEnum(seg.lineBreak(cp));
+            accum +%= @backingInt(seg.lineBreak(cp));
             ops += 1;
         }
     }

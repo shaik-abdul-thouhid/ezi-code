@@ -86,7 +86,7 @@ test "age: the newest Age variant is the tracked Unicode version (18.0)" {
     // Pins the generated tables to the Unicode release the library claims to
     // track; a stale or mixed-version `zig build generate` fails here.
     const fields = @typeInfo(Age).@"enum".field_values;
-    const newest: Age = @enumFromInt(fields[fields.len - 1]);
+    const newest: Age = @fromBackingInt(fields[fields.len - 1]);
     try testing.expectEqual(Age.v18_0, newest);
 }
 
@@ -112,7 +112,7 @@ test "age: every codepoint maps to a valid enum variant, never traps" {
     var cp: CodePoint = 0;
     while (cp <= 0x10FFFF) : (cp += 1) {
         const a = age(cp);
-        try testing.expect(@intFromEnum(a) < field_count);
+        try testing.expect(@backingInt(a) < field_count);
         // assignedIn agrees with the enum: null exactly when unassigned.
         try testing.expectEqual(a == .unassigned, assignedIn(cp) == null);
     }
@@ -124,7 +124,7 @@ test "age: enum variants are ordered by ascending version" {
     const fields = @typeInfo(Age).@"enum".field_values;
     var prev: Version = .{ .major = 0, .minor = 0 };
     inline for (fields) |f| {
-        const a: Age = @enumFromInt(f);
+        const a: Age = @fromBackingInt(f);
         if (version(a)) |v| {
             const ge = v.major > prev.major or (v.major == prev.major and v.minor >= prev.minor);
             try testing.expect(ge);

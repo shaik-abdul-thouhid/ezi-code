@@ -51,7 +51,7 @@ fn caseEastAsianWidth(ctx: *Context) !RunResult {
     var n: u32 = 0;
     while (n < inner) : (n += 1) {
         for (cps) |cp| {
-            accum +%= @intFromEnum(width.eastAsianWidth(cp));
+            accum +%= @backingInt(width.eastAsianWidth(cp));
             ops += 1;
         }
     }

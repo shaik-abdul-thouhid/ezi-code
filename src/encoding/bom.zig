@@ -136,7 +136,7 @@ test "strip: removes exactly the detected mark, zero-copy" {
 
 test "Bom: bytes/len/endian are consistent" {
     inline for (@typeInfo(Bom).@"enum".field_values) |fv| {
-        const mark: Bom = @enumFromInt(fv);
+        const mark: Bom = @fromBackingInt(fv);
         try std.testing.expectEqual(mark.bytes().len, mark.len());
         try std.testing.expect(mark.match(mark.bytes()));
         try std.testing.expectEqual(@as(?Bom, mark), detect(mark.bytes()));

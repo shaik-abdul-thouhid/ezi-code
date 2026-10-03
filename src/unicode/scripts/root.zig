@@ -47,12 +47,12 @@ pub const fromAbbreviation = generated.fromAbbreviation;
 pub const script_extension_sets = generated_extensions.script_extension_sets;
 
 /// One single-element set per ScriptType, materialized at comptime. Returning
-/// `&singleton_sets[@intFromEnum(s)]` gives a stable `[]const ScriptType` for
+/// `&singleton_sets[@backingInt(s)]` gives a stable `[]const ScriptType` for
 /// the `@missing` fallback without allocating or pointing at a temporary.
 const singleton_sets = blk: {
     const fields = @typeInfo(ScriptType).@"enum".field_values;
     var arr: [fields.len][1]ScriptType = undefined;
-    for (&arr, 0..) |*slot, i| slot.* = .{@as(ScriptType, @enumFromInt(i))};
+    for (&arr, 0..) |*slot, i| slot.* = .{@as(ScriptType, @fromBackingInt(i))};
     break :blk arr;
 };
 
@@ -74,7 +74,7 @@ pub fn scriptExtensions(cp: CodePoint) []const ScriptType {
     const idx = generated_extensions.scriptExtensionIndex(cp);
     if (idx == 0) {
         const s = scriptType(cp);
-        return singleton_sets[@intFromEnum(s)][0..];
+        return singleton_sets[@backingInt(s)][0..];
     }
     return script_extension_sets[idx];
 }
@@ -133,7 +133,7 @@ test "scriptType: every codepoint resolves to a defined enum variant" {
         // Round-trips through the integer tag: traps if a page slot held an
         // out-of-bounds index.
         const s = scriptType(cp);
-        try testing.expect(@intFromEnum(s) < @typeInfo(ScriptType).@"enum".field_values.len);
+        try testing.expect(@backingInt(s) < @typeInfo(ScriptType).@"enum".field_values.len);
     }
 }
 
@@ -222,7 +222,7 @@ test "scriptExtensions: membership is consistent with the returned slice" {
         const set = scriptExtensions(cp);
         var s: u16 = 0;
         while (s < @typeInfo(ScriptType).@"enum".field_values.len) : (s += 1) {
-            const script: ScriptType = @enumFromInt(s);
+            const script: ScriptType = @fromBackingInt(@intCast(s));
             var in_set = false;
             for (set) |member| {
                 if (member == script) in_set = true;

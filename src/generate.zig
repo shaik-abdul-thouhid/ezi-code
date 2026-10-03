@@ -752,7 +752,7 @@ fn generateUnicodeData(arena: std.mem.Allocator, io: std.Io, data: []const u8, u
         \\pub inline fn canonicalCombiningClass(cp: CodePoint) CanonicalCombiningClass {
         \\    if (cp > 0x10FFFF) return .not_reordered;
         \\    const page = combining_class_level1[cp >> 8];
-        \\    return @enumFromInt(combining_class_level_2[page][cp & 0xFF]);
+        \\    return @fromBackingInt(combining_class_level_2[page][cp & 0xFF]);
         \\}
         \\
         \\
@@ -1277,7 +1277,7 @@ fn generateDerivedCoreProperty(arena: std.mem.Allocator, io: std.Io, data: []con
         \\}
         \\
         \\pub inline fn codePointProperty(code_point: CodePoint, property: Property) bool {
-        \\    return (propertyMask(code_point) & @intFromEnum(property)) != 0;
+        \\    return (propertyMask(code_point) & @backingInt(property)) != 0;
         \\}
         \\
     );
@@ -2736,7 +2736,7 @@ fn generateScripts(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: 
         \\/// parsing paths, not per-codepoint hot loops.
         \\pub fn fromAbbreviation(abbr: []const u8) ?ScriptType {
         \\    for (script_abbreviations, 0..) |a, i| {
-        \\        if (std.mem.eql(u8, a, abbr)) return @enumFromInt(i);
+        \\        if (std.mem.eql(u8, a, abbr)) return @fromBackingInt(@intCast(i));
         \\    }
         \\    return null;
         \\}
@@ -3234,7 +3234,7 @@ fn generateBlocks(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: [
     try writer.writeAll(
         \\/// The canonical Unicode block name (e.g. "Basic Latin") for `b`.
         \\pub fn blockName(b: Block) []const u8 {
-        \\    return block_names[@intFromEnum(b)];
+        \\    return block_names[@backingInt(b)];
         \\}
         \\
         \\
@@ -3259,7 +3259,7 @@ fn generateBlocks(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: [
         \\pub inline fn block(cp: CodePoint) Block {
         \\    if (cp > 0x10FFFF) return .no_block;
         \\    const page = block_level1[cp >> 8];
-        \\    return @enumFromInt(block_level2[page][cp & 0xFF]);
+        \\    return @fromBackingInt(block_level2[page][cp & 0xFF]);
         \\}
         \\
         \\
@@ -3370,7 +3370,7 @@ fn generateDerivedAge(arena: std.mem.Allocator, io: std.Io, data: []const u8, ur
         \\/// The Unicode version `a` denotes, or null when `a` is `unassigned`.
         \\pub fn version(a: Age) ?Version {
         \\    if (a == .unassigned) return null;
-        \\    return age_versions[@intFromEnum(a)];
+        \\    return age_versions[@backingInt(a)];
         \\}
         \\
         \\

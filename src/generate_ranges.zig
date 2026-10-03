@@ -122,7 +122,7 @@ fn genDerivedRuns(io: std.Io) !void {
         \\
         \\/// `mask` is the same DerivedCoreProperties bitmask returned by
         \\/// `properties.derivedPropertyMask`; test a property with
-        \\/// `(mask & @intFromEnum(DerivedProperty.<x>)) != 0`.
+        \\/// `(mask & @backingInt(DerivedProperty.<x>)) != 0`.
         \\pub const DerivedRun = struct { start: CodePoint, end: CodePoint, mask: u32 };
         \\
         \\/// Maximal runs of equal DerivedCoreProperties mask, sorted by `start`.

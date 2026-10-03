@@ -4368,5 +4368,5 @@ pub inline fn propertyMask(code_point: CodePoint) u32 {
 }
 
 pub inline fn codePointProperty(code_point: CodePoint, property: Property) bool {
-    return (propertyMask(code_point) & @intFromEnum(property)) != 0;
+    return (propertyMask(code_point) & @backingInt(property)) != 0;
 }

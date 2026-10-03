@@ -118,7 +118,7 @@ pub const NormalizationForm = enum {
 ///
 /// @stable-since: v0.1.0
 pub inline fn ccc(cp: CodePoint) u8 {
-    return @intFromEnum(unicode_data.canonicalCombiningClass(cp));
+    return @backingInt(unicode_data.canonicalCombiningClass(cp));
 }
 
 /// True iff `cp` is a starter (CCC 0), i.e. it does not reorder under

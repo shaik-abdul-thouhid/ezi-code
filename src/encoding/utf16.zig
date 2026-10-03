@@ -163,7 +163,7 @@ pub fn utf16SequenceLenReverse(buf: []const u16, end_index: usize) UTF16Validati
 ///
 /// Contract: `end_index < buf.len` and `buf` is valid UTF-16 around
 /// `end_index`. Preconditions are asserted / safety-checked (trap in
-/// Debug/ReleaseSafe, undefined in ReleaseFast/ReleaseSmall), never
+/// `debug`/`safe`, undefined in `fast`/`small`), never
 /// error-returned. Use the checked `utf16SequenceLenReverse` when the units'
 /// validity is uncertain.
 ///
@@ -224,7 +224,7 @@ pub fn encodeCodePoint(code_point: CodePoint, buf: []u16) UTF16EncodeError!u2 {
 /// `encodeCodePoint` when either invariant is uncertain.
 ///
 /// Note: **a buffer shorter than the encoded length triggers `unreachable`
-/// (checked illegal behavior in safe builds, UB in `ReleaseFast`).**
+/// (checked illegal behavior in safe builds, UB in `fast`).**
 ///
 /// @stable-since: v0.2.0
 pub fn encodeCodePointUnchecked(code_point: CodePoint, buf: []u16) u2 {
@@ -476,7 +476,7 @@ pub fn validateAndDecodeU16CodePointLossy(buf: []const u16, offset: usize) UTF16
 /// counterpart of `utf8.decodeCodePointLossy`.
 ///
 /// Contract: `offset < buf.len`. The precondition is asserted (safety-checked:
-/// traps in Debug/ReleaseSafe, undefined in ReleaseFast/ReleaseSmall); it is
+/// traps in `debug`/`safe`, undefined in `fast`/`small`); it is
 /// never reported as an error. The returned `len` is always >= 1, so a forward
 /// scan that advances by `len` is guaranteed to make progress.
 ///
@@ -526,8 +526,8 @@ fn decodeCodePointReverse(buf: []const u16, end_index: usize) DecodedCodePoint {
 ///
 /// Contract: `offset < buf.len`, `offset` is a code point boundary (not the
 /// low half of a surrogate pair), and `buf` is valid UTF-16 at `offset`.
-/// Preconditions are asserted / safety-checked (trap in Debug/ReleaseSafe,
-/// undefined in ReleaseFast/ReleaseSmall), never error-returned. Use
+/// Preconditions are asserted / safety-checked (trap in `debug`/`safe`,
+/// undefined in `fast`/`small`), never error-returned. Use
 /// `validateAndDecodeU16CodePoint` when the units' validity is uncertain.
 ///
 /// @stable-since: v0.4.0

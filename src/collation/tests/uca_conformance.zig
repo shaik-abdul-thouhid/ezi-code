@@ -114,7 +114,7 @@ test "uca conformance: SHIFTED (short)" {
 }
 
 test "uca conformance: NON_IGNORABLE (full)" {
-    if (builtin.mode == .debug) return;
+    if (builtin.optimize == .debug) return;
 
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -129,7 +129,7 @@ test "uca conformance: NON_IGNORABLE (full)" {
 }
 
 test "uca conformance: SHIFTED (full)" {
-    if (builtin.mode == .debug) return;
+    if (builtin.optimize == .debug) return;
 
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();

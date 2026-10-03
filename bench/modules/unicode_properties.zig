@@ -128,7 +128,7 @@ fn caseGeneralCategory(ctx: *Context) !RunResult {
     var n: u32 = 0;
     while (n < inner) : (n += 1) {
         for (cps) |cp| {
-            accum +%= @intFromEnum(properties.generalCategory(cp));
+            accum +%= @backingInt(properties.generalCategory(cp));
             ops += 1;
         }
     }
@@ -143,7 +143,7 @@ fn caseBidiClass(ctx: *Context) !RunResult {
     var n: u32 = 0;
     while (n < inner) : (n += 1) {
         for (cps) |cp| {
-            accum +%= @intFromEnum(properties.bidiClass(cp));
+            accum +%= @backingInt(properties.bidiClass(cp));
             ops += 1;
         }
     }
@@ -158,7 +158,7 @@ fn caseCanonicalCombiningClass(ctx: *Context) !RunResult {
     var n: u32 = 0;
     while (n < inner) : (n += 1) {
         for (cps) |cp| {
-            accum +%= @intFromEnum(properties.canonicalCombiningClass(cp));
+            accum +%= @backingInt(properties.canonicalCombiningClass(cp));
             ops += 1;
         }
     }

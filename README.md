@@ -302,7 +302,7 @@ licences/          Upstream licenses for bundled third-party code and data
   treat them differently.
 - **Unchecked means one thing everywhere**: the caller guarantees the
   documented preconditions; violations are asserted (safety-checked — they
-  trap in Debug/ReleaseSafe and are undefined in ReleaseFast/ReleaseSmall);
+  trap in `debug`/`safe` and are undefined in `fast`/`small`);
   unchecked functions never return errors and never panic.
 - **`CodePoint` (`u21`) is a contract**: a value of this type is presumed to
   be a valid Unicode scalar (in range, not a surrogate). APIs that produce one

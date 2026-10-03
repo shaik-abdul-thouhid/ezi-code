@@ -95,7 +95,7 @@ fn runQuickCheck(ctx: *Context, comptime form: normalization.QuickCheckForm) !Ru
     var n: u32 = 0;
     while (n < inner) : (n += 1) {
         for (cps) |cp| {
-            accum +%= @intFromEnum(normalization.quickCheck(form, cp));
+            accum +%= @backingInt(normalization.quickCheck(form, cp));
             ops += 1;
         }
     }

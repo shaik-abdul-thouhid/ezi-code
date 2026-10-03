@@ -85,9 +85,9 @@ pub const InCB = enum { none, consonant, linker, extend };
 /// @stable-since: v0.1.0
 pub inline fn inCB(cp: CodePoint) InCB {
     const mask = derived_core_properties.propertyMask(cp);
-    if ((mask & @intFromEnum(DerivedProperty.in_cb_consonant)) != 0) return .consonant;
-    if ((mask & @intFromEnum(DerivedProperty.in_cb_linker)) != 0) return .linker;
-    if ((mask & @intFromEnum(DerivedProperty.in_cb_extend)) != 0) return .extend;
+    if ((mask & @backingInt(DerivedProperty.in_cb_consonant)) != 0) return .consonant;
+    if ((mask & @backingInt(DerivedProperty.in_cb_linker)) != 0) return .linker;
+    if ((mask & @backingInt(DerivedProperty.in_cb_extend)) != 0) return .extend;
     return .none;
 }
 
@@ -1755,7 +1755,7 @@ pub fn lineStep(state: LineStepState, code_points: []const CodePoint, i: usize) 
 /// without re-decoding.
 ///
 /// Contract: `byte_pos < bytes.len`. The precondition is asserted
-/// (safety-checked: traps in Debug/ReleaseSafe, undefined in ReleaseFast).
+/// (safety-checked: traps in `debug`/`safe`, undefined in `fast`).
 /// Malformed UTF-8 never panics: it decodes as U+FFFD.
 ///
 /// @stable-since: v0.1.0

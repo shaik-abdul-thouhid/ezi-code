@@ -67,7 +67,7 @@ fn casePairedBracketType(ctx: *Context) !RunResult {
     var n: u32 = 0;
     while (n < inner) : (n += 1) {
         for (cps) |cp| {
-            accum +%= @intFromEnum(bidi.bidiPairedBracketType(cp));
+            accum +%= @backingInt(bidi.bidiPairedBracketType(cp));
             ops += 1;
         }
     }

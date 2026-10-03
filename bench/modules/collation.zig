@@ -111,7 +111,7 @@ fn caseCompareCodePoints(ctx: *Context) !RunResult {
     var n: u32 = 0;
     while (n < inner) : (n += 1) {
         const order = try s.collator.compareCodePoints(ctx.allocator, a, b);
-        accum +%= @intFromEnum(order);
+        accum +%= @backingInt(order);
     }
     std.mem.doNotOptimizeAway(accum);
     return .{ .bytes_processed = cpBytes(s.code_points) * inner, .ops = @as(u64, inner) };
@@ -180,7 +180,7 @@ fn caseCompareSerial(ctx: *Context) !RunResult {
     var n: u32 = 0;
     while (n < inner_serial) : (n += 1) {
         const order = col.compareSerializedKeys(s.serial_a, s.serial_b);
-        accum +%= @intFromEnum(order);
+        accum +%= @backingInt(order);
     }
     std.mem.doNotOptimizeAway(accum);
     // bytes_processed: total bytes compared across both keys × iterations

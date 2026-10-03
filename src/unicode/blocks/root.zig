@@ -88,13 +88,13 @@ test "block: every codepoint maps to a valid enum variant, never traps" {
     var cp: CodePoint = 0;
     while (cp <= 0x10FFFF) : (cp += 1) {
         const b = block(cp);
-        try testing.expect(@intFromEnum(b) < field_count);
+        try testing.expect(@backingInt(b) < field_count);
     }
 }
 
 test "blockName: round-trips through every enum variant and is non-empty" {
     inline for (@typeInfo(Block).@"enum".field_values) |f| {
-        const b: Block = @enumFromInt(f);
+        const b: Block = @fromBackingInt(f);
         try testing.expect(blockName(b).len > 0);
     }
     try testing.expectEqualStrings("No_Block", blockName(.no_block));

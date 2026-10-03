@@ -48,7 +48,7 @@ pub const CategoryRun = category_ranges.CategoryRun;
 /// Whole-code-space partition into General_Category runs, sorted by `start`.
 pub const category_runs: []const CategoryRun = &category_ranges.category_runs;
 /// One entry of `derived_runs`: an inclusive run with a DerivedCoreProperties
-/// bitmask (`& @intFromEnum(DerivedProperty.x)` to test a property).
+/// bitmask (`& @backingInt(DerivedProperty.x)` to test a property).
 pub const DerivedRun = derived_ranges.DerivedRun;
 /// DerivedCoreProperties runs (mask != 0 only), sorted by `start`.
 pub const derived_runs: []const DerivedRun = &derived_ranges.derived_runs;
@@ -336,7 +336,7 @@ pub fn isWord(code_point: CodePoint) bool {
             (code_point >= 'a' and code_point <= 'z') or
             code_point == '_';
     }
-    if (derivedMaskFromRuns(code_point) & @intFromEnum(DerivedProperty.alphabetic) != 0) return true;
+    if (derivedMaskFromRuns(code_point) & @backingInt(DerivedProperty.alphabetic) != 0) return true;
     if (utils.containsInRange(prop_list_ranges.Range, CodePoint, "start", "end", join_control_ranges, code_point)) return true;
     return switch (categoryFromRuns(code_point)) {
         .decimal_number, .non_spacing_mark, .spacing_mark, .enclosing_mark, .connector_punctuation => true,
@@ -358,7 +358,7 @@ pub fn categoryFromRuns(code_point: CodePoint) GeneralCategory {
 /// The DerivedCoreProperties bitmask of `code_point`, resolved by binary search
 /// over the enumerable `derived_runs` table instead of the per-code-point page
 /// tables. Equivalent to `derivedPropertyMask` but links only the range table;
-/// test a property with `& @intFromEnum(DerivedProperty.<x>)`.
+/// test a property with `& @backingInt(DerivedProperty.<x>)`.
 ///
 /// @stable-since: v0.3.0
 pub fn derivedMaskFromRuns(code_point: CodePoint) u32 {
@@ -377,7 +377,7 @@ pub fn isIdentifierStartByRanges(code_point: CodePoint) bool {
             (code_point >= 'a' and code_point <= 'z') or
             code_point == '_';
     }
-    return derivedMaskFromRuns(code_point) & @intFromEnum(DerivedProperty.id_start) != 0;
+    return derivedMaskFromRuns(code_point) & @backingInt(DerivedProperty.id_start) != 0;
 }
 
 /// Range-table-backed twin of `isIdentifierContinue` (ID_Continue ∪ `_`):
@@ -392,7 +392,7 @@ pub fn isIdentifierContinueByRanges(code_point: CodePoint) bool {
             (code_point >= 'a' and code_point <= 'z') or
             code_point == '_';
     }
-    return derivedMaskFromRuns(code_point) & @intFromEnum(DerivedProperty.id_continue) != 0;
+    return derivedMaskFromRuns(code_point) & @backingInt(DerivedProperty.id_continue) != 0;
 }
 
 /// Returns whether `code_point` has the Dash property.
@@ -797,11 +797,11 @@ test "canonicalCombiningClass: boundaries and ranges" {
 
 test "canonicalCombiningClass: binary search correctness" {
     const start = canonicalCombiningClass(0x0300);
-    try testing.expect(@intFromEnum(start) > 0);
+    try testing.expect(@backingInt(start) > 0);
     const middle = canonicalCombiningClass(0x0320);
-    try testing.expect(@intFromEnum(middle) >= 0);
+    try testing.expect(@backingInt(middle) >= 0);
     const end = canonicalCombiningClass(0xFE20);
-    try testing.expect(@intFromEnum(end) >= 0);
+    try testing.expect(@backingInt(end) >= 0);
 }
 
 test "isLetter: basic ASCII letters" {
@@ -1090,8 +1090,8 @@ test "combining class lookup correctness" {
     for (0x0300..0x0370) |cp_usize| {
         const cp: CodePoint = @intCast(cp_usize);
         const cc = canonicalCombiningClass(cp);
-        try testing.expect(@intFromEnum(cc) >= 0);
-        try testing.expect(@intFromEnum(cc) <= 255);
+        try testing.expect(@backingInt(cc) >= 0);
+        try testing.expect(@backingInt(cc) <= 255);
     }
 }
 
@@ -1116,9 +1116,9 @@ test "non-whitespace near whitespace" {
 
 test "binary search: combining class correctness in ranges" {
     const start = canonicalCombiningClass(0x0300);
-    try testing.expect(@intFromEnum(start) > 0);
+    try testing.expect(@backingInt(start) > 0);
     const end = canonicalCombiningClass(0xFE2F);
-    try testing.expect(@intFromEnum(end) >= 0);
+    try testing.expect(@backingInt(end) >= 0);
     for (0x0300..0xFE2F) |cp_usize| {
         const cp: CodePoint = @intCast(cp_usize);
         _ = canonicalCombiningClass(cp);
@@ -1318,7 +1318,7 @@ test "properties zalgo: only bases are starters and every mark is a combining Ma
 
         var starters: usize = 0;
         for (cps) |cp| {
-            if (@intFromEnum(canonicalCombiningClass(cp)) == 0) {
+            if (@backingInt(canonicalCombiningClass(cp)) == 0) {
                 starters += 1;
             } else {
                 // A nonzero combining class is carried only by combining marks.

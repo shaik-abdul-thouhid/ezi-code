@@ -6055,7 +6055,7 @@ const combining_class_level_2 = [_][256]u8 {
 pub inline fn canonicalCombiningClass(cp: CodePoint) CanonicalCombiningClass {
     if (cp > 0x10FFFF) return .not_reordered;
     const page = combining_class_level1[cp >> 8];
-    return @enumFromInt(combining_class_level_2[page][cp & 0xFF]);
+    return @fromBackingInt(combining_class_level_2[page][cp & 0xFF]);
 }
 
 //zig fmt: off

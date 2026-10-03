@@ -52,7 +52,7 @@ fn caseScriptType(ctx: *Context) !RunResult {
     var n: u32 = 0;
     while (n < inner) : (n += 1) {
         for (cps) |cp| {
-            accum +%= @intFromEnum(scripts.scriptType(cp));
+            accum +%= @backingInt(scripts.scriptType(cp));
             ops += 1;
         }
     }
@@ -69,7 +69,7 @@ fn caseScriptExtensions(ctx: *Context) !RunResult {
         for (cps) |cp| {
             // Touch every element so the slice (and the @missing fallback
             // singleton) is actually materialized, not optimized away.
-            for (scripts.scriptExtensions(cp)) |s| accum +%= @intFromEnum(s);
+            for (scripts.scriptExtensions(cp)) |s| accum +%= @backingInt(s);
             ops += 1;
         }
     }

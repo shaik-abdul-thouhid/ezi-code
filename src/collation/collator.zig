@@ -895,7 +895,7 @@ fn implicitWeights(cp: CodePoint) struct { aaaa: u16, bbbb: u16 } {
 }
 
 fn ccc(cp: CodePoint) u8 {
-    return @intFromEnum(unicode.properties.canonicalCombiningClass(cp));
+    return @backingInt(unicode.properties.canonicalCombiningClass(cp));
 }
 
 fn isUnblocked(text: []const CodePoint, base: usize, candidate: usize, ccc_candidate: u8) bool {
