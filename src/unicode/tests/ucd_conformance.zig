@@ -514,7 +514,7 @@ test "ucd hostile: every PropList property predicate matches every codepoint" {
     const txt = try std.Io.Dir.cwd().readFileAlloc(testing.io, prop_list_path, allocator, .limited(8 * 1024 * 1024));
     defer allocator.free(txt);
 
-    var groups: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(struct { start: CodePoint, end: CodePoint })) = .empty;
+    var groups: std.StringHashMapUnmanaged(std.ArrayList(struct { start: CodePoint, end: CodePoint })) = .empty;
     defer {
         var it_free = groups.iterator();
         while (it_free.next()) |e| {
@@ -718,7 +718,7 @@ test "ucd hostile: GraphemeBreakTest.txt full conformance (including GB11 Extend
         const trimmed = std.mem.trim(u8, raw_line, " \t\r");
         if (trimmed.len == 0 or trimmed[0] == '#') continue;
 
-        const hash_idx = std.mem.indexOfScalar(u8, trimmed, '#') orelse trimmed.len;
+        const hash_idx = std.mem.findScalar(u8, trimmed, '#') orelse trimmed.len;
         const data_part = std.mem.trim(u8, trimmed[0..hash_idx], " \t");
         const comment = if (hash_idx < trimmed.len) trimmed[hash_idx + 1 ..] else "";
 
@@ -1030,7 +1030,7 @@ test "ucd hostile: every emoji-data property predicate matches every codepoint" 
     const txt = try std.Io.Dir.cwd().readFileAlloc(testing.io, emoji_data_path, allocator, .limited(1024 * 1024));
     defer allocator.free(txt);
 
-    var groups: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(struct { start: CodePoint, end: CodePoint })) = .empty;
+    var groups: std.StringHashMapUnmanaged(std.ArrayList(struct { start: CodePoint, end: CodePoint })) = .empty;
     defer {
         var it_free = groups.iterator();
         while (it_free.next()) |e| {
@@ -1154,7 +1154,7 @@ fn runSegmentationConformance(
         const trimmed = std.mem.trim(u8, raw_line, " \t\r");
         if (trimmed.len == 0 or trimmed[0] == '#') continue;
 
-        const hash_idx = std.mem.indexOfScalar(u8, trimmed, '#') orelse trimmed.len;
+        const hash_idx = std.mem.findScalar(u8, trimmed, '#') orelse trimmed.len;
         const data_part = std.mem.trim(u8, trimmed[0..hash_idx], " \t");
         const comment = if (hash_idx < trimmed.len) trimmed[hash_idx + 1 ..] else "";
 
@@ -1542,7 +1542,7 @@ test "ucd hostile: NormalizationTest.txt Part 1 — QC tables consistent with co
         }
         if (!in_part1) continue;
 
-        const hash_idx = std.mem.indexOfScalar(u8, trimmed, '#') orelse trimmed.len;
+        const hash_idx = std.mem.findScalar(u8, trimmed, '#') orelse trimmed.len;
         const data_part = std.mem.trim(u8, trimmed[0..hash_idx], " \t;");
         if (data_part.len == 0) continue;
 
@@ -1760,7 +1760,7 @@ test "ucd hostile: NormalizationTest.txt Parts 0..5 — all four forms match eve
             continue;
         }
 
-        const hash_idx = std.mem.indexOfScalar(u8, trimmed, '#') orelse trimmed.len;
+        const hash_idx = std.mem.findScalar(u8, trimmed, '#') orelse trimmed.len;
         const data_part = std.mem.trim(u8, trimmed[0..hash_idx], " \t;");
         if (data_part.len == 0) continue;
 
@@ -1803,7 +1803,7 @@ test "ucd hostile: idempotency — normalize(normalize(x)) == normalize(x) for e
         }
         if (part >= per_part.len) continue;
 
-        const hash_idx = std.mem.indexOfScalar(u8, trimmed, '#') orelse trimmed.len;
+        const hash_idx = std.mem.findScalar(u8, trimmed, '#') orelse trimmed.len;
         const data_part = std.mem.trim(u8, trimmed[0..hash_idx], " \t;");
         if (data_part.len == 0) continue;
 
@@ -1861,7 +1861,7 @@ test "ucd hostile: cross-form invariants — NFC(NFD(x))==NFC(x), NFD(NFC(x))==N
         }
         if (part >= 6) continue;
 
-        const hash_idx = std.mem.indexOfScalar(u8, trimmed, '#') orelse trimmed.len;
+        const hash_idx = std.mem.findScalar(u8, trimmed, '#') orelse trimmed.len;
         const data_part = std.mem.trim(u8, trimmed[0..hash_idx], " \t;");
         if (data_part.len == 0) continue;
 
@@ -1963,7 +1963,7 @@ test "ucd hostile: streaming Normalizer(form) emits identical output to batch no
         }
         if (part >= per_part.len) continue;
 
-        const hash_idx = std.mem.indexOfScalar(u8, trimmed, '#') orelse trimmed.len;
+        const hash_idx = std.mem.findScalar(u8, trimmed, '#') orelse trimmed.len;
         const data_part = std.mem.trim(u8, trimmed[0..hash_idx], " \t;");
         if (data_part.len == 0) continue;
 
@@ -2055,7 +2055,7 @@ test "ucd hostile: isNormalized(form, normalize(form, x)) == true for every Part
         }
         if (part > 1) continue;
 
-        const hash_idx = std.mem.indexOfScalar(u8, trimmed, '#') orelse trimmed.len;
+        const hash_idx = std.mem.findScalar(u8, trimmed, '#') orelse trimmed.len;
         const data_part = std.mem.trim(u8, trimmed[0..hash_idx], " \t;");
         if (data_part.len == 0) continue;
 
@@ -2182,7 +2182,7 @@ fn parseRawDecompMap(allocator: std.mem.Allocator, data: []const u8) !std.AutoHa
         var is_compat = false;
         var to_parse = decomp;
         if (decomp[0] == '<') {
-            const close = std.mem.indexOfScalar(u8, decomp, '>') orelse continue;
+            const close = std.mem.findScalar(u8, decomp, '>') orelse continue;
             is_compat = true;
             to_parse = std.mem.trim(u8, decomp[close + 1 ..], " \t");
         }
@@ -3110,7 +3110,7 @@ test "ucd hostile: DerivedBidiClass.txt full conformance — every codepoint 0..
         var parts = std.mem.splitScalar(u8, trimmed, ';');
         const range = try parseRange(parts.next() orelse continue);
         const code_field = parts.next() orelse continue;
-        const hash = std.mem.indexOfScalar(u8, code_field, '#') orelse code_field.len;
+        const hash = std.mem.findScalar(u8, code_field, '#') orelse code_field.len;
         const code = std.mem.trim(u8, code_field[0..hash], " \t");
         const bc = bidiFromUcd(code);
         for (@as(usize, range.start)..@as(usize, range.end) + 1) |cp| expected[cp] = bc;

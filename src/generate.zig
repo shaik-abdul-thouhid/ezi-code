@@ -38,7 +38,7 @@ fn extractFileNameFromPath(path: []const u8) struct { dir_path: []const u8, file
 
 fn saveUCDFile(arena: std.mem.Allocator, io: std.Io, dir: *std.Io.Dir, data: []const u8, url: []const u8, buf: []u8) !void {
     const ucd_file_name = extractFileNameFromPath(url);
-    const ucd_file = try dir.createFile(io, try std.fmt.allocPrint(arena, "ucd/{s}", .{ucd_file_name.file_name}), .{
+    const ucd_file = try dir.createFile(io, try arena.print("ucd/{s}", .{ucd_file_name.file_name}), .{
         .truncate = true,
         .permissions = .default_file,
     });
@@ -346,8 +346,7 @@ const CaseMappingTracker = struct {
     }
 
     fn flushPending(self: *CaseMappingTracker, arena: std.mem.Allocator) !void {
-        const p = try std.fmt.allocPrint(
-            arena,
+        const p = try arena.print(
             "    .{{ .start = 0x{X}, .end = 0x{X}, .delta = {} }},\n",
             .{ self.range_start.?, self.range_end.?, self.current_difference },
         );
@@ -582,7 +581,7 @@ fn buildBidiDefaults(arena: std.mem.Allocator, io: std.Io) ![]u8 {
             var parts = std.mem.splitScalar(u8, line, ';');
             const range_raw = std.mem.trim(u8, parts.next() orelse continue, " \t");
             const code_field = parts.next() orelse continue;
-            const hash = std.mem.indexOfScalar(u8, code_field, '#') orelse code_field.len;
+            const hash = std.mem.findScalar(u8, code_field, '#') orelse code_field.len;
             const code = std.mem.trim(u8, code_field[0..hash], " \t");
             const idx = lookupCategory(&bidi_class_table, bidi_class_unknown, code);
             if (idx == bidi_class_unknown) continue;
@@ -888,8 +887,8 @@ fn generateDucet(arena: std.mem.Allocator, io: std.Io, data: []const u8, url: []
         defer tmp_ces.deinit(arena);
         var idx: usize = 0;
         while (idx < value_raw.len) {
-            const open = std.mem.indexOfScalarPos(u8, value_raw, idx, '[') orelse break;
-            const close = std.mem.indexOfScalarPos(u8, value_raw, open + 1, ']') orelse return error.BadCE;
+            const open = std.mem.findScalarPos(u8, value_raw, idx, '[') orelse break;
+            const close = std.mem.findScalarPos(u8, value_raw, open + 1, ']') orelse return error.BadCE;
             const ce_txt = value_raw[open .. close + 1];
             try tmp_ces.append(arena, try parseWeights(ce_txt));
             idx = close + 1;
@@ -2251,7 +2250,7 @@ fn parseRawDecomp(arena: std.mem.Allocator, data: []const u8) !std.AutoHashMapUn
         var is_compat = false;
         var to_parse = decomp_trim;
         if (decomp_trim[0] == '<') {
-            const close = std.mem.indexOfScalar(u8, decomp_trim, '>') orelse continue;
+            const close = std.mem.findScalar(u8, decomp_trim, '>') orelse continue;
             is_compat = true;
             to_parse = std.mem.trim(u8, decomp_trim[close + 1 ..], " \t");
         }
@@ -3100,7 +3099,7 @@ fn generateDerivedNumericValues(arena: std.mem.Allocator, io: std.Io, data: []co
         else
             1;
 
-        const key = try std.fmt.allocPrint(arena, "{d}/{d}", .{ numerator, denominator });
+        const key = try arena.print("{d}/{d}", .{ numerator, denominator });
         const gop = try value_map.getOrPut(arena, key);
         if (!gop.found_existing) {
             if (unique_values.items.len > std.math.maxInt(u16)) @panic("DerivedNumericValues.txt: more than 65535 distinct values — widen the index table");

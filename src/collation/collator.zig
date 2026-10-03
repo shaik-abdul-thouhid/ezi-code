@@ -26,12 +26,12 @@ const CodePoint = encoding.CodePoint;
 ///
 /// @stable-since: v0.2.0
 pub const Key = struct {
-    primary: std.ArrayListUnmanaged(u16) = .empty,
-    secondary: std.ArrayListUnmanaged(u16) = .empty,
-    tertiary: std.ArrayListUnmanaged(u16) = .empty,
-    quaternary: std.ArrayListUnmanaged(u16) = .empty,
-    nfd: std.ArrayListUnmanaged(CodePoint) = .empty,
-    work: std.ArrayListUnmanaged(CodePoint) = .empty,
+    primary: std.ArrayList(u16) = .empty,
+    secondary: std.ArrayList(u16) = .empty,
+    tertiary: std.ArrayList(u16) = .empty,
+    quaternary: std.ArrayList(u16) = .empty,
+    nfd: std.ArrayList(CodePoint) = .empty,
+    work: std.ArrayList(CodePoint) = .empty,
 
     /// Reset the key for reuse, clearing all weight levels and scratch while
     /// retaining their backing allocations. Pass the same `Key` to repeated
@@ -640,7 +640,7 @@ pub const Collator = struct {
     fn recordAt(
         self: Collator,
         allocator: Allocator,
-        work: *std.ArrayListUnmanaged(CodePoint),
+        work: *std.ArrayList(CodePoint),
         i: usize,
         implicit_buf: *[2]ducet.CE,
     ) error{OutOfMemory}!RecordCEs {
@@ -677,7 +677,7 @@ pub const Collator = struct {
     fn extendDiscontiguous(
         self: Collator,
         allocator: Allocator,
-        work: *std.ArrayListUnmanaged(CodePoint),
+        work: *std.ArrayList(CodePoint),
         start: usize,
         s_len: *usize,
         record: *u32,
@@ -744,10 +744,10 @@ const CeStream = struct {
     collator: Collator,
     allocator: Allocator,
     /// Pristine NFD form of the input; also the identical-level tiebreaker.
-    nfd: std.ArrayListUnmanaged(CodePoint) = .empty,
+    nfd: std.ArrayList(CodePoint) = .empty,
     /// Mutable lookup buffer; the discontiguous-match step reorders it, so
     /// `rewind` rebuilds it from `nfd`.
-    work: std.ArrayListUnmanaged(CodePoint) = .empty,
+    work: std.ArrayList(CodePoint) = .empty,
     i: usize = 0,
     after_variable: bool = false,
     ces: []const ducet.CE = &.{},

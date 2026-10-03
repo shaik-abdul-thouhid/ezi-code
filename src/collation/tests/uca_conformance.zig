@@ -11,12 +11,12 @@ const zip_path = "ucd/CollationTest.zip";
 const extracted_root = "CollationTest";
 
 fn cleanLine(raw: []const u8) []const u8 {
-    const without_hash = if (std.mem.indexOfScalar(u8, raw, '#')) |idx| raw[0..idx] else raw;
-    const without_semicolon = if (std.mem.indexOfScalar(u8, without_hash, ';')) |idx| without_hash[0..idx] else without_hash;
+    const without_hash = if (std.mem.findScalar(u8, raw, '#')) |idx| raw[0..idx] else raw;
+    const without_semicolon = if (std.mem.findScalar(u8, without_hash, ';')) |idx| without_hash[0..idx] else without_hash;
     return std.mem.trim(u8, without_semicolon, " \t\r");
 }
 
-fn parseCodePointSequence(allocator: Allocator, line: []const u8, out: *std.ArrayListUnmanaged(CodePoint)) !void {
+fn parseCodePointSequence(allocator: Allocator, line: []const u8, out: *std.ArrayList(CodePoint)) !void {
     out.clearRetainingCapacity();
     if (line.len == 0) return;
 
@@ -45,7 +45,7 @@ fn runConformanceFile(
     relative_path: []const u8,
     options: collation.Options,
 ) !void {
-    const full_path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ extracted_root, relative_path });
+    const full_path = try allocator.print("{s}/{s}", .{ extracted_root, relative_path });
     defer allocator.free(full_path);
 
     const text = try dir.readFileAlloc(testing.io, full_path, allocator, .limited(80 * 1024 * 1024));
@@ -58,7 +58,7 @@ fn runConformanceFile(
     var curr_key: collation.Key = .{};
     defer curr_key.deinit(allocator);
 
-    var cps: std.ArrayListUnmanaged(CodePoint) = .empty;
+    var cps: std.ArrayList(CodePoint) = .empty;
     defer cps.deinit(allocator);
 
     var have_prev = false;
