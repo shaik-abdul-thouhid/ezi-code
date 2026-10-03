@@ -22,9 +22,8 @@ Version `0.6.0-dev` in `main` (latest release: `v0.5.0`). Pre-1.0 in the literal
 sense: the API is allowed to change.
 Tracks **Unicode 18.0.0** (see [Unicode version support](#unicode-version-support)
 for which releases carry which version).
-Tracks a recent Zig dev build (`0.17.0-dev.2320+1e770dbef` minimum); it does
-not build against stable 0.16. If your toolchain isn't on a current `master`,
-this will not compile, and that is the intended trade-off until Zig 0.17 lands.
+Requires **Zig 0.17.0** or newer, the first stable release it supports. Releases
+up to `v0.5.0` tracked 0.17.0 dev builds instead; no release builds on 0.16.
 
 What works is well-tested. The unicode submodule includes exhaustive
 `0..=0x10FFFF` sweeps and runs against the official UCD conformance vectors

@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Minimum Zig is now `0.17.0`**, the stable release. 0.17.0 dev builds are
+  no longer accepted.
+- Nothing deprecated in Zig 0.17.0 is used any more. `@intFromEnum` and
+  `@enumFromInt` become `@backingInt` and `@fromBackingInt` everywhere,
+  including the table generators. The `@import("builtin")` decls `cpu`, `os`
+  and `mode` become `target.cpu`, `target.os` and `optimize`. The std aliases
+  `ArrayListUnmanaged`, `mem.indexOfScalar*`, `fmt.bufPrint` and
+  `fmt.allocPrint` become `ArrayList`, `mem.findScalar*`, `mem.print` and
+  `Allocator.print`. The public API and behavior are unchanged. Regenerating
+  the tables gives byte-identical output, apart from the builtin names.
+
 ## [0.5.0] - 2026-09-28
 
 ### Changed
